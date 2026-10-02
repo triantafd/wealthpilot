@@ -12,7 +12,7 @@ Work top to bottom. Each phase ends with something that runs and a number you ca
 - [x] Alembic migrations for all tables (documents, chunks, firm data, approvals, audit_log, usage)
 - [x] `scripts/seed.py`: synthetic firm (≈50 clients, 200 accounts, 60 instruments, 2 years of prices and transactions) with a fixed random seed
 - [x] Synthetic document set (8–12 docs) in `backend/data/docs/`
-- [ ] Frontend: Vite + React + TS + Tailwind + shadcn/ui, app shell with sidebar routes
+- [x] Frontend: Vite + React + TS + Tailwind + shadcn/ui, app shell with sidebar routes
 - [ ] GitHub Actions: lint, typecheck, unit tests for both apps
 
 **Done when:** `docker compose up` plus the seed script gives a working DB, and CI is green.
