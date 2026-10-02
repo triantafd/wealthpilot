@@ -325,3 +325,24 @@ def test_closed_accounts_stop_trading() -> None:
         trade_dates = {t.trade_date for t in by_account.get(account_id, [])}
         # Only the opening day: funding plus the opening portfolio.
         assert len(trade_dates) <= 1
+
+
+def test_every_capacity_for_loss_band_has_clients() -> None:
+    """A suitability band with no clients makes its documented definition untestable."""
+    present = {p.capacity_for_loss for p in ROWS["risk_profiles"]}
+    assert present == set(CAPACITY_FOR_LOSS), f"missing bands: {set(CAPACITY_FOR_LOSS) - present}"
+
+
+def test_equity_instrument_names_state_their_sector() -> None:
+    """Client restrictions exclude sectors, so a name must not contradict the column."""
+    for instrument in ROWS["instruments"]:
+        if instrument.sector is not None:
+            assert instrument.sector in instrument.name, instrument.name
+
+
+def test_excluded_sectors_in_restrictions_are_real_sectors() -> None:
+    """A restriction naming a sector no instrument has could never be applied."""
+    sectors = {i.sector for i in ROWS["instruments"] if i.sector}
+    for profile in ROWS["risk_profiles"]:
+        for excluded in profile.restrictions.get("exclude_sectors", []):
+            assert excluded in sectors, f"{excluded} matches no instrument"

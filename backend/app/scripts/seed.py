@@ -41,7 +41,6 @@ from app.db.models import (
 )
 from app.db.models.firm import (
     ACCOUNT_TYPES,
-    CAPACITY_FOR_LOSS,
     CLIENT_SEGMENTS,
     MANDATES,
     RISK_TOLERANCES,
@@ -119,6 +118,18 @@ _OBJECTIVES_BY_TOLERANCE: dict[str, tuple[str, ...]] = {
     "balanced": ("balanced", "income"),
     "growth": ("growth", "balanced"),
     "aggressive": ("growth",),
+}
+
+# Capacity for loss is related to tolerance but not identical to it: a client
+# can be willing to take risk yet unable to absorb a loss. Allow-listed per
+# tolerance so every band in the suitability framework has clients in it —
+# deriving it arithmetically from the tolerance index never produced "high",
+# which would leave a documented band permanently empty.
+_CAPACITY_BY_TOLERANCE: dict[str, tuple[str, ...]] = {
+    "conservative": ("low",),
+    "balanced": ("low", "medium"),
+    "growth": ("medium", "high"),
+    "aggressive": ("medium", "high"),
 }
 
 _RESTRICTION_POOL: tuple[dict[str, Any], ...] = (
@@ -207,13 +218,21 @@ def build_instruments(rng: random.Random) -> list[Instrument]:
         region = _REGIONS[(within // len(_FUND_HOUSES)) % len(_REGIONS)]
         kinds = _FUND_KINDS[asset_class]
         kind = kinds[(within // (len(_FUND_HOUSES) * len(_REGIONS))) % len(kinds)]
+
+        # Equity instruments are sector funds, so the sector belongs in the
+        # name. Client restrictions exclude sectors (risk_profiles.restrictions),
+        # and a fund whose name contradicts its sector column makes a refusal
+        # impossible to explain to the client.
+        sector = _SECTORS[index % len(_SECTORS)] if asset_class == "equity" else None
+        descriptor = f"{region} {sector} {kind}" if sector else f"{region} {kind}"
+
         instruments.append(
             Instrument(
                 id=f"IN-{index:04d}",
                 ticker=f"{house[:3].upper()}{index:03d}",
-                name=f"{house} {region} {kind}",
+                name=f"{house} {descriptor}",
                 asset_class=asset_class,
-                sector=_SECTORS[index % len(_SECTORS)] if asset_class == "equity" else None,
+                sector=sector,
                 region=region,
                 ongoing_charge=_ongoing_charge(rng, asset_class),
                 currency="GBP",
@@ -309,9 +328,7 @@ def build_clients(rng: random.Random) -> tuple[list[Client], list[RiskProfile]]:
                 # Score tracks tolerance, so the two never contradict each other.
                 score=min(100, max(1, RISK_TOLERANCES.index(tolerance) * 25 + rng.randint(1, 20))),
                 horizon_years=rng.choice((3, 5, 7, 10, 15, 20)),
-                capacity_for_loss=CAPACITY_FOR_LOSS[
-                    min(len(CAPACITY_FOR_LOSS) - 1, RISK_TOLERANCES.index(tolerance) // 2)
-                ],
+                capacity_for_loss=rng.choice(_CAPACITY_BY_TOLERANCE[tolerance]),
                 restrictions=dict(_RESTRICTION_POOL[index % len(_RESTRICTION_POOL)]),
                 assessed_at=assessed,
                 # Annual review cycle. Some fall before AS_OF on purpose, so
