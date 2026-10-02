@@ -12,6 +12,21 @@ from pydantic import SecretStr
 from app.config import Settings
 
 
+@pytest.fixture(autouse=True)
+def _isolate_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hide every variable Settings reads, for every test in this module.
+
+    `_env_file=None` stops pydantic-settings reading the repo-root `.env`, but
+    real environment variables still win over defaults. CI sets `APP_ENV=ci`,
+    which made the defaults test below fail there while passing locally — the
+    exact machine-dependence it was written to rule out.
+
+    Tests that need a variable set it themselves with monkeypatch afterwards.
+    """
+    for name in Settings.model_fields:
+        monkeypatch.delenv(name.upper(), raising=False)
+
+
 def _settings(**overrides: object) -> Settings:
     return Settings(_env_file=None, **overrides)  # type: ignore[arg-type]
 
