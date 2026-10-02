@@ -1,5 +1,6 @@
 """Shared fixtures."""
 
+import os
 from collections.abc import AsyncIterator
 
 import pytest
@@ -8,6 +9,18 @@ from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 from app.config import get_settings
 
+# GitHub Actions sets CI=true. Locally a missing database is a convenience and
+# these tests skip; in CI it is a broken build, because a silent skip means the
+# schema tests never ran and the pipeline went green on nothing.
+IN_CI = os.environ.get("CI", "").lower() in {"1", "true"}
+
+
+def _unavailable(reason: str) -> None:
+    """Skip locally, fail in CI."""
+    if IN_CI:
+        pytest.fail(f"{reason} (CI must run these tests, not skip them)")
+    pytest.skip(reason)
+
 
 @pytest.fixture
 async def db() -> AsyncIterator[AsyncConnection]:
@@ -15,7 +28,7 @@ async def db() -> AsyncIterator[AsyncConnection]:
 
     Skipping rather than failing keeps `uv run pytest` green for someone who has
     not run `docker compose up -d db` yet, while still giving real coverage when
-    the database is there. CI starts Postgres, so these never skip in CI.
+    the database is there.
 
     Everything runs inside a transaction that is rolled back, so tests cannot
     leave rows behind or see each other's writes.
@@ -25,7 +38,8 @@ async def db() -> AsyncIterator[AsyncConnection]:
         conn = await engine.connect()
     except Exception as exc:
         await engine.dispose()
-        pytest.skip(f"Postgres not reachable ({type(exc).__name__}); run: docker compose up -d db")
+        _unavailable(f"Postgres not reachable ({type(exc).__name__}); run: docker compose up -d db")
+        raise  # unreachable; _unavailable always raises
 
     transaction = await conn.begin()
     try:
@@ -43,5 +57,5 @@ async def migrated_db(db: AsyncConnection) -> AsyncConnection:
         text("SELECT count(*) FROM information_schema.tables WHERE table_name = 'chunks'")
     )
     if result.scalar_one() == 0:
-        pytest.skip("schema not migrated; run: uv run alembic upgrade head")
+        _unavailable("schema not migrated; run: uv run alembic upgrade head")
     return db
