@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to the same branch makes the previous run irrelevant. Without
+# this, a busy branch queues runs that are already superseded.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+
+    services:
+      # The same image as docker-compose.yml. Postgres alone would fail the
+      # first migration, which enables the vector extension.
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: wealthpilot
+          POSTGRES_PASSWORD: wealthpilot
+          POSTGRES_DB: wealthpilot
+        ports:
+          - 5432:5432
+        # Steps start as soon as the container is reported healthy, so this
+        # check is what prevents a race with the first migration.
+        options: >-
+          --health-cmd "pg_isready -U wealthpilot -d wealthpilot"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      APP_ENV: ci
+      # app/config.py composes the DSN from these. No .env exists in CI, so
+      # anything not set here falls through to the defaults in Settings.
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: wealthpilot
+      POSTGRES_PASSWORD: wealthpilot
+      POSTGRES_DB: wealthpilot
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        # Pinned to an exact version: unlike actions/checkout and
+        # pnpm/action-setup, setup-uv publishes no floating major tag, so
+        # "@v10" does not resolve.
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          # Invalidate the cache when the lockfile changes, not on every run.
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install dependencies
+        # --frozen fails if uv.lock disagrees with pyproject.toml, so a
+        # lockfile someone forgot to commit breaks CI rather than resolving
+        # to different versions than they tested against.
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy app
+
+      - name: Run migrations
+        # Before pytest: the schema tests assert against real tables, and the
+        # migrations themselves are under test here — a broken revision fails
+        # the build at this step rather than as a confusing test error.
+        run: uv run alembic upgrade head
+
+      - name: Verify the schema matches the models
+        # Catches a model change committed without its migration, which would
+        # otherwise only surface when someone next ran autogenerate.
+        run: uv run alembic check
+
+      - name: Test
+        # CI=true makes the database fixtures fail instead of skip, so a
+        # misconfigured service container cannot pass as a green build.
+        run: uv run pytest -q
+
+      - name: Verify the seed script runs end to end
+        # The seed is the input to every eval, so "it imports" is not enough.
+        # --reset makes the step idempotent: without it the script exits
+        # non-zero when data already exists, which would make this step depend
+        # on whether an earlier step happened to populate the database.
+        run: uv run python -m app.scripts.seed --reset
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build

@@ -15,8 +15,9 @@ docker compose up -d db
 
 # backend (run from backend/)
 uv sync
-uv run fastapi dev app/main.py
-uv run pytest                      # unit + integration
+uv run uvicorn app.main:app --reload
+uv run pytest                      # unit + integration, without LLM tests
+uv run pytest -m llm               # opt in to tests that call a real provider
 uv run ruff check . && uv run ruff format .
 uv run mypy app
 uv run alembic revision --autogenerate -m "msg" && uv run alembic upgrade head
