@@ -48,7 +48,7 @@ docker compose up -d db         # Postgres + pgvector
 cd backend && uv sync && uv run alembic upgrade head
 uv run python -m app.scripts.seed        # synthetic clients, portfolios, docs
 uv run python -m app.scripts.ingest      # embed documents
-uv run fastapi dev app/main.py           # http://localhost:8000
+uv run uvicorn app.main:app --reload     # http://localhost:8000
 cd ../frontend && pnpm i && pnpm dev     # http://localhost:5173
 ```
 
