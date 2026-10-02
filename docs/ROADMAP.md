@@ -10,7 +10,7 @@ Work top to bottom. Each phase ends with something that runs and a number you ca
 - [x] `docker-compose.yml` with `pgvector/pgvector:pg16`
 - [x] Backend: uv project, FastAPI app with `/health`, settings via `pydantic-settings`, ruff, mypy, pytest
 - [x] Alembic migrations for all tables (documents, chunks, firm data, approvals, audit_log, usage)
-- [ ] `scripts/seed.py`: synthetic firm (≈50 clients, 200 accounts, 60 instruments, 2 years of prices and transactions) with a fixed random seed
+- [x] `scripts/seed.py`: synthetic firm (≈50 clients, 200 accounts, 60 instruments, 2 years of prices and transactions) with a fixed random seed
 - [ ] Synthetic document set (8–12 docs) in `backend/data/docs/`
 - [ ] Frontend: Vite + React + TS + Tailwind + shadcn/ui, app shell with sidebar routes
 - [ ] GitHub Actions: lint, typecheck, unit tests for both apps
