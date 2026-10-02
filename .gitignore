@@ -1,0 +1,37 @@
+# Secrets — see app/config.py; .env.example is the committed template
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+playwright-report/
+test-results/
+
+# Eval reports: baseline.json is committed on purpose, timestamped runs are not
+evals/reports/*.json
+!evals/reports/baseline.json
+
+# Local model caches (sentence-transformers reranker)
+.cache/
+models/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
