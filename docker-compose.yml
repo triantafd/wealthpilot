@@ -1,0 +1,37 @@
+# Local development infrastructure. Production runs on RDS (Phase 9), so this
+# file is local-only: one Postgres carrying vectors, full-text search and the
+# firm's relational data, per docs/ARCHITECTURE.md section 1.
+#
+#   docker compose up -d db
+#
+# Defaults below make that work with no .env file. Override any of them in .env
+# (gitignored) — compose reads it automatically.
+
+services:
+  db:
+    # pgvector on top of Postgres 16: the `vector` extension is preinstalled but
+    # still has to be enabled per database, which an Alembic migration does.
+    image: pgvector/pgvector:pg16
+    container_name: wealthpilot-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-wealthpilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wealthpilot}
+      POSTGRES_DB: ${POSTGRES_DB:-wealthpilot}
+    ports:
+      # Overridable so a Postgres already running on 5432 doesn't block startup.
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Migrations and the seed script run straight after `up -d`, so readiness
+      # has to be a real check — the port accepts connections before Postgres
+      # will answer queries.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wealthpilot} -d ${POSTGRES_DB:-wealthpilot}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  pgdata:

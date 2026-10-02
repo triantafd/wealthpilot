@@ -7,7 +7,7 @@ Work top to bottom. Each phase ends with something that runs and a number you ca
 ## Phase 0 — Foundations (2–3 days)
 
 - [x] Monorepo layout from `docs/ARCHITECTURE.md` §9
-- [ ] `docker-compose.yml` with `pgvector/pgvector:pg16`
+- [x] `docker-compose.yml` with `pgvector/pgvector:pg16`
 - [ ] Backend: uv project, FastAPI app with `/health`, settings via `pydantic-settings`, ruff, mypy, pytest
 - [ ] Alembic migrations for all tables (documents, chunks, firm data, approvals, audit_log, usage)
 - [ ] `scripts/seed.py`: synthetic firm (≈50 clients, 200 accounts, 60 instruments, 2 years of prices and transactions) with a fixed random seed
