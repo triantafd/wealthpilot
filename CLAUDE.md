@@ -66,3 +66,26 @@ Use `security-reviewer` after any change under `app/tools/`, `app/guardrails/` o
 - `add-agent-tool` — adding or changing a tool
 - `run-evals` — running, comparing and interpreting evals
 - `improve-retrieval` — any retrieval experiment
+
+## Git workflow
+
+- Commits use only the user's git identity. Never add Co-Authored-By lines or "Generated with Claude Code" footers.
+- After finishing a task, do NOT commit yet. First show:
+  1. A short summary of what was built and why
+  2. The list of changed files
+  3. Test and lint results
+  4. Anything I should check or learn from this task
+- Commit only after I reply "commit". Then stop and wait for "next" before starting the next task.
+- Commit format: conventional commits with a scope, e.g.
+  `feat(backend): ...`, `chore(infra): ...`, `feat(frontend): ...`,
+  `test(evals): ...`, `docs: ...`.
+  Subject under 72 characters, imperative mood ("add", not "added").
+  Body: `Phase N, task M` plus one or two lines on why, if not obvious.
+- One commit per roadmap task. Tick the task's checkbox in
+  docs/ROADMAP.md in the same commit.
+- Default branch is `main`. Each roadmap phase gets its own branch
+  (`phase-N-short-name`), with one commit per task on it.
+- When a phase is complete and CI is green, open a PR into `main`
+  titled "Phase N: <name>" with a summary of what was built and the
+  phase's results. Merge with a merge commit (keep the task commits).
+- Never commit directly to `main` after the initial docs commit.
