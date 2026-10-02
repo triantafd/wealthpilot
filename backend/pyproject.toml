@@ -11,6 +11,11 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
     "pydantic-settings>=2.6",
+    "alembic>=1.14",
+    "asyncpg>=0.30",
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3",
+    "sqlalchemy[asyncio]>=2.0",
 ]
 
 # `app` is installed into the venv rather than merely being on sys.path, so

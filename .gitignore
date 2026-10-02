@@ -27,9 +27,11 @@ test-results/
 evals/reports/*.json
 !evals/reports/baseline.json
 
-# Local model caches (sentence-transformers reranker)
-.cache/
-models/
+# Local model caches (sentence-transformers reranker).
+# Anchored to the repo root: an unanchored "models/" also matches source
+# directories such as backend/app/db/models/.
+/.cache/
+/models/
 
 # OS / editor
 .DS_Store
