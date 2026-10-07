@@ -37,8 +37,9 @@ The corpus is 10 documents and 81 chunks, so `k=6` already covers 7.4% of it.
 hit@6 is close to saturated by the size of the corpus rather than by the
 quality of retrieval: the Phase 1 vector-only baseline scores 97% on it, which
 leaves three points of headroom and makes it a weak gate for the Phase 3
-comparison. On the same run MRR is 0.767 and hit@1 is 67% — a third of cases do
-not put the right source first, which is exactly what reranking should fix.
+comparison. On the frozen baseline MRR is 0.747 and hit@1 is 62.9% — over a
+third of cases do not put the right source first, which is exactly what
+reranking should fix.
 
 hit@k is kept rather than dropped. It becomes informative again as the corpus
 grows, and ARCHITECTURE section 2 anticipates adding public regulatory PDFs as
