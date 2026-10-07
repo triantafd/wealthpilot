@@ -19,6 +19,8 @@ dependencies = [
     "pyyaml>=6.0",
     "openai>=1.60",
     "langchain-text-splitters>=0.3",
+    "langchain>=0.3",
+    "langchain-openai>=0.2",
 ]
 
 # `app` is installed into the venv rather than merely being on sys.path, so

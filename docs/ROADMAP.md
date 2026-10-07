@@ -21,7 +21,7 @@ Work top to bottom. Each phase ends with something that runs and a number you ca
 
 - [x] Port incremental ingestion from `chatapp-rag-streaming` (hash-based instead of mtime)
 - [x] Vector-only retrieval (this is the baseline on purpose)
-- [ ] Answer generation with citations (document + page + short verbatim quote)
+- [x] Answer generation with citations (document + page + short verbatim quote)
 - [ ] `evals/datasets/rag_qa.jsonl`: 50+ questions with expected answer and expected source (doc, page)
 - [ ] `evals/run.py`: hit@k, MRR, Ragas faithfulness and answer relevancy, latency, cost
 - [ ] Save `evals/reports/baseline.json`
