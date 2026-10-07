@@ -159,16 +159,10 @@ async def test_pages_and_order_survive_the_round_trip(db_session: AsyncSession) 
 
 
 async def test_the_real_corpus_ingests(db_session: AsyncSession) -> None:
-    """Ten documents, the real page markers, the real chunker.
-
-    `force` because the development database may already hold this corpus at the
-    same hash, in which case ingestion correctly does nothing. The test is about
-    chunking and embedding the real files, not about the incremental decision —
-    that is covered by test_ingest_plan.py.
-    """
+    """Ten documents, the real page markers, the real chunker."""
     embedder = FakeEmbedder()
 
-    report = await run_ingest(load_documents(DOCS_DIR), db_session, embedder, force=True)
+    report = await run_ingest(load_documents(DOCS_DIR), db_session, embedder)
 
     assert len(report.indexed) == 10
     assert report.chunks_written > 50
@@ -180,7 +174,7 @@ async def test_one_embedding_call_per_document_not_per_chunk(db_session: AsyncSe
     """A chunk-at-a-time loop would be 81 HTTP requests instead of 10."""
     embedder = FakeEmbedder()
 
-    await run_ingest(load_documents(DOCS_DIR), db_session, embedder, force=True)
+    await run_ingest(load_documents(DOCS_DIR), db_session, embedder)
 
     assert len(embedder.calls) == 10
 

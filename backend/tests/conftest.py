@@ -1,13 +1,37 @@
-"""Shared fixtures."""
+"""Shared fixtures.
+
+Database tests run against a **throwaway database**, not the one you develop
+against. Three times during Phase 0 and 1 a test passed locally and then broke
+the moment real data arrived — after `seed`, after `ingest`, after the corpus
+landed. Each time the test was reading rows somebody else had committed.
+
+A rolled-back transaction, which these fixtures have always had, stops a test
+*leaking writes*. It does nothing about a test *reading* what is already
+committed. Only a separate database removes that shared state, so:
+
+* a session-scoped fixture drops and recreates `<database>_test` and runs the
+  real migrations against it, and
+* every test still runs inside a transaction that is rolled back, so tests stay
+  isolated from each other as well.
+
+The result is that a test behaves identically whether your development database
+is empty or holds the full corpus — and nothing a test does can damage it.
+"""
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 
+import psycopg
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, create_async_engine
 
 from app.config import get_settings
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 # GitHub Actions sets CI=true. Locally a missing database is a convenience and
 # these tests skip; in CI it is a broken build, because a silent skip means the
@@ -22,42 +46,98 @@ def _unavailable(reason: str) -> None:
     pytest.skip(reason)
 
 
-@pytest.fixture
-async def db() -> AsyncIterator[AsyncConnection]:
-    """A connection to the local Postgres, or skip if it is not running.
+def _test_database_name() -> str:
+    return f"{get_settings().postgres_db}_test"
 
-    Skipping rather than failing keeps `uv run pytest` green for someone who has
-    not run `docker compose up -d db` yet, while still giving real coverage when
-    the database is there.
 
-    Everything runs inside a transaction that is rolled back, so tests cannot
-    leave rows behind or see each other's writes.
+def _url(database: str, *, driver: str) -> str:
+    settings = get_settings()
+    password = settings.postgres_password.get_secret_value()
+    return (
+        f"postgresql+{driver}://{settings.postgres_user}:{password}"
+        f"@{settings.postgres_host}:{settings.postgres_port}/{database}"
+    )
+
+
+def _maintenance_dsn() -> str:
+    """A libpq DSN for the `postgres` database, used to create and drop."""
+    settings = get_settings()
+    password = settings.postgres_password.get_secret_value()
+    return (
+        f"host={settings.postgres_host} port={settings.postgres_port} "
+        f"user={settings.postgres_user} password={password} dbname=postgres"
+    )
+
+
+@pytest.fixture(scope="session")
+def test_database() -> Iterator[str]:
+    """Recreate the test database and migrate it once per run.
+
+    Synchronous on purpose: CREATE DATABASE cannot run inside a transaction, and
+    a session-scoped async fixture would drag in an event-loop-scope problem for
+    no benefit.
+
+    Migrated with Alembic rather than `metadata.create_all()` so the schema
+    under test is the one the migrations actually produce — including the vector
+    extension, the generated tsvector and the HNSW index, none of which come
+    from the models alone.
     """
-    engine = create_async_engine(get_settings().database_url)
+    name = _test_database_name()
+
     try:
-        conn = await engine.connect()
-    except Exception as exc:
-        await engine.dispose()
+        connection = psycopg.connect(_maintenance_dsn(), autocommit=True, connect_timeout=5)
+    except psycopg.Error as exc:
         _unavailable(f"Postgres not reachable ({type(exc).__name__}); run: docker compose up -d db")
         raise  # unreachable; _unavailable always raises
 
-    transaction = await conn.begin()
+    with connection, connection.cursor() as cursor:
+        # FORCE terminates any connection left over from an interrupted run,
+        # which would otherwise make the drop hang.
+        cursor.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+        cursor.execute(f'CREATE DATABASE "{name}"')
+
+    config = Config(str(BACKEND_DIR / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_DIR / "app" / "db" / "migrations"))
+    config.set_main_option("sqlalchemy.url", _url(name, driver="psycopg"))
+    command.upgrade(config, "head")
+
+    yield _url(name, driver="asyncpg")
+
+    # Left in place deliberately: after a failure it is the only copy of what
+    # the test saw, and the next run drops it anyway.
+
+
+@pytest.fixture
+async def db(test_database: str) -> AsyncIterator[AsyncConnection]:
+    """A connection to the test database, inside a transaction that rolls back.
+
+    Two layers of isolation, doing different jobs: the separate database keeps
+    development data out, and the rollback keeps tests out of each other's way.
+    """
+    engine = create_async_engine(test_database)
+    connection = await engine.connect()
+    transaction = await connection.begin()
     try:
-        yield conn
+        yield connection
     finally:
         await transaction.rollback()
-        await conn.close()
+        await connection.close()
         await engine.dispose()
 
 
 @pytest.fixture
 async def migrated_db(db: AsyncConnection) -> AsyncConnection:
-    """As `db`, but skips unless migrations have been applied."""
+    """As `db`. The schema is guaranteed by the session fixture's migration run.
+
+    Kept as a separate name because most tests read better asking for a
+    *migrated* database, and because a check here would have caught the
+    schema-missing case before the test database existed.
+    """
     result = await db.execute(
         text("SELECT count(*) FROM information_schema.tables WHERE table_name = 'chunks'")
     )
-    if result.scalar_one() == 0:
-        _unavailable("schema not migrated; run: uv run alembic upgrade head")
+    if result.scalar_one() == 0:  # pragma: no cover - the session fixture migrates
+        pytest.fail("test database is not migrated")
     return db
 
 
