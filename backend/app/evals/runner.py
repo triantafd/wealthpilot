@@ -12,7 +12,12 @@ from app.config import get_settings
 from app.evals.dataset import EvalCase
 from app.evals.metrics import cost_usd, hit_at_k, mean, percentile, reciprocal_rank
 from app.rag.embeddings import Embedder
-from app.rag.generate import AnswerResult, answer_question, normalise_quote
+from app.rag.generate import (
+    AnswerResult,
+    answer_question,
+    has_prose_reference,
+    normalise_quote,
+)
 from app.rag.retrieve import search
 
 # Secondary, and reported as such: at 81 chunks k=6 covers 7.4% of the corpus.
@@ -39,6 +44,11 @@ class CaseResult:
     citation_validity: float = 1.0
     must_include_found: bool = True
     refusal_correct: bool = True
+    # True when the answer keeps page and section references out of its
+    # prose, where nothing can check them.
+    no_prose_reference: bool = True
+    # Report-only: what the model wrote before stripping removed it.
+    prose_refs_written: int = 0
     faithfulness: float | None = None
     answer_relevancy: float | None = None
     latency_ms: float = 0.0
@@ -77,6 +87,8 @@ def score_case(case: EvalCase, result: AnswerResult, latency_ms: float, model: s
         # adviser to read it.
         must_include_found=all(normalise_quote(f) in answer for f in case.must_include),
         refusal_correct=result.is_refusal == case.expect_refusal,
+        no_prose_reference=not has_prose_reference(result.answer),
+        prose_refs_written=result.prose_references_written,
         latency_ms=latency_ms,
         input_tokens=result.usage.input_tokens,
         output_tokens=result.usage.output_tokens,
@@ -217,6 +229,11 @@ def aggregate(results: list[CaseResult]) -> dict[str, Any]:
         metrics["citations.validity"] = mean([r.citation_validity for r in answered])
         metrics["answer.must_include"] = mean([float(r.must_include_found) for r in answered])
         metrics["answer.refusal_correct"] = mean([float(r.refusal_correct) for r in results])
+        metrics["answer.no_prose_refs"] = mean([float(r.no_prose_reference) for r in answered])
+        # Report-only, and a count rather than a fraction: the gate above is
+        # guaranteed by code, so this is the only place the model's own
+        # behaviour stays visible.
+        metrics["answer.prose_refs_written"] = float(sum(r.prose_refs_written for r in answered))
     if judged:
         metrics["answer.faithfulness"] = mean([r.faithfulness or 0.0 for r in judged])
         metrics["answer.relevancy"] = mean([r.answer_relevancy or 0.0 for r in judged])

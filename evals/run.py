@@ -24,6 +24,7 @@ from app.evals.report import (
     build_report,
     load_baseline,
     render_breakdowns,
+    render_case_diff,
     render_spread,
     render_table,
     save_report,
@@ -74,6 +75,7 @@ async def _run(args: argparse.Namespace) -> int:
     print()
     print(render_table(report, baseline))
     print(render_breakdowns(results))
+    print(render_case_diff(results, baseline))
     if spreads:
         print(render_spread(spreads))
 

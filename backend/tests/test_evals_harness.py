@@ -290,3 +290,68 @@ def test_a_baseline_from_a_different_suite_is_not_compared() -> None:
     assert "not compared" in rendered
     assert "REGRESSED" not in rendered
     assert "vs baseline" not in rendered
+
+
+def test_prose_references_are_scored_and_gateable() -> None:
+    """Enforced in code because the prompt rule is followed about 90% of the
+    time, and the remaining 10% is an unverifiable claim in an answer."""
+    from app.evals.report import GATEABLE
+
+    assert "answer.no_prose_refs" in GATEABLE
+
+    clean = score_case(case(), answer("£1,500 a year.", chunks=[("fee-schedule", 1)]), 1.0, "m")
+    dirty = score_case(
+        case(),
+        answer("£1,500 a year. See *Schedule of Fees*, page 2.", chunks=[("fee-schedule", 1)]),
+        1.0,
+        "m",
+    )
+
+    assert clean.no_prose_reference
+    assert not dirty.no_prose_reference
+    assert aggregate([clean, dirty])["answer.no_prose_refs"] == 0.5
+
+
+def test_the_case_diff_names_what_flipped_in_both_directions() -> None:
+    """An aggregate that moved says something changed; this says which case."""
+    from app.evals.report import render_case_diff
+
+    broke = score_case(
+        case(must_include=["£9.95"]), answer("No charge.", chunks=[("fee-schedule", 1)]), 1.0, "m"
+    )
+    broke.case_id = "zt-broke"
+    fixed = score_case(case(), answer("£1,500.", chunks=[("fee-schedule", 1)]), 1.0, "m")
+    fixed.case_id = "zt-fixed"
+
+    baseline = {
+        "cases": [
+            {"case_id": "zt-broke", "must_include_found": True},
+            {"case_id": "zt-fixed", "must_include_found": False},
+        ]
+    }
+
+    rendered = render_case_diff([broke, fixed], baseline)
+
+    assert "zt-broke [must_include]" in rendered
+    assert "zt-fixed [must_include]" in rendered
+    assert "now failing (1)" in rendered
+    assert "now passing (1)" in rendered
+
+
+def test_the_case_diff_says_so_when_nothing_moved() -> None:
+    from app.evals.report import render_case_diff
+
+    scored = score_case(case(), answer("£1,500.", chunks=[("fee-schedule", 1)]), 1.0, "m")
+    baseline = {"cases": [{"case_id": scored.case_id, "must_include_found": True}]}
+
+    assert "no case changed" in render_case_diff([scored], baseline)
+
+
+def test_a_count_metric_is_not_printed_as_a_percentage() -> None:
+    """answer.prose_refs_written shares a prefix with the fraction metrics;
+    without an exception it printed 16.3 references as "1633.3%"."""
+    from app.evals.report import _format
+
+    assert "%" not in _format("answer.prose_refs_written", 16.3)
+    assert "16.3" in _format("answer.prose_refs_written", 16.3)
+    assert "%" in _format("answer.must_include", 0.938)

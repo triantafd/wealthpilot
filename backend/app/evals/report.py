@@ -23,6 +23,10 @@ _FRACTIONS = (
     "answer.",
 )
 
+# Counts that happen to share a prefix with the fractions above. Without this,
+# "16.3 references written" printed as "1633.3%".
+_COUNTS = ("answer.prose_refs_written",)
+
 
 def git_dirty() -> bool:
     """Whether the working tree had uncommitted changes when the run started.
@@ -86,6 +90,7 @@ GATEABLE = (
     "citations.validity",
     "answer.must_include",
     "answer.refusal_correct",
+    "answer.no_prose_refs",
 )
 
 
@@ -123,6 +128,8 @@ def build_report(
 
 
 def _format(name: str, value: float) -> str:
+    if name in _COUNTS:
+        return f"{value:>8.1f}"
     if name.startswith(_FRACTIONS):
         return f"{value:>8.1%}"
     if "cost" in name:
@@ -160,7 +167,7 @@ def render_table(report: dict[str, Any], baseline: dict[str, Any] | None = None)
         row = f"  {name:<{width}}  {_format(name, value)}"
         delta = deltas.get(name)
         if delta is not None and abs(delta.change) > 1e-9:
-            pct = name.startswith(_FRACTIONS)
+            pct = name.startswith(_FRACTIONS) and name not in _COUNTS
             change = f"{delta.change:+.1%}" if pct else f"{delta.change:+.3f}"
             marker = "  REGRESSED" if delta.regressed and pct else ""
             row += f"   vs baseline {change}{marker}"
@@ -252,4 +259,51 @@ def render_spread(spreads: dict[str, Spread]) -> str:
     for name, spread in spreads.items():
         flag = "" if name in GATEABLE else "   report-only"
         lines.append(f"    {name:<{width}}  {spread.render()}{flag}")
+    return "\n".join(lines)
+
+
+# Per-case booleans worth diffing against a baseline. An aggregate that moved
+# says something changed; this says which case, which is the difference between
+# investigating and guessing.
+_FLIPPABLE = (
+    ("must_include_found", "must_include"),
+    ("refusal_correct", "refusal"),
+    ("no_prose_reference", "prose refs"),
+    ("hit_at_1", "hit@1"),
+)
+
+
+def render_case_diff(results: list[CaseResult], baseline: dict[str, Any] | None) -> str:
+    """Which cases flipped, in both directions, against a baseline run.
+
+    Reported before any explanation of why. A metric with a +/-0.000 spread that
+    moves after a change was most likely moved by that change, and the first
+    step is to name the cases rather than reason about the average.
+    """
+    if not baseline or not baseline.get("cases"):
+        return ""
+
+    before = {row["case_id"]: row for row in baseline["cases"]}
+    improved: list[str] = []
+    worsened: list[str] = []
+
+    for result in results:
+        previous = before.get(result.case_id)
+        if previous is None:
+            continue
+        for field, label in _FLIPPABLE:
+            was = previous.get(field)
+            now = getattr(result, field, None)
+            if was is None or now is None or was == now:
+                continue
+            (improved if now else worsened).append(f"{result.case_id} [{label}]")
+
+    if not improved and not worsened:
+        return "\n  no case changed its pass or fail state against the baseline"
+
+    lines = ["\n  per-case changes against the baseline"]
+    for label, cases in (("now failing", worsened), ("now passing", improved)):
+        if cases:
+            lines.append(f"    {label} ({len(cases)})")
+            lines += [f"      {case}" for case in sorted(cases)]
     return "\n".join(lines)

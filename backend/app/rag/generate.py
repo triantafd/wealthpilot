@@ -103,6 +103,10 @@ class AnswerResult:
     retrieved: list[RetrievedChunk]
     checks: list[CitationCheck]
     usage: TokenUsage = TokenUsage()
+    # How many page or section references the model wrote into its prose,
+    # counted before they were stripped. Reported but not gated: stripping
+    # must not hide what the model actually does.
+    prose_references_written: int = 0
 
     @property
     def citation_validity(self) -> float:
@@ -126,6 +130,67 @@ class AnswerResult:
         Only an answer that opens with it is a refusal.
         """
         return self.answer.strip().startswith(NO_ANSWER)
+
+
+# Page and section references written into the answer prose. The page in a
+# structured citation is checked against what was retrieved; one written into a
+# sentence is checked by nothing, and the same question produced "page 1" in one
+# run and "page 5" in another.
+#
+# Two prompt attempts could not stop this reliably — a rule moved it from 85% of
+# answers clean to 92% and stalled, and the second attempt cost a correctness
+# case. So it is removed in code, where the result is certain, rather than
+# negotiated for in a prompt.
+#
+# What is stripped is deliberately narrow:
+#
+#   * anything parenthetical containing a page or section number,
+#   * a comma-attached ", page 3" or ", section 2", which in practice follows a
+#     document name,
+#   * a bare "page 3" or "pages 2 and 3", since a page number is never content
+#     in this corpus.
+#
+# A bare "section 12" is left alone. It may be content — a statute or contract
+# section — and silently deleting it would change what the answer says.
+_PAREN_REFERENCE = re.compile(r"\s*\([^)]*\b(?:page|section)s?\s*\.?\s*\d+[^)]*\)", re.I)
+_ATTACHED_REFERENCE = re.compile(
+    r",\s*(?:page|section)s?\s*\.?\s*\d+(?:\s*(?:and|&|,)\s*\d+)*", re.I
+)
+_BARE_PAGE_REFERENCE = re.compile(
+    r"\s*\b(?:on\s+|see\s+)?pages?\s*\.?\s*\d+(?:\s*(?:and|&|,)\s*\d+)*", re.I
+)
+
+# Used only to count what the model produced, before anything is removed, so
+# stripping cannot hide the behaviour from the eval.
+_ANY_REFERENCE = re.compile(
+    r"\([^)]*\b(?:page|section)s?\s*\d+[^)]*\)"
+    r"|,\s*(?:page|section)s?\s*\.?\s*\d+"
+    r"|\bpages?\s*\.?\s*\d+",
+    re.I,
+)
+
+
+def count_prose_references(answer: str) -> int:
+    """How many page or section references the model wrote into its prose."""
+    return len(_ANY_REFERENCE.findall(answer))
+
+
+def has_prose_reference(answer: str) -> bool:
+    """Whether any reference remains after stripping. The eval gates on this."""
+    return bool(_ANY_REFERENCE.search(answer))
+
+
+def strip_prose_references(answer: str) -> str:
+    """Remove page and section references from an answer's prose.
+
+    Leaves a bare section number alone; see the note above.
+    """
+    cleaned = _PAREN_REFERENCE.sub("", answer)
+    cleaned = _ATTACHED_REFERENCE.sub("", cleaned)
+    cleaned = _BARE_PAGE_REFERENCE.sub("", cleaned)
+    # Removing a trailing reference can leave " ." or a doubled space behind.
+    cleaned = re.sub(r"\s+([.,;:])", r"\1", cleaned)
+    return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
 
 
 # Markdown emphasis and code ticks are our formatting, not the document's
@@ -243,11 +308,14 @@ async def generate_answer(
 
     return AnswerResult(
         question=question,
-        answer=generated.answer,
+        # Stripped here rather than at the eval boundary, so what an adviser
+        # reads and what is measured are the same text.
+        answer=strip_prose_references(generated.answer),
         citations=generated.citations,
         retrieved=chunks,
         checks=verify_citations(generated.citations, chunks),
         usage=usage,
+        prose_references_written=count_prose_references(generated.answer),
     )
 
 

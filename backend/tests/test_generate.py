@@ -459,3 +459,89 @@ def test_a_changed_number_is_still_caught() -> None:
     assert not verify_citations([cite("the minimum annual advisory fee is £2,500")], chunks)[
         0
     ].quote_found
+
+
+# --- Prose page and section references ---------------------------------------
+# Two prompt attempts could not stop these reliably: a rule moved it from 85%
+# of answers clean to 92% and stalled, and the second attempt cost a
+# correctness case. They are removed in code instead, where the result is
+# certain. The count before stripping is kept so the fix cannot hide what the
+# model does.
+
+
+@pytest.mark.parametrize(
+    ("written", "expected"),
+    [
+        ("See *Mandates and Rebalancing*, page 1.", "See *Mandates and Rebalancing*."),
+        ("The fee is £1,500 (fee-schedule, page 3).", "The fee is £1,500."),
+        ("See *Suitability Framework*, section 8.", "See *Suitability Framework*."),
+        ("Covered on pages 2 and 3.", "Covered."),
+        ("The limit is 15% (Investment Policy, Section 5).", "The limit is 15%."),
+    ],
+)
+def test_a_reference_attached_to_a_document_or_in_brackets_is_stripped(
+    written: str, expected: str
+) -> None:
+    from app.rag.generate import strip_prose_references
+
+    assert strip_prose_references(written) == expected
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "Permitted under section 12 of the trust deed.",
+        "The breach falls under section 7 and must be reported.",
+        "Section 4 of the agreement governs this.",
+    ],
+)
+def test_a_bare_section_number_is_left_alone(written: str) -> None:
+    """It may be content — a statute or contract section — and deleting it would
+    change what the answer says. Only a reference attached to a document name or
+    sitting in brackets is removed."""
+    from app.rag.generate import strip_prose_references
+
+    assert strip_prose_references(written) == written
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "The minimum annual advisory fee is £1,500, regardless of portfolio value.",
+        "The FAQ names *Client Investment Restrictions* as the governing document.",
+        "No. A single sector fund is capped at 15% of account value.",
+    ],
+)
+def test_an_answer_with_no_reference_is_untouched(written: str) -> None:
+    from app.rag.generate import strip_prose_references
+
+    assert strip_prose_references(written) == written
+
+
+def test_stripping_does_not_leave_dangling_punctuation() -> None:
+    from app.rag.generate import strip_prose_references
+
+    assert strip_prose_references("The fee is £1,500 (fee-schedule, page 1) a year.") == (
+        "The fee is £1,500 a year."
+    )
+
+
+def test_references_are_counted_before_they_are_stripped() -> None:
+    """Otherwise the fix would hide the behaviour from the eval permanently."""
+    from app.rag.generate import count_prose_references, strip_prose_references
+
+    written = "The fee is £1,500 (fee-schedule, page 1). See *Mandates*, page 2."
+
+    assert count_prose_references(written) == 2
+    assert count_prose_references(strip_prose_references(written)) == 0
+
+
+def test_nothing_remains_for_the_gate_to_catch_after_stripping() -> None:
+    from app.rag.generate import has_prose_reference, strip_prose_references
+
+    for written in (
+        "See *Mandates and Rebalancing*, page 1.",
+        "The fee is £1,500 (fee-schedule, page 3).",
+        "Covered on pages 2 and 3.",
+    ):
+        assert not has_prose_reference(strip_prose_references(written))
