@@ -108,3 +108,45 @@ def test_compare_pairs_only_metrics_present_in_both() -> None:
     deltas = compare({"a": 1.0, "new": 2.0}, {"a": 0.5, "gone": 9.0})
     assert [d.name for d in deltas] == ["a"]
     assert deltas[0].change == pytest.approx(0.5)
+
+
+# --- Spread across repeated runs ---------------------------------------------
+
+
+def test_spread_of_identical_runs_is_zero() -> None:
+    """Deterministic metrics should look exactly like this, which is what makes
+    them safe to gate on."""
+    from app.evals.metrics import summarise
+
+    spread = summarise([0.75, 0.75, 0.75])
+
+    assert spread.runs == 3
+    assert spread.stdev == 0.0
+    assert spread.spread == 0.0
+
+
+def test_spread_reports_the_range_and_deviation() -> None:
+    from app.evals.metrics import summarise
+
+    spread = summarise([0.60, 0.70, 0.80])
+
+    assert spread.mean == pytest.approx(0.70)
+    assert spread.minimum == pytest.approx(0.60)
+    assert spread.maximum == pytest.approx(0.80)
+    assert spread.spread == pytest.approx(0.20)
+    assert spread.stdev > 0
+
+
+def test_spread_of_a_single_run_has_no_deviation() -> None:
+    """One sample is not evidence of stability; it just has nothing to vary."""
+    from app.evals.metrics import summarise
+
+    spread = summarise([0.42])
+    assert spread.runs == 1
+    assert spread.stdev == 0.0
+
+
+def test_spread_of_nothing_is_empty_rather_than_an_error() -> None:
+    from app.evals.metrics import summarise
+
+    assert summarise([]).runs == 0

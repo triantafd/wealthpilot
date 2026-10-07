@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import REPO_ROOT, get_settings
-from app.evals.metrics import compare
+from app.evals.metrics import Spread, compare, summarise
 from app.evals.runner import CaseResult
 
 REPORTS_DIR = REPO_ROOT / "evals" / "reports"
@@ -22,6 +22,33 @@ _FRACTIONS = (
     "citations.",
     "answer.",
 )
+
+
+def git_dirty() -> bool:
+    """Whether the working tree had uncommitted changes when the run started.
+
+    Without this, `git_sha` is quietly misleading. A baseline is necessarily
+    measured *before* the commit that stores it, so its sha names the parent;
+    if the tree was also dirty, checking out that sha does not reproduce the
+    numbers. Recording the fact is cheaper than discovering it later.
+    """
+    git = shutil.which("git")
+    if git is None:
+        return False
+    try:
+        changed = subprocess.run(  # noqa: S603
+            [git, "status", "--porcelain"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        ).stdout
+    except (subprocess.SubprocessError, OSError):
+        return False
+    # Report files themselves are written by the run; they are not a change to
+    # the code under measurement.
+    return any(line.strip() and "evals/reports/" not in line for line in changed.splitlines())
 
 
 def git_sha() -> str:
@@ -47,13 +74,35 @@ def git_sha() -> str:
         return "unknown"
 
 
-def build_report(suite: str, metrics: dict[str, Any], results: list[CaseResult]) -> dict[str, Any]:
+# Deterministic metrics may gate a build: the same input gives the same number,
+# so a drop is a regression rather than a mood. The ragas metrics are
+# report-only until their variance is known — and relevancy in particular
+# penalises the caveats the prompt explicitly requires, so a "drop" there may
+# mean the answer got more correct.
+GATEABLE = (
+    "retrieval.mrr",
+    "retrieval.hit_at_1",
+    "retrieval.hit_at_6",
+    "citations.validity",
+    "answer.must_include",
+    "answer.refusal_correct",
+)
+
+
+def build_report(
+    suite: str,
+    metrics: dict[str, Any],
+    results: list[CaseResult],
+    *,
+    spreads: dict[str, Spread] | None = None,
+) -> dict[str, Any]:
     """Everything needed to reproduce and compare a run."""
     settings = get_settings()
     return {
         "suite": suite,
         "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "git_sha": git_sha(),
+        "git_dirty": git_dirty(),
         "config": {
             "llm_model": settings.llm_model,
             "embedding_model": settings.embedding_model,
@@ -62,6 +111,8 @@ def build_report(suite: str, metrics: dict[str, Any], results: list[CaseResult])
         },
         "case_count": len(results),
         "metrics": metrics,
+        "gateable": list(GATEABLE),
+        "spread": ({name: asdict(spread) for name, spread in spreads.items()} if spreads else None),
         # contexts are dropped: they are the corpus, and copying them into
         # every report would bloat it without telling you anything the
         # source identifiers do not.
@@ -89,6 +140,18 @@ def render_table(report: dict[str, Any], baseline: dict[str, Any] | None = None)
         f"{report['config']['llm_model']}  ·  {report['git_sha']}",
         "",
     ]
+
+    # Comparing a 27-case smoke run against a 75-case baseline produces
+    # confident nonsense: different questions, different difficulty, and every
+    # difference reads as a regression. Refuse rather than mislead.
+    mismatched = baseline is not None and baseline.get("suite") != report["suite"]
+    if mismatched:
+        lines.append(
+            f"  not compared: baseline is the {baseline['suite']!r} suite, "  # type: ignore[index]
+            f"this run is {report['suite']!r}. Different cases are not comparable."
+        )
+        lines.append("")
+        baseline = None
 
     deltas = {d.name: d for d in compare(metrics, baseline["metrics"])} if baseline else {}
     width = max(len(name) for name in metrics)
@@ -171,3 +234,22 @@ def load_baseline(path: Path | None = None) -> dict[str, Any] | None:
         return None
     loaded: dict[str, Any] = json.loads(target.read_text(encoding="utf-8"))
     return loaded
+
+
+def summarise_runs(runs: list[dict[str, float]]) -> dict[str, Spread]:
+    """Spread of each metric across repeated runs of the same suite."""
+    names = {name for run in runs for name in run}
+    return {name: summarise([run[name] for run in runs if name in run]) for name in sorted(names)}
+
+
+def render_spread(spreads: dict[str, Spread]) -> str:
+    """How much each metric moved across repeat runs."""
+    if not spreads:
+        return ""
+    runs = next(iter(spreads.values())).runs
+    width = max(len(name) for name in spreads)
+    lines = [f"\n  spread across {runs} runs of the same suite  (mean +/-sd [min-max])"]
+    for name, spread in spreads.items():
+        flag = "" if name in GATEABLE else "   report-only"
+        lines.append(f"    {name:<{width}}  {spread.render()}{flag}")
+    return "\n".join(lines)

@@ -68,6 +68,45 @@ def mean(values: Sequence[float]) -> float:
 
 
 @dataclass(frozen=True)
+class Spread:
+    """One metric across repeated runs of the same suite.
+
+    Without this a baseline is a single sample, and the next run moving by two
+    points is indistinguishable from noise. An LLM judge is the main source of
+    that noise; the deterministic metrics should barely move at all, and if they
+    do, something is wrong rather than merely variable.
+    """
+
+    runs: int
+    mean: float
+    minimum: float
+    maximum: float
+    stdev: float
+
+    @property
+    def spread(self) -> float:
+        return self.maximum - self.minimum
+
+    def render(self) -> str:
+        return f"{self.mean:.3f} ±{self.stdev:.3f} [{self.minimum:.3f}-{self.maximum:.3f}]"
+
+
+def summarise(values: Sequence[float]) -> Spread:
+    """Mean, range and population standard deviation across runs."""
+    if not values:
+        return Spread(runs=0, mean=0.0, minimum=0.0, maximum=0.0, stdev=0.0)
+    average = mean(values)
+    variance = mean([(v - average) ** 2 for v in values])
+    return Spread(
+        runs=len(values),
+        mean=average,
+        minimum=min(values),
+        maximum=max(values),
+        stdev=variance**0.5,
+    )
+
+
+@dataclass(frozen=True)
 class Delta:
     """One metric compared against a baseline."""
 

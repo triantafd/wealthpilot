@@ -1,7 +1,6 @@
 """Running the golden cases and scoring them."""
 
 import asyncio
-import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -13,15 +12,11 @@ from app.config import get_settings
 from app.evals.dataset import EvalCase
 from app.evals.metrics import cost_usd, hit_at_k, mean, percentile, reciprocal_rank
 from app.rag.embeddings import Embedder
-from app.rag.generate import AnswerResult, answer_question
+from app.rag.generate import AnswerResult, answer_question, normalise_quote
 from app.rag.retrieve import search
 
 # Secondary, and reported as such: at 81 chunks k=6 covers 7.4% of the corpus.
 HIT_K = 6
-
-
-def _normalise(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip().lower()
 
 
 @dataclass
@@ -63,7 +58,7 @@ def score_case(case: EvalCase, result: AnswerResult, latency_ms: float, model: s
     """Turn one answered case into its metrics. Pure: no IO, no model."""
     retrieved = [(chunk.document_id, chunk.page) for chunk in result.retrieved]
     expected = case.expected_pairs
-    answer = _normalise(result.answer)
+    answer = normalise_quote(result.answer)
 
     scored_retrieval = bool(expected)
     return CaseResult(
@@ -80,7 +75,7 @@ def score_case(case: EvalCase, result: AnswerResult, latency_ms: float, model: s
         citation_validity=result.citation_validity,
         # Checked against the answer, where the fact has to appear for an
         # adviser to read it.
-        must_include_found=all(_normalise(f) in answer for f in case.must_include),
+        must_include_found=all(normalise_quote(f) in answer for f in case.must_include),
         refusal_correct=result.is_refusal == case.expect_refusal,
         latency_ms=latency_ms,
         input_tokens=result.usage.input_tokens,

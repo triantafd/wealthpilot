@@ -128,15 +128,35 @@ class AnswerResult:
         return self.answer.strip().startswith(NO_ANSWER)
 
 
-def _normalise(text: str) -> str:
-    """Collapse whitespace for quote comparison.
+# Markdown emphasis and code ticks are our formatting, not the document's
+# words. The model sees the raw source, so a quote copied from `**£1,500**`
+# carries the asterisks while one copied from the rendered text does not —
+# neither is dishonest.
+_MARKDOWN = re.compile(r"[*_`]")
 
-    The only tolerance allowed. Passages are wrapped at 80 columns, so a quote
-    the model read across a line break differs from the stored text by a newline
-    and nothing else — failing that would measure our line wrapping rather than
-    the model's honesty. Wording, punctuation and spelling must still match.
+# Only at the very end of a quote, where it cannot change meaning: a model that
+# ends a table-cell quote with a full stop has tidied the boundary, not the
+# content.
+_TRAILING_PUNCTUATION = re.compile(r"[.,;:!?|\s]+$")
+
+
+def normalise_quote(text: str) -> str:
+    """Collapse the differences that are ours, not the model's.
+
+    Three tolerances, and no more:
+
+    * **Whitespace.** The corpus is wrapped at a fixed width, so a quote read
+      across a line break differs by a newline and nothing else.
+    * **Markdown emphasis.** See above.
+    * **Trailing punctuation.** The boundary of a quote, not its content.
+
+    Everything else must match: wording, spelling, internal punctuation, and
+    numbers. Tolerating paraphrase would make the check meaningless, and the
+    check is the only reason a citation is worth more than a page reference.
     """
-    return re.sub(r"\s+", " ", text).strip().lower()
+    stripped = _MARKDOWN.sub("", text)
+    collapsed = re.sub(r"\s+", " ", stripped).strip().lower()
+    return _TRAILING_PUNCTUATION.sub("", collapsed)
 
 
 def verify_citations(
@@ -147,12 +167,12 @@ def verify_citations(
     # Searched across every retrieved passage rather than only the cited page:
     # a quote that spans a chunk boundary is a chunking problem, not
     # dishonesty, and scoring it as a hallucination would measure the splitter.
-    passages = [_normalise(chunk.content) for chunk in retrieved]
+    passages = [normalise_quote(chunk.content) for chunk in retrieved]
 
     return [
         CitationCheck(
             citation=citation,
-            quote_found=any(_normalise(citation.quote) in passage for passage in passages),
+            quote_found=any(normalise_quote(citation.quote) in passage for passage in passages),
             document_retrieved=citation.document_id in documents_retrieved,
         )
         for citation in citations

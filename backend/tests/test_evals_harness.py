@@ -211,6 +211,7 @@ def test_the_table_marks_a_regression_against_a_baseline() -> None:
     scored = score_case(case(), answer("£1,500.", chunks=[("other", 9)]), 1.0, "m")
     report = build_report("smoke", aggregate([scored]), [scored])
     baseline = {
+        "suite": "smoke",
         "git_sha": "abc1234",
         "created_at": "2026-01-01T00:00:00+00:00",
         "metrics": {"retrieval.mrr": 1.0},
@@ -219,3 +220,73 @@ def test_the_table_marks_a_regression_against_a_baseline() -> None:
     rendered = render_table(report, baseline)
     assert "REGRESSED" in rendered
     assert "abc1234" in rendered
+
+
+# --- Gate policy -------------------------------------------------------------
+
+
+def test_only_deterministic_metrics_are_gateable() -> None:
+    """A ragas metric moving may mean the judge had a different day. Worse,
+    relevancy penalises the caveats the prompt explicitly requires, so a drop
+    there can mean the answer got more correct."""
+    from app.evals.report import GATEABLE
+
+    assert "answer.faithfulness" not in GATEABLE
+    assert "answer.relevancy" not in GATEABLE
+    assert "retrieval.mrr" in GATEABLE
+    assert "citations.validity" in GATEABLE
+
+
+def test_the_report_records_which_metrics_may_gate() -> None:
+    """CI reads this rather than hardcoding a list that silently drifts."""
+    scored = score_case(case(), answer("£1,500.", chunks=[("fee-schedule", 1)]), 1.0, "m")
+    report = build_report("smoke", aggregate([scored]), [scored])
+
+    assert "retrieval.mrr" in report["gateable"]
+    assert "answer.faithfulness" not in report["gateable"]
+
+
+def test_a_report_without_repeats_carries_no_spread() -> None:
+    scored = score_case(case(), answer("£1,500.", chunks=[("fee-schedule", 1)]), 1.0, "m")
+    assert build_report("smoke", aggregate([scored]), [scored])["spread"] is None
+
+
+def test_repeated_runs_are_summarised_into_the_report() -> None:
+    from app.evals.report import summarise_runs
+
+    scored = score_case(case(), answer("£1,500.", chunks=[("fee-schedule", 1)]), 1.0, "m")
+    spreads = summarise_runs([{"retrieval.mrr": 0.7}, {"retrieval.mrr": 0.9}])
+    report = build_report("all", {"retrieval.mrr": 0.8}, [scored], spreads=spreads)
+
+    assert report["spread"]["retrieval.mrr"]["runs"] == 2
+    assert report["spread"]["retrieval.mrr"]["minimum"] == pytest.approx(0.7)
+
+
+def test_the_report_records_whether_the_tree_was_dirty() -> None:
+    """git_sha alone is misleading: a baseline is measured before the commit
+    that stores it, so its sha names the parent. If the tree was also dirty,
+    checking out that sha does not reproduce the numbers."""
+    scored = score_case(case(), answer("£1,500.", chunks=[("fee-schedule", 1)]), 1.0, "m")
+    report = build_report("smoke", aggregate([scored]), [scored])
+
+    assert "git_dirty" in report
+    assert isinstance(report["git_dirty"], bool)
+
+
+def test_a_baseline_from_a_different_suite_is_not_compared() -> None:
+    """27 smoke cases against a 75-case baseline is different questions at
+    different difficulty; every difference would read as a regression."""
+    scored = score_case(case(), answer("£1,500.", chunks=[("fee-schedule", 1)]), 1.0, "m")
+    report = build_report("smoke", aggregate([scored]), [scored])
+    baseline = {
+        "suite": "all",
+        "git_sha": "abc1234",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "metrics": {"retrieval.mrr": 0.2},
+    }
+
+    rendered = render_table(report, baseline)
+
+    assert "not compared" in rendered
+    assert "REGRESSED" not in rendered
+    assert "vs baseline" not in rendered

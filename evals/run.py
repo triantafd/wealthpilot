@@ -24,8 +24,10 @@ from app.evals.report import (
     build_report,
     load_baseline,
     render_breakdowns,
+    render_spread,
     render_table,
     save_report,
+    summarise_runs,
 )
 from app.evals.runner import aggregate, run_case, run_retrieval_only, score_with_ragas
 from app.llm import get_chat_model
@@ -37,21 +39,34 @@ async def _run(args: argparse.Namespace) -> int:
     embedder = OpenAIEmbedder()
     use_ragas = args.ragas if args.ragas is not None else args.suite != "smoke"
 
-    print(f"Running {len(cases)} case(s) from the {args.suite} suite…", file=sys.stderr)
+    runs: list[dict[str, float]] = []
+    results: list = []
 
     async with get_sessionmaker()() as session:
-        if args.retrieval_only:
-            results = [await run_retrieval_only(session, embedder, case) for case in cases]
-        else:
-            chat_model = get_chat_model(args.model)
-            results = [
-                await run_case(session, embedder, chat_model, case, args.model) for case in cases
-            ]
-            if use_ragas:
-                print("Scoring with ragas…", file=sys.stderr)
-                await score_with_ragas(results, cases)
+        for attempt in range(1, args.repeat + 1):
+            label = f" (run {attempt} of {args.repeat})" if args.repeat > 1 else ""
+            print(
+                f"Running {len(cases)} case(s) from the {args.suite} suite{label}…",
+                file=sys.stderr,
+            )
+            if args.retrieval_only:
+                results = [await run_retrieval_only(session, embedder, case) for case in cases]
+            else:
+                chat_model = get_chat_model(args.model)
+                results = [
+                    await run_case(session, embedder, chat_model, case, args.model)
+                    for case in cases
+                ]
+                if use_ragas:
+                    print("Scoring with ragas…", file=sys.stderr)
+                    await score_with_ragas(results, cases)
+            runs.append(aggregate(results))
 
-    report = build_report(args.suite, aggregate(results), results)
+    # The last run's per-case detail is kept; the headline metrics are the mean
+    # across runs, so a baseline is not a single sample of a noisy process.
+    spreads = summarise_runs(runs) if args.repeat > 1 else {}
+    metrics = {name: spread.mean for name, spread in spreads.items()} if spreads else runs[-1]
+    report = build_report(args.suite, metrics, results, spreads=spreads or None)
     baseline = load_baseline(args.compare) if args.compare else None
     if args.compare and baseline is None:
         print(f"no baseline at {args.compare}; reporting without it", file=sys.stderr)
@@ -59,6 +74,8 @@ async def _run(args: argparse.Namespace) -> int:
     print()
     print(render_table(report, baseline))
     print(render_breakdowns(results))
+    if spreads:
+        print(render_spread(spreads))
 
     path = save_report(report, as_baseline=args.save_baseline)
     print(
@@ -84,6 +101,15 @@ def main() -> None:
         help="skip generation; retrieval metrics only, for comparing retrieval variants",
     )
     parser.add_argument("--model", default=None, help="override LLM_MODEL for this run")
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help=(
+            "run the suite N times and record the spread; the headline metrics become "
+            "the mean, so a baseline is not one sample of a noisy process"
+        ),
+    )
     ragas = parser.add_mutually_exclusive_group()
     ragas.add_argument("--ragas", dest="ragas", action="store_true", default=None)
     ragas.add_argument("--no-ragas", dest="ragas", action="store_false")

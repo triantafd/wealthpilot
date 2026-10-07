@@ -385,3 +385,77 @@ def test_a_whole_refusal_is_still_recognised() -> None:
     result = AnswerResult(question="q", answer=NO_ANSWER, citations=[], retrieved=[], checks=[])
 
     assert result.is_refusal
+
+
+# --- Quote tolerances --------------------------------------------------------
+# Three differences are ours, not the model's, and are tolerated. Everything
+# else must still fail, or the check stops being worth more than a page
+# reference. Each tolerance below was added only after inspecting a real
+# invalid citation and classifying it as a verifier artefact.
+
+BOLD_SOURCE = "The minimum annual advisory fee is **£1,500**, regardless of portfolio value."
+TABLE_SOURCE = "| `JISA` | Not before the child's 18th birthday, except on terminal illness |"
+
+
+def cite(quote: str, document_id: str = "d", page: int = 1) -> Citation:
+    return Citation(document_id=document_id, page=page, quote=quote)
+
+
+def test_a_quote_without_the_markdown_emphasis_still_matches() -> None:
+    """The model sees raw markdown; quoting the rendered text is not a lie."""
+    chunks = [chunk("d", 1, BOLD_SOURCE)]
+    citation = cite("The minimum annual advisory fee is £1,500")
+
+    assert verify_citations([citation], chunks)[0].quote_found
+
+
+def test_a_quote_keeping_the_markdown_also_matches() -> None:
+    chunks = [chunk("d", 1, BOLD_SOURCE)]
+    citation = cite("The minimum annual advisory fee is **£1,500**")
+
+    assert verify_citations([citation], chunks)[0].quote_found
+
+
+def test_backticks_around_an_identifier_are_tolerated() -> None:
+    chunks = [chunk("d", 1, TABLE_SOURCE)]
+    assert verify_citations([cite("JISA | Not before the child's")], chunks)[0].quote_found
+
+
+def test_a_full_stop_added_to_a_table_cell_is_tolerated() -> None:
+    """The source cell ends with ' |'; the model ended its quote with a period.
+    That is the boundary of the quote, not its content."""
+    chunks = [chunk("d", 1, TABLE_SOURCE)]
+    citation = cite("Not before the child's 18th birthday, except on terminal illness.")
+
+    assert verify_citations([citation], chunks)[0].quote_found
+
+
+def test_a_changed_word_is_still_caught() -> None:
+    """Real misquote: 'any single sector fund' quoted as 'a single sector fund'."""
+    chunks = [chunk("d", 1, "| Maximum in any single sector fund | 15% of account value |")]
+    citation = cite("Maximum in a single sector fund | 15% of account value")
+
+    assert not verify_citations([citation], chunks)[0].quote_found
+
+
+def test_a_rewritten_sentence_opening_is_still_caught() -> None:
+    """Real misquote: the source says 'These are reportable to Compliance…'."""
+    chunks = [chunk("d", 1, "These are reportable to Compliance within **one business day**:")]
+    citation = cite("Reportable breaches must be notified to Compliance within one business day")
+
+    assert not verify_citations([citation], chunks)[0].quote_found
+
+
+def test_internal_punctuation_is_not_tolerated() -> None:
+    """Only trailing punctuation is a boundary; inside, it carries meaning."""
+    chunks = [chunk("d", 1, "The firm may not rebalance, even where the policy requires it.")]
+    citation = cite("The firm may not rebalance even where the policy requires it")
+
+    assert not verify_citations([citation], chunks)[0].quote_found
+
+
+def test_a_changed_number_is_still_caught() -> None:
+    chunks = [chunk("d", 1, BOLD_SOURCE)]
+    assert not verify_citations([cite("the minimum annual advisory fee is £2,500")], chunks)[
+        0
+    ].quote_found
