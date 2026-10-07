@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, create_async_engine
 
 from app.config import get_settings
 
@@ -59,3 +59,19 @@ async def migrated_db(db: AsyncConnection) -> AsyncConnection:
     if result.scalar_one() == 0:
         _unavailable("schema not migrated; run: uv run alembic upgrade head")
     return db
+
+
+@pytest.fixture
+async def db_session(migrated_db: AsyncConnection) -> AsyncIterator[AsyncSession]:
+    """An ORM session that still rolls back with the surrounding fixture.
+
+    Bound to the fixture's connection with `join_transaction_mode="create_savepoint"`,
+    so a `session.commit()` inside the code under test releases a savepoint
+    rather than committing the outer transaction. Without it, anything that
+    commits — ingestion does — would leave rows behind for the next test.
+    """
+    session = AsyncSession(bind=migrated_db, join_transaction_mode="create_savepoint")
+    try:
+        yield session
+    finally:
+        await session.close()

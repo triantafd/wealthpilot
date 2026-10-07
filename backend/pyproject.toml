@@ -17,6 +17,8 @@ dependencies = [
     "pgvector>=0.3",
     "sqlalchemy[asyncio]>=2.0",
     "pyyaml>=6.0",
+    "openai>=1.60",
+    "langchain-text-splitters>=0.3",
 ]
 
 # `app` is installed into the venv rather than merely being on sys.path, so
@@ -36,6 +38,7 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
+    "types-pyyaml>=6.0.12.20260906",
 ]
 
 [tool.ruff]
