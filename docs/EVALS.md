@@ -20,7 +20,7 @@ Write cases by hand first. Then generate more with an LLM from the seed data and
 
 | Area | Metric | How |
 |---|---|---|
-| Retrieval | hit@k, MRR | Expected source in top-k results |
+| Retrieval | **MRR, hit@1** (primary), hit@k (secondary) | Expected source in top-k results |
 | Answer | faithfulness, answer relevancy, context precision | Ragas |
 | Citations | citation validity | Quote appears verbatim in a cited chunk (deterministic) |
 | Routing | accuracy, confusion matrix | Exact match |
@@ -30,6 +30,20 @@ Write cases by hand first. Then generate more with an LLM from the seed data and
 | Ops | p50/p95 latency, cost per query | From the run |
 
 Prefer deterministic checks. Use LLM-as-judge only where needed, pin the judge model and prompt, and spot-check it against your own judgements on 20 cases.
+
+### Why MRR and hit@1 lead the retrieval metrics
+
+The corpus is 10 documents and 81 chunks, so `k=6` already covers 7.4% of it.
+hit@6 is close to saturated by the size of the corpus rather than by the
+quality of retrieval: the Phase 1 vector-only baseline scores 97% on it, which
+leaves three points of headroom and makes it a weak gate for the Phase 3
+comparison. On the same run MRR is 0.767 and hit@1 is 67% — a third of cases do
+not put the right source first, which is exactly what reranking should fix.
+
+hit@k is kept rather than dropped. It becomes informative again as the corpus
+grows, and ARCHITECTURE section 2 anticipates adding public regulatory PDFs as
+a harder retrieval test. Read a saturated hit@k as a statement about corpus
+size, not as a result.
 
 ## Running
 
