@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     # migration and a full re-embed, not just a restart.
     embedding_dimensions: int = 1536
 
+    # --- Retrieval ----------------------------------------------------------
+    # Every stage is a setting so the eval suite can compare variants without a
+    # code change (ARCHITECTURE section 4).
+    #
+    # How many chunks reach the prompt. Ported from chatapp-rag-streaming.
+    retrieval_top_k: int = 6
+
     openai_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
 

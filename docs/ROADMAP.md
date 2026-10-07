@@ -20,7 +20,7 @@ Work top to bottom. Each phase ends with something that runs and a number you ca
 ## Phase 1 — RAG baseline and first evals (1 week)
 
 - [x] Port incremental ingestion from `chatapp-rag-streaming` (hash-based instead of mtime)
-- [ ] Vector-only retrieval (this is the baseline on purpose)
+- [x] Vector-only retrieval (this is the baseline on purpose)
 - [ ] Answer generation with citations (document + page + short verbatim quote)
 - [ ] `evals/datasets/rag_qa.jsonl`: 50+ questions with expected answer and expected source (doc, page)
 - [ ] `evals/run.py`: hit@k, MRR, Ragas faithfulness and answer relevancy, latency, cost

@@ -64,17 +64,31 @@ class IngestReport:
         return "\n".join(lines)
 
 
-def plan_ingest(sources: list[SourceDocument], indexed: dict[str, str]) -> IngestPlan:
+def plan_ingest(
+    sources: list[SourceDocument], indexed: dict[str, str], *, force: bool = False
+) -> IngestPlan:
     """Decide what needs work, given what is on disk and what is in the database.
 
     `indexed` maps document id to the sha256 currently stored. Pure, so the
     incremental logic — the part most likely to be subtly wrong — is tested
     without a database or a provider.
+
+    `force` re-indexes every document, but deliberately does not change the
+    deletion set. Treating a forced run as "the database is empty" would leave a
+    document that has been removed from disk orphaned in the index, still
+    retrievable and still citable, with no file behind it.
     """
     on_disk = {source.id: source for source in sources}
 
-    to_index = tuple(source for source in sources if indexed.get(source.id) != source.sha256)
-    unchanged = tuple(source.id for source in sources if indexed.get(source.id) == source.sha256)
+    if force:
+        to_index = tuple(sources)
+        unchanged: tuple[str, ...] = ()
+    else:
+        to_index = tuple(source for source in sources if indexed.get(source.id) != source.sha256)
+        unchanged = tuple(
+            source.id for source in sources if indexed.get(source.id) == source.sha256
+        )
+
     # Removed from disk: the chunks must go too, or retrieval keeps citing a
     # document that no longer exists.
     to_delete = tuple(sorted(set(indexed) - set(on_disk)))
@@ -98,8 +112,8 @@ async def run_ingest(
     force: bool = False,
 ) -> IngestReport:
     """Bring the database in step with the files on disk."""
-    indexed = {} if force else await read_indexed_hashes(session)
-    plan = plan_ingest(sources, indexed)
+    indexed = await read_indexed_hashes(session)
+    plan = plan_ingest(sources, indexed, force=force)
 
     report = IngestReport(unchanged=list(plan.unchanged))
 

@@ -85,3 +85,22 @@ def test_nothing_on_either_side_is_no_work() -> None:
 def test_deletions_are_ordered_for_a_stable_report() -> None:
     plan = plan_ingest([], {"z": "1", "a": "2", "m": "3"})
     assert plan.to_delete == ("a", "m", "z")
+
+
+def test_force_reindexes_everything() -> None:
+    plan = plan_ingest([source("a", "1"), source("b", "2")], {"a": "1", "b": "2"}, force=True)
+
+    assert [d.id for d in plan.to_index] == ["a", "b"]
+    assert plan.unchanged == ()
+
+
+def test_force_still_deletes_documents_removed_from_disk() -> None:
+    """Treating a forced run as an empty database would orphan those rows.
+
+    They would stay in the index, keep being retrieved, and keep being cited,
+    with no file behind them.
+    """
+    plan = plan_ingest([source("a", "1")], {"a": "1", "gone": "7"}, force=True)
+
+    assert plan.to_delete == ("gone",)
+    assert [d.id for d in plan.to_index] == ["a"]
