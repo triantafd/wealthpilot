@@ -34,6 +34,9 @@ build-backend = "hatchling.build"
 packages = ["app"]
 
 [dependency-groups]
+# Kept out of the runtime dependencies on purpose: the service never scores
+# itself, and ragas pulls pandas, pyarrow and huggingface-hub, which would be
+# dead weight in the Phase 9 image.
 dev = [
     "httpx2>=2.13.1",
     "mypy>=1.13",
@@ -41,6 +44,15 @@ dev = [
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
     "types-pyyaml>=6.0.12.20260906",
+]
+evals = [
+    # ragas 0.3.1 imports langchain_community.chat_models.vertexai, removed in
+    # community 0.4, and imports PIL without declaring pillow. Both of these are
+    # workarounds for ragas's own dependency set, not choices. Neither reaches
+    # the runtime dependencies above.
+    "langchain-community<0.4",
+    "pillow>=12.3.0",
+    "ragas>=0.3.1",
 ]
 
 [tool.ruff]
@@ -68,6 +80,12 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Tests may assert and may hardcode throwaway credentials.
 "tests/**" = ["S101", "S105", "S106"]
+
+[[tool.mypy.overrides]]
+# ragas ships no py.typed marker. Only the eval harness imports it, and it is
+# imported lazily there, so the untyped surface is small and contained.
+module = ["ragas.*"]
+ignore_missing_imports = true
 
 [tool.mypy]
 python_version = "3.12"

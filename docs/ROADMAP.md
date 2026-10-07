@@ -23,7 +23,7 @@ Work top to bottom. Each phase ends with something that runs and a number you ca
 - [x] Vector-only retrieval (this is the baseline on purpose)
 - [x] Answer generation with citations (document + page + short verbatim quote)
 - [x] `evals/datasets/rag_qa.jsonl`: 50+ questions with expected answer and expected source (doc, page)
-- [ ] `evals/run.py`: hit@k, MRR, Ragas faithfulness and answer relevancy, latency, cost
+- [x] `evals/run.py`: hit@k, MRR, Ragas faithfulness and answer relevancy, latency, cost
 - [ ] Save `evals/reports/baseline.json`
 
 **Done when:** one command prints a metrics table and writes a report. README results table has its first column.

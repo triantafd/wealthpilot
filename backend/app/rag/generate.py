@@ -70,6 +70,30 @@ class CitationCheck:
 
 
 @dataclass(frozen=True)
+class TokenUsage:
+    """Tokens consumed producing one answer.
+
+    Carried on the result rather than logged, because the eval runner reports
+    cost per query and Phase 2 writes the same figures to the `usage` table.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    @classmethod
+    def from_message(cls, message: object) -> "TokenUsage":
+        usage = getattr(message, "usage_metadata", None) or {}
+        return cls(
+            input_tokens=int(usage.get("input_tokens", 0)),
+            output_tokens=int(usage.get("output_tokens", 0)),
+        )
+
+
+@dataclass(frozen=True)
 class AnswerResult:
     """An answer, what it was built from, and whether its citations hold."""
 
@@ -78,6 +102,7 @@ class AnswerResult:
     citations: list[Citation]
     retrieved: list[RetrievedChunk]
     checks: list[CitationCheck]
+    usage: TokenUsage = TokenUsage()
 
     @property
     def citation_validity(self) -> float:
@@ -177,9 +202,24 @@ async def generate_answer(
             question=question, answer=NO_ANSWER, citations=[], retrieved=[], checks=[]
         )
 
-    structured = chat_model.with_structured_output(GeneratedAnswer)
-    generated = await structured.ainvoke(build_messages(question, chunks))
-    assert isinstance(generated, GeneratedAnswer)  # noqa: S101 - narrows the union for mypy
+    # include_raw keeps the underlying message alongside the parsed object. It
+    # is the only place token usage survives structured output, and the eval
+    # runner reports cost per query.
+    structured = chat_model.with_structured_output(GeneratedAnswer, include_raw=True)
+    response = await structured.ainvoke(build_messages(question, chunks))
+
+    if isinstance(response, GeneratedAnswer):  # a fake that ignores include_raw
+        generated: GeneratedAnswer | None = response
+        usage = TokenUsage()
+    elif isinstance(response, dict):
+        parsed = response.get("parsed")
+        generated = parsed if isinstance(parsed, GeneratedAnswer) else None
+        usage = TokenUsage.from_message(response.get("raw"))
+    else:
+        generated, usage = None, TokenUsage()
+
+    if generated is None:
+        raise ValueError(f"model returned unparseable output: {response!r}")
 
     return AnswerResult(
         question=question,
@@ -187,6 +227,7 @@ async def generate_answer(
         citations=generated.citations,
         retrieved=chunks,
         checks=verify_citations(generated.citations, chunks),
+        usage=usage,
     )
 
 
