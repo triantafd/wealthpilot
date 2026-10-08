@@ -32,6 +32,7 @@ from app.evals.report import (
 )
 from app.evals.runner import aggregate, run_case, run_retrieval_only, score_with_ragas
 from app.llm import get_chat_model
+from app.observability import configure_tracing, flush
 from app.rag.embeddings import OpenAIEmbedder
 
 
@@ -79,6 +80,11 @@ async def _run(args: argparse.Namespace) -> int:
     if spreads:
         print(render_spread(spreads))
 
+    # Spans are batched on a background thread and this process is about to
+    # exit, so without this an eval run's traces are lost. A no-op when
+    # tracing is not configured.
+    flush()
+
     path = save_report(report, as_baseline=args.save_baseline)
     print(
         f"\n  report: {path.relative_to(Path.cwd()) if path.is_relative_to(Path.cwd()) else path}"
@@ -112,6 +118,15 @@ def main() -> None:
             "the mean, so a baseline is not one sample of a noisy process"
         ),
     )
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        help=(
+            "send Langfuse traces for this run (off by default: a full suite is "
+            "thousands of observations, which burns a free-tier quota and buries "
+            "the traces you are actually reading)"
+        ),
+    )
     ragas = parser.add_mutually_exclusive_group()
     ragas.add_argument("--ragas", dest="ragas", action="store_true", default=None)
     ragas.add_argument("--no-ragas", dest="ragas", action="store_false")
@@ -120,6 +135,10 @@ def main() -> None:
     from app.config import get_settings
 
     args.model = args.model or get_settings().llm_model
+
+    # Before the first traced call: @observe resolves the Langfuse singleton on
+    # its own, so deciding after that point would be too late.
+    configure_tracing(enabled=args.trace)
 
     try:
         raise SystemExit(asyncio.run(_run(args)))

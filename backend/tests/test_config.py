@@ -7,7 +7,7 @@ run on.
 """
 
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from app.config import Settings
 
@@ -96,3 +96,93 @@ def test_environment_variables_override_defaults(
 
     assert settings.postgres_port == 6000
     assert settings.llm_model == "anthropic:claude-sonnet-5"
+
+
+# --- Tracing is optional -----------------------------------------------------
+# The requirement is that the application runs unchanged with no Langfuse
+# account, so CI and a contributor without keys are never blocked by it.
+
+
+def test_tracing_is_disabled_when_no_keys_are_set() -> None:
+    from app.config import Settings
+
+    settings = Settings(_env_file=None)
+
+    assert settings.tracing_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("public", "secret"),
+    [("pk-lf-test", None), (None, "sk-lf-test")],
+)
+def test_one_key_alone_does_not_enable_tracing(public: str | None, secret: str | None) -> None:
+    """A public key cannot authenticate on its own, and spans that will be
+    rejected would cost latency for nothing."""
+    from app.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        langfuse_public_key=public,
+        langfuse_secret_key=secret,
+    )
+
+    assert settings.tracing_enabled is False
+
+
+def test_tracing_is_enabled_when_both_keys_are_set() -> None:
+    from app.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        langfuse_public_key="pk-lf-test",
+        langfuse_secret_key="sk-lf-test",
+    )
+
+    assert settings.tracing_enabled is True
+
+
+def test_the_keys_are_secrets_and_do_not_appear_in_a_dump() -> None:
+    """The repo is public, so a settings dump reaching a log must not carry
+    them. Same guarantee as the Postgres password."""
+    from app.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        langfuse_public_key="pk-lf-real",
+        langfuse_secret_key="sk-lf-real",
+    )
+
+    assert "sk-lf-real" not in str(settings.model_dump())
+    assert "sk-lf-real" not in repr(settings)
+    assert settings.langfuse_secret_key is not None
+    assert settings.langfuse_secret_key.get_secret_value() == "sk-lf-real"
+
+
+def test_blank_keys_count_as_absent() -> None:
+    """`.env.example` says to leave these empty when you have no account, and
+    pydantic turns an empty environment variable into SecretStr("") rather than
+    None. Checking only for None would enable tracing with unusable keys."""
+    from app.config import Settings
+
+    settings = Settings(_env_file=None, langfuse_public_key="", langfuse_secret_key="")
+
+    assert settings.langfuse_public_key is not None  # it really is SecretStr("")
+    assert settings.tracing_enabled is False
+
+
+def test_a_blank_host_falls_back_to_the_default() -> None:
+    """Blank reached the client as base_url="" and produced a schemeless
+    request instead of an error."""
+    assert _settings(langfuse_host="").langfuse_host == "https://cloud.langfuse.com"
+
+
+def test_a_host_without_a_scheme_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="must start with http"):
+        _settings(langfuse_host="cloud.langfuse.com")
+
+
+def test_a_trailing_slash_is_stripped() -> None:
+    """So a host pasted from a browser address bar does not produce "//api"."""
+    assert _settings(langfuse_host="https://us.cloud.langfuse.com/").langfuse_host == (
+        "https://us.cloud.langfuse.com"
+    )

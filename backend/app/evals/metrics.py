@@ -3,15 +3,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-# Tokens are priced per million. A placeholder table until Phase 2 moves pricing
-# into settings alongside the rest of the model configuration; an unknown model
-# costs 0 rather than guessing, and the report says so.
-PRICES_PER_MTOK: dict[str, tuple[float, float]] = {
-    "gpt-4o-mini": (0.15, 0.60),
-    "gpt-4o": (2.50, 10.00),
-    "text-embedding-3-small": (0.02, 0.0),
-    "text-embedding-3-large": (0.13, 0.0),
-}
+from app.pricing import cost_of
 
 
 def reciprocal_rank(
@@ -53,14 +45,18 @@ def percentile(values: Sequence[float], p: float) -> float:
 
 
 def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Cost of one call, or 0.0 for a model with no price on file."""
-    # Settings carry "provider:model"; the price table is keyed by model alone.
-    name = model.split(":", 1)[-1]
-    rates = PRICES_PER_MTOK.get(name)
-    if rates is None:
-        return 0.0
-    input_rate, output_rate = rates
-    return (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
+    """Cost of one call, or 0.0 for a model with no price on file.
+
+    Delegates to app/pricing.py so the eval report and the `usage` table cannot
+    disagree about what the same request cost.
+
+    Unpriced collapses to 0.0 here, unlike in the `usage` table where it stays
+    NULL: this is a float for a JSON report that sums across a suite, and every
+    model the suite runs is priced. If that stops being true the report's cost
+    line understates, so a new model needs a row in PRICES.
+    """
+    cost = cost_of(model, input_tokens, output_tokens)
+    return float(cost) if cost is not None else 0.0
 
 
 def mean(values: Sequence[float]) -> float:

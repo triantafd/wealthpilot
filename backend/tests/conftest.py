@@ -26,10 +26,15 @@ import psycopg
 import pytest
 from alembic import command
 from alembic.config import Config
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, create_async_engine
 
+from app import observability
 from app.config import get_settings
+from app.db.session import get_session
+from app.main import app
+from app.observability import get_langfuse
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
@@ -155,3 +160,63 @@ async def db_session(migrated_db: AsyncConnection) -> AsyncIterator[AsyncSession
         yield session
     finally:
         await session.close()
+
+
+@pytest.fixture(autouse=True)
+def _tracing_disabled(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Keep Langfuse off for every test.
+
+    `get_settings()` parses the repo-root `.env`, so once a developer adds real
+    Langfuse keys the suite would start shipping spans to the cloud from test
+    runs — including whatever a test passes as a question. Clearing the
+    variables here makes the suite behave identically with and without an
+    account, the same reason the database tests build their own database.
+
+    Autouse rather than opt-in: a test that traces by accident is exactly the
+    failure this prevents, so it cannot depend on remembering the fixture.
+    """
+    # Only the credentials. Blanking LANGFUSE_HOST too made the client build
+    # a schemeless URL and attempt a real request during the suite.
+    for name in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
+        monkeypatch.setenv(name, "")
+
+    get_settings.cache_clear()
+    get_langfuse.cache_clear()
+    observability._forced = None
+    # configure_tracing() sets a module-level override; without resetting it
+    # a test that forces tracing off would silently disable the next one.
+    observability._forced = None
+    yield
+    get_settings.cache_clear()
+    get_langfuse.cache_clear()
+
+
+@pytest.fixture
+async def client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
+    """An HTTP client for the app, sharing this test's database session.
+
+    An httpx AsyncClient over ASGITransport rather than Starlette's TestClient.
+    TestClient drives the app from a worker thread running its own event loop,
+    while `db_session` belongs to pytest-asyncio's loop, and asyncpg refuses a
+    connection used from two loops ("attached to a different loop"). The async
+    client runs the request on the same loop as the test, so endpoint tests see
+    the rows the test just wrote and still get rolled back afterwards.
+
+    Any endpoint test that touches the database wants this fixture. One that
+    does not — checking a schema, or a route needing no session — can use
+    TestClient directly.
+    """
+
+    async def _session() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    app.dependency_overrides[get_session] = _session
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as http_client:
+            yield http_client
+    finally:
+        # In a finally: a failing test must not leave the override in place for
+        # whatever runs next.
+        app.dependency_overrides.pop(get_session, None)

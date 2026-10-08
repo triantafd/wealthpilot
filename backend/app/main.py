@@ -3,19 +3,39 @@
 uv run fastapi dev app/main.py
 """
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 from app import __version__
+from app.api.usage import router as usage_router
 from app.config import get_settings
+from app.observability import flush
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Flush buffered spans on shutdown.
+
+    Spans are batched on a background thread, so without this a trace from the
+    last request before a deploy is lost — which is the trace most worth
+    having. A no-op when tracing is disabled.
+    """
+    yield
+    flush()
+
 
 app = FastAPI(
     title="WealthPilot API",
     version=__version__,
     summary="Multi-agent assistant for a synthetic wealth-management firm",
+    lifespan=lifespan,
 )
+
+app.include_router(usage_router)
 
 
 class Health(BaseModel):
