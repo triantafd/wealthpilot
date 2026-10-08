@@ -39,7 +39,7 @@ Work top to bottom. Each phase ends with something that runs and a number you ca
 ## Phase 3 — Better retrieval, proven by numbers (1 week)
 
 - [x] Full-text search with `tsvector`
-- [ ] Hybrid with Reciprocal Rank Fusion
+- [x] Hybrid with Reciprocal Rank Fusion
 - [ ] Cross-encoder reranker — **report latency alongside accuracy.** A reranker
       that adds 400ms to every request is a different proposition from one that
       adds 40ms, and accuracy alone hides that

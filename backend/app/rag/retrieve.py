@@ -17,6 +17,7 @@ not just the order but how confident the match was, and Phase 3 cannot fuse two
 ranked lists it has no scores for.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -28,7 +29,7 @@ from app.config import get_settings
 from app.rag.embeddings import Embedder
 
 # Mirrors the Literal on Settings.retrieval_mode.
-RetrievalMode = Literal["vector", "text"]
+RetrievalMode = Literal["vector", "text", "hybrid"]
 
 
 @dataclass(frozen=True)
@@ -191,6 +192,99 @@ async def search_by_text(
     ]
 
 
+def reciprocal_rank_fusion(
+    rankings: Sequence[Sequence[RetrievedChunk]],
+    *,
+    rrf_k: int | None = None,
+    top_k: int | None = None,
+) -> list[RetrievedChunk]:
+    """Fuse several ranked lists into one by Reciprocal Rank Fusion.
+
+    A chunk's score is the sum over lists of ``1 / (rrf_k + rank)``, so a chunk
+    that several strategies rank highly beats one that a single strategy loves.
+
+    Rank-based rather than score-based on purpose: cosine distance and
+    `ts_rank` are not on the same scale and have no shared zero, so averaging
+    them would mean inventing a conversion. Ranks are comparable by
+    construction, which is the whole appeal of RRF — and why it needs no
+    per-corpus tuning to work at all.
+
+    Pure, so the fusion arithmetic is testable without a database or a model.
+    """
+    settings = get_settings()
+    k = rrf_k if rrf_k is not None else settings.retrieval_rrf_k
+    limit = top_k if top_k is not None else settings.retrieval_top_k
+    if k < 1:
+        raise ValueError(f"rrf_k must be at least 1, got {k}")
+    if limit < 1:
+        raise ValueError(f"top_k must be at least 1, got {limit}")
+
+    scores: dict[int, float] = {}
+    chunks: dict[int, RetrievedChunk] = {}
+    for ranking in rankings:
+        for rank, chunk in enumerate(ranking, start=1):
+            scores[chunk.chunk_id] = scores.get(chunk.chunk_id, 0.0) + 1.0 / (k + rank)
+            # Keep the first sighting. The duplicate carries identical content;
+            # only its distance differs, and a fused result's distance is
+            # rebuilt from the score below anyway.
+            chunks.setdefault(chunk.chunk_id, chunk)
+
+    if not scores:
+        return []
+
+    # Ties broken by chunk_id so a run is reproducible: dict order would
+    # otherwise depend on which strategy happened to return a chunk first.
+    ordered = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+    best = ordered[0][1]
+
+    fused: list[RetrievedChunk] = []
+    for chunk_id, score in ordered[:limit]:
+        source = chunks[chunk_id]
+        fused.append(
+            RetrievedChunk(
+                chunk_id=source.chunk_id,
+                document_id=source.document_id,
+                page=source.page,
+                content=source.content,
+                # A rank-derived pseudo-distance, scaled so the best result is
+                # 0.0 like the other strategies. It is NOT a cosine distance and
+                # is not comparable across queries — `similarity` on a fused
+                # chunk means "how far down the fused list", nothing more.
+                distance=1.0 - score / best,
+            )
+        )
+    return fused
+
+
+async def search_hybrid(
+    session: AsyncSession,
+    embedder: Embedder,
+    query: str,
+    *,
+    top_k: int | None = None,
+    document_id: str | None = None,
+) -> list[RetrievedChunk]:
+    """Vector and full-text search, fused by RRF.
+
+    The two searches run sequentially rather than concurrently: they share one
+    AsyncSession, which is not safe for concurrent use. Fusion therefore costs
+    one extra query, not one extra model call — the embedding is computed once
+    and full-text needs none.
+    """
+    settings = get_settings()
+    depth = settings.retrieval_candidates
+
+    vector_hits = await search_by_vector(
+        session,
+        (await embedder.embed([query]))[0],
+        top_k=depth,
+        document_id=document_id,
+    )
+    text_hits = await search_by_text(session, query, top_k=depth, document_id=document_id)
+
+    return reciprocal_rank_fusion([vector_hits, text_hits], top_k=top_k)
+
+
 @observe(name="retrieval", as_type="retriever")
 async def search(
     session: AsyncSession,
@@ -219,6 +313,9 @@ async def search(
 
     if strategy == "text":
         return await search_by_text(session, query, top_k=top_k, document_id=document_id)
+
+    if strategy == "hybrid":
+        return await search_hybrid(session, embedder, query, top_k=top_k, document_id=document_id)
 
     (vector,) = await embedder.embed([query])
     return await search_by_vector(session, vector, top_k=top_k, document_id=document_id)

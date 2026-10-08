@@ -22,7 +22,13 @@ from app.config import get_settings
 from app.rag.documents import SourceDocument
 from app.rag.embeddings import FakeEmbedder, OpenAIEmbedder
 from app.rag.ingest import run_ingest
-from app.rag.retrieve import RetrievedChunk, search, search_by_text, search_by_vector
+from app.rag.retrieve import (
+    RetrievedChunk,
+    reciprocal_rank_fusion,
+    search,
+    search_by_text,
+    search_by_vector,
+)
 
 ALPHA = "Advisory fees are tiered across five bands of portfolio value."
 BETA = "Execution-only accounts must never be rebalanced by the firm."
@@ -330,3 +336,96 @@ async def test_search_dispatches_on_the_configured_mode(
         get_settings.cache_clear()
 
     assert hits[0].document_id == "zt-a"
+
+
+# --- Reciprocal Rank Fusion --------------------------------------------------
+# Phase 3, task 2. The fusion arithmetic is a pure function, so these need
+# neither a database nor a model.
+
+
+def _chunk(chunk_id: int, document_id: str = "d", page: int = 1) -> RetrievedChunk:
+    return RetrievedChunk(
+        chunk_id=chunk_id, document_id=document_id, page=page, content="x", distance=0.0
+    )
+
+
+def test_a_chunk_both_strategies_rank_highly_wins() -> None:
+    """The whole point of fusing: agreement beats one strategy's enthusiasm."""
+    agreed, vector_favourite, text_favourite = _chunk(1), _chunk(2), _chunk(3)
+
+    fused = reciprocal_rank_fusion(
+        [[vector_favourite, agreed], [text_favourite, agreed]], rrf_k=60, top_k=3
+    )
+
+    assert fused[0].chunk_id == agreed.chunk_id
+
+
+def test_fusion_uses_ranks_not_scores() -> None:
+    """Cosine distance and ts_rank are not on the same scale and share no zero,
+    so averaging them would mean inventing a conversion. A chunk's distance must
+    not influence the fused order."""
+    near, far = _chunk(1), _chunk(2)
+    object.__setattr__(far, "distance", 0.99)
+
+    fused = reciprocal_rank_fusion([[far, near]], rrf_k=60, top_k=2)
+
+    assert [c.chunk_id for c in fused] == [far.chunk_id, near.chunk_id]
+
+
+def test_the_best_fused_result_has_distance_zero() -> None:
+    """Scaled so callers can order results from any strategy the same way."""
+    fused = reciprocal_rank_fusion([[_chunk(1), _chunk(2)]], rrf_k=60, top_k=2)
+
+    assert fused[0].distance == 0.0
+    assert fused[1].distance > 0.0
+
+
+def test_fusion_deduplicates_a_chunk_found_by_both() -> None:
+    same = _chunk(1)
+
+    fused = reciprocal_rank_fusion([[same], [same]], rrf_k=60, top_k=6)
+
+    assert len(fused) == 1
+
+
+def test_fusion_respects_top_k() -> None:
+    many = [_chunk(i) for i in range(10)]
+
+    assert len(reciprocal_rank_fusion([many], rrf_k=60, top_k=3)) == 3
+
+
+def test_fusion_of_nothing_is_empty() -> None:
+    assert reciprocal_rank_fusion([[], []], rrf_k=60, top_k=6) == []
+
+
+def test_ties_break_on_chunk_id_so_a_run_is_reproducible() -> None:
+    """Both chunks sit at rank 1 of their own list and score identically. Dict
+    order would otherwise depend on which strategy returned first."""
+    first = reciprocal_rank_fusion([[_chunk(7)], [_chunk(3)]], rrf_k=60, top_k=2)
+    again = reciprocal_rank_fusion([[_chunk(3)], [_chunk(7)]], rrf_k=60, top_k=2)
+
+    assert [c.chunk_id for c in first] == [c.chunk_id for c in again] == [3, 7]
+
+
+@pytest.mark.parametrize(("rrf_k", "top_k"), [(0, 6), (-1, 6), (60, 0)])
+def test_fusion_rejects_nonsense_parameters(rrf_k: int, top_k: int) -> None:
+    with pytest.raises(ValueError, match="must be at least 1"):
+        reciprocal_rank_fusion([[_chunk(1)]], rrf_k=rrf_k, top_k=top_k)
+
+
+async def test_hybrid_surfaces_what_vector_search_alone_misses(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The result that justifies the mode. An exact identifier that full-text
+    matches must reach the fused list even though FakeEmbedder's vectors carry
+    no signal about it."""
+    await _seed(db_session, doc("zt-a", FACTSHEET_A), doc("zt-b", FACTSHEET_B))
+
+    monkeypatch.setenv("RETRIEVAL_MODE", "hybrid")
+    get_settings.cache_clear()
+    try:
+        hits = await search(db_session, FakeEmbedder(), "MER012")
+    finally:
+        get_settings.cache_clear()
+
+    assert "zt-a" in {h.document_id for h in hits}

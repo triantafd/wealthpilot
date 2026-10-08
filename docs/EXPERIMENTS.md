@@ -87,8 +87,8 @@ deterministic and reproducible from the report in `evals/reports/`.
 | MRR | 0.747 | **0.665** | −0.082 |
 | hit@1 | 62.9% | **51.4%** | −11.4 |
 | hit@6 | 97.1% | 92.9% | −4.3 |
-| p50 latency | 2072 ms | **1 ms** | −2071 |
-| Cost per query | $0.00032 | **$0** | — |
+| p50 latency | 266 ms | **1 ms** | −265 |
+| Cost per query | — | — | see below |
 
 Full-text search alone is **not** a replacement for vector search, and was not
 expected to be: it matches strings, not meaning. It is kept because it fails on
@@ -96,9 +96,18 @@ a *different* set of cases, which is the entire premise of the hybrid in task 2.
 Six cases gained hit@1 and fourteen lost it — if the two methods failed on the
 same cases, fusing them could not help.
 
-The latency and cost columns are not a rounding artefact. Text search makes no
-model call at all, so it skips the ~90 ms embedding round trip and the whole
-per-query cost. A hybrid pays for one embedding, not two searches.
+**Corrected.** This table first reported p50 latency as 2072 ms → 1 ms and cost
+as $0.00032 → $0. Both compared a retrieval-only run against the frozen
+baseline, whose latency and cost *include LLM generation*. The honest comparator
+is vector retrieval-only, measured at 266 ms p50. Text search is therefore about
+265x faster on retrieval, not 2000x, and the cost column is not meaningful at
+all here: the eval harness prices only the chat model, so every retrieval-only
+run reports $0 whether it embeds or not.
+
+What survives the correction is the shape of it. Text search makes no model call,
+so it avoids the embedding round trip that dominates retrieval latency — 266 ms
+of the vector path is mostly one HTTP request to OpenAI, not pgvector work. That
+is also why adding full-text to a hybrid is nearly free.
 
 ### Where it wins
 
@@ -178,3 +187,80 @@ is carried into task 2 rather than patched here.
 `retrieval_mode` defaults to `vector`. Full-text is opt-in via the setting or
 `--retrieval text`, because on this corpus it is worse overall. The baseline is
 untouched.
+
+---
+
+## Phase 3, task 2 — Hybrid with Reciprocal Rank Fusion
+
+`search_hybrid` runs both strategies and fuses by RRF: a chunk's score is the sum
+over strategies of `1 / (rrf_k + rank)`. Rank-based rather than score-based,
+because cosine distance and `ts_rank` are not on the same scale and share no
+zero, so averaging them would mean inventing a conversion.
+
+### Result: a wash on aggregates, a real fix for the structural misses
+
+| Metric | Vector | Full-text | **Hybrid** |
+|---|---|---|---|
+| MRR | 0.747 | 0.665 | **0.755** (+0.8) |
+| hit@1 | **62.9%** | 51.4% | 61.4% (−1.4) |
+| hit@6 | 97.1% | 92.9% | **97.1%** (±0) |
+| p50 latency (retrieval only) | 266 ms | 1 ms | 253 ms |
+
+Hybrid beats both parents on MRR and beats full-text everywhere, but **loses
+1.4 points of hit@1 to plain vector search**. On 75 cases that is about one
+case, and it is not noise: see the sweep below.
+
+### How the known failures move
+
+Required by the ROADMAP checklist. This is where hybrid earns its place.
+
+| Case / tag | Vector | Hybrid | |
+|---|---|---|---|
+| `mandate-consent-01` | **0.00** | **0.25** | Was *never retrieved*. Now at rank 4, so it reaches the prompt |
+| `prohibited-no-assessment-01` | **0.00** | **0.33** | Was *never retrieved*. Now at rank 3 |
+| `fee-etf-trade-01` | 0.33 | 0.25 | Worse. Still not a retrieval problem — the model misreads a passage it has |
+| tag `id-lookup` (n=4) | 0.521 | **0.833** | +0.312, and better than full-text alone (0.750) |
+| tag `vague-phrasing` (n=5) | 0.417 | 0.367 | −0.050 |
+
+**The two zeros becoming non-zero is the result that matters.** Both cases were
+the reason hit@1 sat at 62.9%: the governing document was not in the top 6 at
+all, so the model could not cite it however good the prompt was. A missing
+passage is unrecoverable downstream; a passage at rank 3 is not.
+
+`id-lookup` at 0.833 beating *both* parents is fusion working as advertised —
+each strategy contributes cases the other misses.
+
+### Parameter sweep: RRF is insensitive here
+
+Fused offline from cached depth-30 rankings, so 20 configurations cost one pass
+over the corpus instead of 20 eval runs.
+
+| | depth 6 | depth 10 | depth 20 | depth 30 |
+|---|---|---|---|---|
+| `rrf_k` 5 | 0.751 | 0.750 | 0.746 | 0.751 |
+| `rrf_k` 10 | 0.751 | 0.753 | 0.749 | 0.752 |
+| `rrf_k` 20 | 0.751 | **0.755** | 0.754 | 0.753 |
+| `rrf_k` 60 | 0.751 | **0.755** | 0.753 | 0.753 |
+| `rrf_k` 120 | 0.751 | **0.755** | 0.753 | 0.753 |
+
+MRR spans 0.746 to 0.755 — under one case of movement. And **hit@1 was exactly
+61.4% in all twenty combinations**, which is the real finding: the hit@1
+regression is structural to fusing these two rankers, not a tuning artefact. No
+parameter choice recovers it, so none was chosen to.
+
+Shipped: `rrf_k = 60` (the value from Cormack et al. and tied for best here) and
+`retrieval_candidates = 10` (tied for best, and the least work). Within this
+corpus the choice is arbitrary, and saying so is more useful than presenting 60
+as tuned.
+
+### Not made the default
+
+`retrieval_mode` still defaults to `vector`. hit@1 is a **primary** Phase 3
+metric and hybrid regresses it, with the sweep showing that cannot be tuned away.
+
+The case for deciding after the reranker rather than now: hybrid's demonstrated
+strength is pulling the right chunk *into* the candidate set — two cases went
+from absent to ranks 3 and 4 — which is precisely what a reranker needs in order
+to promote them to rank 1. Hybrid may be the right input to task 3 even though
+it is not the right final answer on its own. Defaulting to it now would bank a
+hit@1 regression for a benefit that only a later task realises.

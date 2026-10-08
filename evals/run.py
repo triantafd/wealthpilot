@@ -113,7 +113,7 @@ def main() -> None:
     parser.add_argument(
         "--retrieval",
         default=None,
-        choices=["vector", "text"],
+        choices=["vector", "text", "hybrid"],
         help="retrieval strategy for this run; default is the retrieval_mode setting",
     )
     parser.add_argument(

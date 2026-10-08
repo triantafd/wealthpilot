@@ -64,7 +64,28 @@ class Settings(BaseSettings):
     # which is worse on its own — MRR 0.611 against the baseline's 0.747 — and
     # is here because it fails on different cases, which is what makes the
     # hybrid in task 2 worth building.
-    retrieval_mode: Literal["vector", "text"] = "vector"
+    retrieval_mode: Literal["vector", "text", "hybrid"] = "vector"
+
+    # Reciprocal Rank Fusion. Score for a chunk is the sum over strategies of
+    # 1 / (rrf_k + rank).
+    #
+    # 60 is the value from Cormack et al.'s original paper and the de facto
+    # default. It controls how flat the contribution curve is: a large k makes
+    # ranks 1 and 10 nearly equivalent, a small k makes rank 1 dominate. It is a
+    # setting so it can be tuned against the golden set rather than assumed.
+    retrieval_rrf_k: int = 60
+
+    # How many candidates each strategy contributes before fusion. Deeper costs
+    # nothing extra in model calls — both searches run regardless — but a
+    # candidate at rank 30 can only enter the final list if something else ranks
+    # it highly too, which is the point.
+    #
+    # 10 by measurement rather than by argument: a sweep of rrf_k in
+    # {5,10,20,60,120} against depth in {6,10,20,30} moved MRR only between
+    # 0.746 and 0.755, and left hit@1 at exactly 61.4% in all twenty
+    # combinations. Depth 10 ties for the best MRR and does the least work. See
+    # docs/EXPERIMENTS.md — the insensitivity is the result, not the value.
+    retrieval_candidates: int = 10
 
     openai_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
