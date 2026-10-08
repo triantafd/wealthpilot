@@ -45,10 +45,19 @@ Work top to bottom. Each phase ends with something that runs and a number you ca
       adds 40ms, and accuracy alone hides that
 - [ ] Try 2–3 chunk sizes
 - [ ] Variant: exclude the repeated title and disclaimer boilerplate from what
-      gets embedded, measured on its own. Every factsheet opens and closes with
-      near-identical text, which dilutes the embedding of the part that
-      distinguishes one document from another
-- [ ] Eval each variant; record results in `docs/EXPERIMENTS.md`
+      gets embedded, measured on its own, **across all documents and not only
+      the factsheets**. Eight of the 81 chunks — the first chunk of eight
+      documents — open with a `# Title` line and then the identical sentence
+      "**WealthPilot Advisers Ltd** — fictional firm, synthetic document."
+      That makes every first chunk partly similar to every other first chunk
+      and dilutes the content that distinguishes them, which is consistent with
+      a `#p1` chunk being the wrong winner in the Phase 1 failures below.
+      (YAML frontmatter is already stripped at ingestion and is not the issue.)
+- [ ] **Every variant reports how the known failures below move** —
+      `mandate-consent-01`, `prohibited-no-assessment-01`, `fee-etf-trade-01`,
+      and the `vague-phrasing` and `id-lookup` tags — not just the aggregate
+- [ ] Eval each variant; **record every variant in `docs/EXPERIMENTS.md`,
+      including the ones that do not help**
 
 **Done when:** you have a table of variants vs metrics and a justified default.
 (CV line: "Improved hit@5 from X to Y with hybrid search and reranking.")
