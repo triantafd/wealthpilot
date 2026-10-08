@@ -38,9 +38,19 @@ Work top to bottom. Each phase ends with something that runs and a number you ca
 
 ## Phase 3 — Better retrieval, proven by numbers (1 week)
 
+**Rules for this phase.** Every variant reports how the known failures below move
+— `mandate-consent-01`, `prohibited-no-assessment-01`, `fee-etf-trade-01`, and
+the `vague-phrasing` and `id-lookup` tags — and not only the aggregate. Task 1
+showed why: full-text search moved `id-lookup` by +0.229 while being 8 points
+worse overall, and the aggregate alone hid both halves of that. Record every
+variant in `docs/EXPERIMENTS.md`, **including the ones that do not help** — a
+rejected variant is the most useful thing in that file, because without it the
+next person repeats the experiment, and a table of only successes implies the
+first idea always worked.
+
 - [x] Full-text search with `tsvector`
 - [x] Hybrid with Reciprocal Rank Fusion
-- [ ] Cross-encoder reranker — **report latency alongside accuracy.** A reranker
+- [x] Cross-encoder reranker — **report latency alongside accuracy.** A reranker
       that adds 400ms to every request is a different proposition from one that
       adds 40ms, and accuracy alone hides that
 - [ ] Try 2–3 chunk sizes
@@ -53,11 +63,6 @@ Work top to bottom. Each phase ends with something that runs and a number you ca
       and dilutes the content that distinguishes them, which is consistent with
       a `#p1` chunk being the wrong winner in the Phase 1 failures below.
       (YAML frontmatter is already stripped at ingestion and is not the issue.)
-- [ ] **Every variant reports how the known failures below move** —
-      `mandate-consent-01`, `prohibited-no-assessment-01`, `fee-etf-trade-01`,
-      and the `vague-phrasing` and `id-lookup` tags — not just the aggregate
-- [ ] Eval each variant; **record every variant in `docs/EXPERIMENTS.md`,
-      including the ones that do not help**
 
 **Done when:** you have a table of variants vs metrics and a justified default.
 (CV line: "Improved hit@5 from X to Y with hybrid search and reranking.")
@@ -75,11 +80,6 @@ every one of them broken.
 | `fee-etf-trade-01` | Not a retrieval miss. The right chunk **is** retrieved at rank 3 and the model answers from ranks 1–2, quoting "this is a fund, not an ETF" and concluding the opposite | Reranking, by moving it to rank 1 |
 | tag `id-lookup` | Exact identifiers and figures that vector search blurs | Full-text search |
 | tag `vague-phrasing` | MRR 0.125, the worst tag in the suite | Unclear — may need query rewriting rather than retrieval |
-
-Record **every** variant in `docs/EXPERIMENTS.md`, including the ones that do
-not help. A variant that was tried and rejected is the most useful thing in that
-file: without it the next person repeats the experiment, and a table of only
-successes implies the first idea always worked.
 
 ## Phase 4 — Multi-agent graph (1–2 weeks)
 

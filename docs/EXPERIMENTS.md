@@ -264,3 +264,105 @@ from absent to ranks 3 and 4 — which is precisely what a reranker needs in ord
 to promote them to rank 1. Hybrid may be the right input to task 3 even though
 it is not the right final answer on its own. Defaulting to it now would bank a
 hit@1 regression for a benefit that only a later task realises.
+
+---
+
+## Phase 3, task 3 — Cross-encoder reranker
+
+`cross-encoder/ms-marco-MiniLM-L-6-v2` through sentence-transformers, on CPU,
+reordering a 20-candidate shortlist down to 6. Measured over **both** candidate
+sets, to answer whether hybrid earns its place once a reranker is present.
+
+### Accuracy and latency together
+
+| Variant | MRR | hit@1 | hit@6 | p50 (retrieval only) |
+|---|---|---|---|---|
+| vector (baseline) | 0.747 | **62.9%** | 97.1% | **266 ms** |
+| hybrid | 0.755 | 61.4% | 97.1% | 253 ms |
+| **vector + rerank** | **0.759** | 61.4% | 97.1% | 568 ms |
+| hybrid + rerank | 0.756 | 61.4% | 97.1% | 438 ms |
+
+The reranker costs roughly **+300 ms per query** for 20 candidates, about 15 ms
+per passage once the model is warm. First call is far worse — 9.5 s, almost all
+of it loading weights — so a process that reranks must load the model at startup,
+not on the first user's request.
+
+The p50 ordering of the two rerank rows is noise: both pay one embedding round
+trip, and that HTTP request dominates and varies more than the difference
+between them.
+
+### Does hybrid earn its place? No — not under reranking
+
+**Rank 1 was identical between the two candidate sets in 73 of 75 cases.** The
+cross-encoder picks the same winning passage whether it is handed vector
+candidates or fused ones, so the second search buys a 97%-identical answer.
+Vector + rerank also has marginally the better MRR of the two.
+
+This is the question task 2 deferred, and the answer is cleaner than expected.
+Hybrid's value was surfacing the right chunk *into* the candidate set; a
+20-deep vector candidate set already contains it, so the fusion adds complexity
+without changing what comes out.
+
+### How the known failures move
+
+| Case / tag | vector | hybrid | vector+rerank | hybrid+rerank |
+|---|---|---|---|---|
+| `mandate-consent-01` | 0.00 | **0.25** | 0.00 | 0.00 |
+| `prohibited-no-assessment-01` | 0.00 | 0.33 | **0.50** | 0.33 |
+| `fee-etf-trade-01` | **0.33** | 0.25 | 0.25 | 0.25 |
+| tag `id-lookup` (n=4) | 0.521 | 0.833 | **1.000** | **1.000** |
+| tag `vague-phrasing` (n=5) | **0.417** | 0.367 | 0.357 | 0.357 |
+
+**`id-lookup` reaches 1.000** — every one of the four cases now ranks its
+expected source first, from 0.521 under plain vector search. That is the
+clearest win anywhere in Phase 3.
+
+**But reranking un-fixed a case hybrid had fixed.** `mandate-consent-01` went
+from unretrievable (0.00) to rank 4 under hybrid, and the reranker pushed it
+back out of the top 6 entirely. The cross-encoder is confident and wrong about
+that pair: the restating FAQ passage reads as a better answer to the question
+than the governing document does, which is exactly the failure the case was
+written to capture. A reranker is not a safety net; it is another ranker with
+its own blind spots.
+
+`vague-phrasing` gets worse under every variant tried in this phase. A vague
+question gives neither term matching nor a cross-encoder anything to work with,
+and it is now the strongest candidate for query rewriting rather than retrieval
+tuning.
+
+### hit@1 will not move
+
+hit@1 is 61.4% for hybrid, for all twenty RRF parameter combinations, for
+vector + rerank and for hybrid + rerank — and 62.9% for plain vector search.
+Seven cases gain rank 1 under reranking and eight lose it, netting one case
+worse, and no configuration tried in this phase beats the baseline on it.
+
+That is worth stating plainly because hit@1 is a primary Phase 3 metric: **the
+headline retrieval metric this phase set out to improve has not improved.** MRR
+is up 1.2 points and `id-lookup` is solved, so the work is not worthless, but
+the aggregate rank-1 story is flat.
+
+### Decision
+
+`retrieval_mode` stays `vector` and `retrieval_rerank` stays `false`, so the
+default is unchanged and the baseline still describes what ships.
+
+On the evidence the defensible default is **vector + rerank**: the best MRR,
+`id-lookup` solved, at +300 ms and one new optional dependency. It is not
+switched on yet because it costs 1.5 points of hit@1 and loses
+`mandate-consent-01`, and two tasks remain — chunk sizes and the boilerplate
+variant — either of which could change the picture. Deciding the default is the
+phase's closing step, not this task's.
+
+**Hybrid should probably be dropped** rather than carried further: 73-of-75
+identical rank 1 under reranking is a weak case for maintaining a second search
+path. Keeping the code costs nothing and the setting documents the finding.
+
+### Dependency note
+
+sentence-transformers lives in an optional `rerank` group because it pulls
+torch. Installing it naively produced a **5.9 GB** virtualenv: torch defaults to
+its CUDA build, and this machine has no GPU. Pinning the CPU wheel through
+`[tool.uv.index]` brought it to **1.3 GB**. `[tool.uv.sources]` only binds
+*direct* dependencies, so torch also had to be named explicitly in the group —
+without that line the pin is silently ignored and the CUDA build returns.

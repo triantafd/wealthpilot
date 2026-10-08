@@ -87,6 +87,21 @@ class Settings(BaseSettings):
     # docs/EXPERIMENTS.md — the insensitivity is the result, not the value.
     retrieval_candidates: int = 10
 
+    # --- Reranking ----------------------------------------------------------
+    # Off by default; the eval suite turns it on per run with --rerank so the
+    # same candidate set can be measured with and without it.
+    retrieval_rerank: bool = False
+
+    # How many candidates the reranker sees. Larger gives it more chance to
+    # find the right passage and costs linearly more cross-encoder work, which
+    # is the trade the latency column exists to expose.
+    retrieval_rerank_candidates: int = 20
+
+    # A small cross-encoder by default. ARCHITECTURE section 4 names
+    # bge-reranker as an option; it is a setting so both can be measured
+    # rather than one assumed.
+    rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
     openai_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
 

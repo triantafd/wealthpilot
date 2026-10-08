@@ -126,6 +126,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--rerank",
+        action="store_true",
+        help=(
+            "rerank the candidate set with a cross-encoder; needs the optional "
+            "'rerank' dependency group (uv sync --group rerank)"
+        ),
+    )
+    parser.add_argument(
         "--trace",
         action="store_true",
         help=(
@@ -152,6 +160,10 @@ def main() -> None:
     # runner does not own.
     if args.retrieval:
         os.environ["RETRIEVAL_MODE"] = args.retrieval
+        get_settings.cache_clear()
+
+    if args.rerank:
+        os.environ["RETRIEVAL_RERANK"] = "true"
         get_settings.cache_clear()
 
     try:

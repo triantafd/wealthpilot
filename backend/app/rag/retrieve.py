@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.rag.embeddings import Embedder
+from app.rag.rerank import Reranker, get_reranker
 
 # Mirrors the Literal on Settings.retrieval_mode.
 RetrievalMode = Literal["vector", "text", "hybrid"]
@@ -263,6 +264,7 @@ async def search_hybrid(
     *,
     top_k: int | None = None,
     document_id: str | None = None,
+    candidates: int | None = None,
 ) -> list[RetrievedChunk]:
     """Vector and full-text search, fused by RRF.
 
@@ -272,7 +274,7 @@ async def search_hybrid(
     and full-text needs none.
     """
     settings = get_settings()
-    depth = settings.retrieval_candidates
+    depth = candidates if candidates is not None else settings.retrieval_candidates
 
     vector_hits = await search_by_vector(
         session,
@@ -285,6 +287,54 @@ async def search_hybrid(
     return reciprocal_rank_fusion([vector_hits, text_hits], top_k=top_k)
 
 
+def apply_reranker(
+    reranker: Reranker,
+    query: str,
+    chunks: Sequence[RetrievedChunk],
+    *,
+    top_k: int | None = None,
+) -> list[RetrievedChunk]:
+    """Reorder retrieved chunks by a cross-encoder's judgement of the pair.
+
+    Separate from the searches and pure given a reranker, so the reordering is
+    testable with a fake and the same function serves every candidate set —
+    which is what lets the eval suite ask whether hybrid candidates rerank
+    better than vector ones.
+
+    Ties keep retrieval's order: `sorted` is stable, so a reranker that cannot
+    distinguish two passages leaves the upstream ranking alone rather than
+    shuffling it.
+    """
+    limit = top_k if top_k is not None else get_settings().retrieval_top_k
+    if limit < 1:
+        raise ValueError(f"top_k must be at least 1, got {limit}")
+    if not chunks:
+        return []
+
+    scores = reranker.score(query, [c.content for c in chunks])
+    if len(scores) != len(chunks):
+        raise ValueError(f"reranker returned {len(scores)} scores for {len(chunks)} passages")
+
+    ordered = sorted(zip(chunks, scores, strict=True), key=lambda pair: -pair[1])
+    best = ordered[0][1]
+    worst = ordered[-1][1]
+    span = best - worst
+
+    return [
+        RetrievedChunk(
+            chunk_id=chunk.chunk_id,
+            document_id=chunk.document_id,
+            page=chunk.page,
+            content=chunk.content,
+            # Rescaled from the cross-encoder's score, which is an unbounded
+            # logit, into the 0-is-best convention the other strategies use. Not
+            # a cosine distance and not comparable across queries.
+            distance=0.0 if span == 0 else (best - score) / span,
+        )
+        for chunk, score in ordered[:limit]
+    ]
+
+
 @observe(name="retrieval", as_type="retriever")
 async def search(
     session: AsyncSession,
@@ -294,6 +344,7 @@ async def search(
     top_k: int | None = None,
     document_id: str | None = None,
     mode: RetrievalMode | None = None,
+    reranker: Reranker | None = None,
 ) -> list[RetrievedChunk]:
     """Retrieve chunks for a question using the configured strategy.
 
@@ -309,8 +360,36 @@ async def search(
     if not query.strip():
         raise ValueError("query is empty")
 
-    strategy = mode or get_settings().retrieval_mode
+    settings = get_settings()
+    strategy = mode or settings.retrieval_mode
 
+    # With a reranker, retrieval fetches a deeper candidate set and the
+    # cross-encoder picks top_k out of it. Without one, retrieval's own order is
+    # the answer.
+    # An explicit reranker wins; otherwise the setting decides, so the eval
+    # suite turns reranking on by flag rather than by editing a call site.
+    judge = reranker or (get_reranker() if settings.retrieval_rerank else None)
+
+    if judge is not None:
+        depth = settings.retrieval_rerank_candidates
+        candidates = await _retrieve(
+            session, embedder, query, strategy, top_k=depth, document_id=document_id
+        )
+        return apply_reranker(judge, query, candidates, top_k=top_k)
+
+    return await _retrieve(session, embedder, query, strategy, top_k=top_k, document_id=document_id)
+
+
+async def _retrieve(
+    session: AsyncSession,
+    embedder: Embedder,
+    query: str,
+    strategy: RetrievalMode,
+    *,
+    top_k: int | None,
+    document_id: str | None,
+) -> list[RetrievedChunk]:
+    """One strategy's ranking, before any reranking."""
     if strategy == "text":
         return await search_by_text(session, query, top_k=top_k, document_id=document_id)
 
