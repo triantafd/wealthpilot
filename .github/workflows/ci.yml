@@ -72,10 +72,12 @@ jobs:
         run: uv sync --frozen
 
       - name: Lint
-        run: uv run ruff check .
+        # ../evals too: the eval CLI lives outside backend/ because that is
+        # the path CLAUDE.md documents, but it is still our code.
+        run: uv run ruff check . ../evals
 
       - name: Check formatting
-        run: uv run ruff format --check .
+        run: uv run ruff format --check . ../evals
 
       - name: Type check
         run: uv run mypy app

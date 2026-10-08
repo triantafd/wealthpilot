@@ -28,17 +28,35 @@ The point of the project is not the chatbot. It is the engineering around it: ev
 - **Frontend:** Vite, React, TypeScript, Tailwind CSS, shadcn/ui, TanStack Query, Recharts
 - **Infra:** Docker Compose locally, AWS for deployment, GitHub Actions CI
 
-## Results (fill in as you go — this table is what recruiters read)
+## Results
 
-| Metric | Baseline (v0) | Current |
-|---|---|---|
-| Retrieval hit@5 | | |
-| Faithfulness (Ragas) | | |
-| Routing accuracy | | |
-| SQL execution accuracy | | |
-| Safety pass rate | | |
-| p95 latency | | |
-| Cost per query | | |
+Phase 1 baseline: vector-only retrieval, measured over 75 golden questions,
+averaged across three runs of the same suite. `evals/reports/baseline.json`
+carries the per-case detail and the run-to-run spread.
+
+| Metric | Phase 1 baseline | Current | Spread over 3 runs |
+|---|---|---|---|
+| Retrieval MRR | 0.747 | — | ±0.000 |
+| Retrieval hit@1 | 62.9% | — | ±0.000 |
+| Retrieval hit@6 | 97.1% | — | ±0.000 |
+| Citation validity | 98.4% | — | ±0.003 |
+| Faithfulness (Ragas) | 87.0% | — | ±0.011 |
+| Answer relevancy (Ragas) | 62.1% | — | ±0.008 |
+| Refusal correctness | 100% | — | ±0.000 |
+| p95 latency | 3.5 s | — | ±0.46 s |
+| Cost per query | $0.00032 | — | ±0.000 |
+| Routing accuracy | *Phase 4* | | |
+| SQL execution accuracy | *Phase 4* | | |
+| Safety pass rate | *Phase 6* | | |
+
+Read MRR and hit@1 as the retrieval headline. hit@6 is near-saturated: `k=6`
+covers 7.4% of an 81-chunk corpus, so it says more about corpus size than about
+retrieval, and it is kept because it becomes informative as the corpus grows.
+
+The Ragas metrics are **report-only**, not gates. An LLM judge moves on its own
+— the spread column is how much — and answer relevancy penalises the caveats the
+research prompt explicitly requires, so a drop there can mean the answer got
+*more* correct. Everything with a ±0.000 spread is deterministic and gates CI.
 
 ## Quick start
 

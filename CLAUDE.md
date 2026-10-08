@@ -18,6 +18,8 @@ uv sync
 uv run uvicorn app.main:app --reload
 uv run pytest                      # unit + integration, without LLM tests
 uv run pytest -m llm               # opt in to tests that call a real provider
+# Database tests drop, recreate and migrate their own `wealthpilot_test`
+# database on every run, so they never read or write your development data.
 uv run ruff check . && uv run ruff format .
 uv run mypy app
 uv run alembic revision --autogenerate -m "msg" && uv run alembic upgrade head

@@ -5,11 +5,12 @@ pgvector distance operators, and the CHECK constraints that stop bad rows
 regardless of what the application code does. They skip when Postgres is not
 running (see conftest).
 
-Written to pass against a seeded database as well as an empty one. Every fixed
-id here is one the seed script cannot generate, and every assertion is scoped
-to this test's own rows rather than counting a whole table — an earlier version
-counted `SELECT count(*) FROM transactions` and only passed because nothing had
-been seeded yet.
+These run against a throwaway database that holds only what the test puts
+there (see conftest), so nothing here depends on the development data. The
+distinctly prefixed ids and the scoped assertions are kept anyway: a test that
+says what it means is cheap, and an earlier version counted
+`SELECT count(*) FROM transactions` and only passed because nothing had been
+seeded yet.
 """
 
 import uuid

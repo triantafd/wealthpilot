@@ -21,8 +21,13 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Set at runtime rather than in alembic.ini, so the password stays out of git
-# and migrations always hit the same database as the app.
-config.set_main_option("sqlalchemy.url", get_settings().database_url_sync)
+# and migrations hit the same database as the app by default.
+#
+# A caller that has already set a URL on the Config wins: the test suite points
+# migrations at a throwaway database, and Phase 9 will need the same hook to
+# migrate RDS from a deploy job.
+if not config.get_main_option("sqlalchemy.url", None):
+    config.set_main_option("sqlalchemy.url", get_settings().database_url_sync)
 
 target_metadata = Base.metadata
 
