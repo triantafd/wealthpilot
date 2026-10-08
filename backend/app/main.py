@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from app import __version__
+from app.api.usage import router as usage_router
 from app.config import get_settings
 from app.observability import flush
 
@@ -33,6 +34,8 @@ app = FastAPI(
     summary="Multi-agent assistant for a synthetic wealth-management firm",
     lifespan=lifespan,
 )
+
+app.include_router(usage_router)
 
 
 class Health(BaseModel):
