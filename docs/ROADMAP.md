@@ -53,9 +53,14 @@ Work top to bottom. Each phase ends with something that runs and a number you ca
 - [ ] Research agent (wraps Phase 3 retrieval)
 - [ ] Portfolio agent: text-to-SQL on `v_*` views, read-only role, sqlglot validation, LIMIT, timeout
 - [ ] SSE streaming of graph events using the contract in ARCHITECTURE §6
+- [ ] Request path calls `record_usage`, with a test that a real request
+      produces a `usage` row — `/usage` was built in Phase 2 and returns
+      zeros until something records, so without this it can stay at zero
+      silently and look like it works
 - [ ] Evals: `routing.jsonl` (≥60 cases), `sql.jsonl` (≥40 cases, compared by **result rows**, not SQL text)
 
-**Done when:** routing accuracy and SQL execution accuracy are in the eval report.
+**Done when:** routing accuracy and SQL execution accuracy are in the eval
+report, and `/usage` shows a non-zero row after a request.
 
 ## Phase 5 — Actions and human-in-the-loop (1 week)
 
@@ -100,6 +105,11 @@ Work top to bottom. Each phase ends with something that runs and a number you ca
 - [ ] LLM via Bedrock (keep the provider switchable)
 - [ ] Secrets Manager, CloudWatch logs and alarms
 - [ ] Infrastructure as code (CDK or Terraform)
+- [ ] Authenticate `/usage` before it is reachable from the internet. It
+      exposes spend, request volume and per-route traffic — commercially
+      sensitive on its own, and a free read on how the system is used.
+      It is unauthenticated today because nothing is deployed; shipping it
+      as-is would publish that data
 
 ## Phase 10 — Stretch modules
 

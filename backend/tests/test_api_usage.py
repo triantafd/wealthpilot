@@ -4,38 +4,20 @@ The database session dependency is overridden with the test session, so these
 exercise the real SQL against the throwaway test database while staying inside
 the per-test transaction that gets rolled back.
 
-An httpx AsyncClient over ASGITransport rather than Starlette's TestClient:
-TestClient drives the app from a worker thread on its own event loop, while the
-session here belongs to pytest-asyncio's loop, and asyncpg refuses a connection
-used across two loops ("attached to a different loop"). The async client runs
-the request on the same loop as the test.
+The `client` fixture in conftest.py provides an httpx AsyncClient wired to this
+test's session; see it for why Starlette's TestClient does not work here.
 """
 
-from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.session import get_session
 from app.main import app
 from app.usage import MAX_WINDOW_DAYS, record_usage
-
-
-@pytest.fixture
-async def client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
-    async def _session() -> AsyncIterator[AsyncSession]:
-        yield db_session
-
-    app.dependency_overrides[get_session] = _session
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as async_client:
-        yield async_client
-    app.dependency_overrides.clear()
 
 
 def test_usage_is_in_the_openapi_schema() -> None:

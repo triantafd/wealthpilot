@@ -26,11 +26,14 @@ import psycopg
 import pytest
 from alembic import command
 from alembic.config import Config
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, create_async_engine
 
 from app import observability
 from app.config import get_settings
+from app.db.session import get_session
+from app.main import app
 from app.observability import get_langfuse
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -186,3 +189,34 @@ def _tracing_disabled(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     yield
     get_settings.cache_clear()
     get_langfuse.cache_clear()
+
+
+@pytest.fixture
+async def client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
+    """An HTTP client for the app, sharing this test's database session.
+
+    An httpx AsyncClient over ASGITransport rather than Starlette's TestClient.
+    TestClient drives the app from a worker thread running its own event loop,
+    while `db_session` belongs to pytest-asyncio's loop, and asyncpg refuses a
+    connection used from two loops ("attached to a different loop"). The async
+    client runs the request on the same loop as the test, so endpoint tests see
+    the rows the test just wrote and still get rolled back afterwards.
+
+    Any endpoint test that touches the database wants this fixture. One that
+    does not — checking a schema, or a route needing no session — can use
+    TestClient directly.
+    """
+
+    async def _session() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    app.dependency_overrides[get_session] = _session
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as http_client:
+            yield http_client
+    finally:
+        # In a finally: a failing test must not leave the override in place for
+        # whatever runs next.
+        app.dependency_overrides.pop(get_session, None)
