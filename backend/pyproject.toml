@@ -21,6 +21,10 @@ dependencies = [
     "langchain-text-splitters>=0.3",
     "langchain>=0.3",
     "langchain-openai>=0.2",
+    # Runtime, unlike ragas below: the service traces itself in production.
+    # v4 renamed the span API (start_as_current_observation) and the client
+    # argument is base_url, so the major is pinned rather than floating.
+    "langfuse>=4,<5",
 ]
 
 # `app` is installed into the venv rather than merely being on sys.path, so

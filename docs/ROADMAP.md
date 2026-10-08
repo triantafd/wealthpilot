@@ -30,7 +30,7 @@ Work top to bottom. Each phase ends with something that runs and a number you ca
 
 ## Phase 2 — Observability and cost (2–3 days)
 
-- [ ] Langfuse tracing (one trace per request, spans per step)
+- [x] Langfuse tracing (one trace per request, spans per step)
 - [ ] `usage` table + `/usage` endpoint
 - [ ] Price table per model in config; compute cost per request
 

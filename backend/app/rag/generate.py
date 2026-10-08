@@ -17,10 +17,12 @@ from dataclasses import dataclass
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
+from langfuse import observe
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.prompts import load_prompt
+from app.observability import langchain_callbacks
 from app.rag.embeddings import Embedder
 from app.rag.retrieve import RetrievedChunk, search
 
@@ -224,6 +226,7 @@ def normalise_quote(text: str) -> str:
     return _TRAILING_PUNCTUATION.sub("", collapsed)
 
 
+@observe(name="verify-citations")
 def verify_citations(
     citations: list[Citation], retrieved: list[RetrievedChunk]
 ) -> list[CitationCheck]:
@@ -291,7 +294,12 @@ async def generate_answer(
     # is the only place token usage survives structured output, and the eval
     # runner reports cost per query.
     structured = chat_model.with_structured_output(GeneratedAnswer, include_raw=True)
-    response = await structured.ainvoke(build_messages(question, chunks))
+    # The handler turns this into a generation span carrying the rendered
+    # prompt, the model's raw output and the token counts. Empty list when
+    # tracing is off.
+    response = await structured.ainvoke(
+        build_messages(question, chunks), config={"callbacks": langchain_callbacks()}
+    )
 
     if isinstance(response, GeneratedAnswer):  # a fake that ignores include_raw
         generated: GeneratedAnswer | None = response

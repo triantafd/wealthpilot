@@ -29,7 +29,9 @@ from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, create_async_engine
 
+from app import observability
 from app.config import get_settings
+from app.observability import get_langfuse
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
@@ -155,3 +157,32 @@ async def db_session(migrated_db: AsyncConnection) -> AsyncIterator[AsyncSession
         yield session
     finally:
         await session.close()
+
+
+@pytest.fixture(autouse=True)
+def _tracing_disabled(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Keep Langfuse off for every test.
+
+    `get_settings()` parses the repo-root `.env`, so once a developer adds real
+    Langfuse keys the suite would start shipping spans to the cloud from test
+    runs — including whatever a test passes as a question. Clearing the
+    variables here makes the suite behave identically with and without an
+    account, the same reason the database tests build their own database.
+
+    Autouse rather than opt-in: a test that traces by accident is exactly the
+    failure this prevents, so it cannot depend on remembering the fixture.
+    """
+    # Only the credentials. Blanking LANGFUSE_HOST too made the client build
+    # a schemeless URL and attempt a real request during the suite.
+    for name in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
+        monkeypatch.setenv(name, "")
+
+    get_settings.cache_clear()
+    get_langfuse.cache_clear()
+    observability._forced = None
+    # configure_tracing() sets a module-level override; without resetting it
+    # a test that forces tracing off would silently disable the next one.
+    observability._forced = None
+    yield
+    get_settings.cache_clear()
+    get_langfuse.cache_clear()

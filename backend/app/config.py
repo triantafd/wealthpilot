@@ -8,7 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # backend/app/config.py -> backend/app -> backend -> repo root.
@@ -16,6 +16,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # commands run from backend/ while eval commands run from the repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ENV_FILE = REPO_ROOT / ".env"
+
+
+# The region that issues a key is the only one that accepts it, so this is a
+# default rather than a constant to reuse.
+LANGFUSE_CLOUD_EU = "https://cloud.langfuse.com"
+
+
+def _secret(value: SecretStr | None) -> str:
+    """The value inside an optional secret, or "" when it is unset or blank."""
+    return value.get_secret_value() if value is not None else ""
 
 
 class Settings(BaseSettings):
@@ -50,6 +60,33 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
 
+    # --- Observability ------------------------------------------------------
+    # Langfuse. Optional on purpose: with either key missing, tracing is
+    # disabled and the application runs unchanged, so the test suite and CI
+    # need no account (see app/observability.py).
+    langfuse_public_key: SecretStr | None = None
+    langfuse_secret_key: SecretStr | None = None
+    # Named after the variable the Langfuse dashboard tells you to set. The
+    # client's constructor argument is `base_url`; observability.py maps it.
+    # The region must match the keys: EU keys are rejected by the US endpoint.
+    langfuse_host: str = LANGFUSE_CLOUD_EU
+
+    @field_validator("langfuse_host")
+    @classmethod
+    def _host_must_be_absolute(cls, value: str) -> str:
+        """Fall back to the default when blank, and require a scheme.
+
+        An empty value reached the client as base_url="" and produced a
+        schemeless request rather than an error, so a misconfiguration showed
+        up as a urllib3 warning instead of something a reader would notice.
+        """
+        host = value.strip()
+        if not host:
+            return LANGFUSE_CLOUD_EU
+        if not host.startswith(("http://", "https://")):
+            raise ValueError(f"LANGFUSE_HOST must start with http:// or https://, got {host!r}")
+        return host.rstrip("/")
+
     # --- Postgres -----------------------------------------------------------
     # Single source of truth, shared with docker-compose.yml, so the port only
     # has to be overridden in one place.
@@ -63,6 +100,20 @@ class Settings(BaseSettings):
     # Created by an Alembic migration; falls back to the owner until it exists.
     postgres_ro_user: str | None = None
     postgres_ro_password: SecretStr | None = None
+
+    @property
+    def tracing_enabled(self) -> bool:
+        """Whether Langfuse has both credentials.
+
+        Both are required: a public key alone cannot authenticate, and sending
+        spans that will be rejected would add latency for nothing.
+
+        A blank value counts as absent. `.env.example` tells people to leave
+        these empty when they have no account, and pydantic parses an empty
+        environment variable into SecretStr("") rather than None — checking
+        only for None would enable tracing with credentials that cannot work.
+        """
+        return bool(_secret(self.langfuse_public_key) and _secret(self.langfuse_secret_key))
 
     def _dsn(self, driver: str, user: str, password: SecretStr) -> str:
         return (

@@ -19,6 +19,7 @@ ranked lists it has no scores for.
 
 from dataclasses import dataclass
 
+from langfuse import observe
 from sqlalchemy import Integer, String, bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -107,6 +108,7 @@ async def search_by_vector(
     ]
 
 
+@observe(name="retrieval", as_type="retriever")
 async def search(
     session: AsyncSession,
     embedder: Embedder,
