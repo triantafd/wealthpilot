@@ -107,3 +107,30 @@ async def test_the_window_length_is_echoed_back(client: AsyncClient) -> None:
     since = datetime.fromisoformat(body["since"])
     assert since.utcoffset() == timedelta(0)
     assert since.hour == 0
+
+
+async def test_unpriced_requests_are_reported(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """So a dashboard can say the total excludes them rather than showing a
+    number that is quietly low."""
+    await record_usage(db_session, model="openai:gpt-4o-mini", input_tokens=1000, output_tokens=0)
+    await record_usage(db_session, model="openai:gpt-9-ultra", input_tokens=5000, output_tokens=500)
+
+    totals = (await client.get("/usage")).json()["totals"]
+
+    assert totals["requests"] == 2
+    assert totals["unpriced_requests"] == 1
+    assert totals["cost_usd"] == "0.000150"
+
+
+async def test_cost_is_derived_from_tokens_without_the_caller_doing_maths(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await record_usage(db_session, model="openai:gpt-4o-mini", input_tokens=3180, output_tokens=142)
+
+    totals = (await client.get("/usage")).json()["totals"]
+
+    # Postgres rounds the unrounded Decimal into NUMERIC(12, 6) on insert.
+    assert totals["cost_usd"] == "0.000562"
+    assert totals["unpriced_requests"] == 0

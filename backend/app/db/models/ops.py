@@ -138,5 +138,10 @@ class UsageRecord(Base, TimestampMixin):
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     # Six decimal places: a single cheap request can cost fractions of a cent,
     # and rounding to 2dp would floor most rows to zero.
-    cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False, server_default="0")
+    #
+    # Nullable, and NULL means "unpriced" — the model had no price on file when
+    # the request ran. Zero would be indistinguishable from a request that
+    # genuinely cost nothing and would understate spend silently, so /usage
+    # counts unpriced requests separately instead (see app/pricing.py).
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     latency_ms: Mapped[int | None] = mapped_column(Integer)

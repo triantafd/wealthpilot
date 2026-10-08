@@ -76,19 +76,51 @@ async def test_cost_keeps_six_decimal_places(db_session: AsyncSession) -> None:
     assert cost == Decimal("0.000001")
 
 
-async def test_cost_defaults_to_zero_until_the_price_table_exists(
-    db_session: AsyncSession,
-) -> None:
-    """Writing a guessed cost would be worse than recording none."""
+async def test_cost_is_derived_from_the_model(db_session: AsyncSession) -> None:
+    """The caller passes tokens, not money: one price table, one answer."""
     row_id = await record_usage(
-        db_session, model="openai:gpt-4o-mini", input_tokens=10, output_tokens=2
+        db_session, model="openai:gpt-4o-mini", input_tokens=3180, output_tokens=142
     )
 
     cost = (
         await db_session.execute(text("SELECT cost_usd FROM usage WHERE id = :id"), {"id": row_id})
     ).scalar_one()
 
-    assert cost == Decimal(0)
+    # 3180 * 0.15/1M + 142 * 0.60/1M
+    assert cost == Decimal("0.000562")
+
+
+async def test_an_unpriced_model_records_null_not_zero(db_session: AsyncSession) -> None:
+    """Zero would be indistinguishable from a request that genuinely cost
+    nothing, and would understate spend silently the moment a new model is
+    configured — the case where someone is watching the number."""
+    row_id = await record_usage(
+        db_session, model="openai:gpt-9-ultra", input_tokens=1000, output_tokens=100
+    )
+
+    cost = (
+        await db_session.execute(text("SELECT cost_usd FROM usage WHERE id = :id"), {"id": row_id})
+    ).scalar_one()
+
+    assert cost is None
+
+
+async def test_an_explicit_cost_overrides_the_table(db_session: AsyncSession) -> None:
+    """For recording a figure the provider reported rather than one we derived.
+    Passing zero means "this really was free", not "unknown"."""
+    row_id = await record_usage(
+        db_session,
+        model="openai:gpt-4o-mini",
+        input_tokens=3180,
+        output_tokens=142,
+        cost_usd=Decimal("0.001234"),
+    )
+
+    cost = (
+        await db_session.execute(text("SELECT cost_usd FROM usage WHERE id = :id"), {"id": row_id})
+    ).scalar_one()
+
+    assert cost == Decimal("0.001234")
 
 
 async def test_negative_tokens_are_refused(db_session: AsyncSession) -> None:
@@ -213,3 +245,29 @@ async def test_an_unrouted_request_is_kept_not_dropped(db_session: AsyncSession)
 async def test_an_out_of_range_window_is_refused(db_session: AsyncSession, days: int) -> None:
     with pytest.raises(ValueError, match="days must be between"):
         await summarise_usage(db_session, days=days)
+
+
+async def test_unpriced_requests_are_counted_not_hidden(db_session: AsyncSession) -> None:
+    """SQL's SUM skips NULLs, so an unpriced request contributes nothing to the
+    total. The count is how a reader knows the total is incomplete."""
+    await record_usage(db_session, model="openai:gpt-4o-mini", input_tokens=1000, output_tokens=0)
+    await record_usage(db_session, model="openai:gpt-9-ultra", input_tokens=5000, output_tokens=500)
+
+    summary = await summarise_usage(db_session, days=1)
+
+    assert summary.totals.requests == 2
+    # Both requests' tokens are counted...
+    assert summary.totals.input_tokens == 6000
+    # ...but only the priced one contributes cost, and that is visible.
+    assert summary.totals.cost_usd == Decimal("0.000150")
+    assert summary.totals.unpriced_requests == 1
+
+
+async def test_nothing_is_unpriced_when_every_model_has_a_price(
+    db_session: AsyncSession,
+) -> None:
+    await record_usage(db_session, model="openai:gpt-4o-mini", input_tokens=10, output_tokens=1)
+
+    summary = await summarise_usage(db_session, days=1)
+
+    assert summary.totals.unpriced_requests == 0

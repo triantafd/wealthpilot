@@ -26,7 +26,15 @@ class Totals(BaseModel):
     output_tokens: int
     # Serialized as a string, not a float: these are fractions of a cent at six
     # decimal places, and a float round-trip loses them.
-    cost_usd: Decimal
+    cost_usd: Decimal = Field(
+        description="Summed over priced requests only; see unpriced_requests."
+    )
+    unpriced_requests: int = Field(
+        description=(
+            "Requests whose model had no price on file. Non-zero means cost_usd "
+            "is incomplete rather than low."
+        )
+    )
     p50_latency_ms: int | None = Field(
         None, description="Null when no request in the window recorded a latency."
     )
