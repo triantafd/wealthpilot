@@ -108,11 +108,29 @@ def build_report(
         "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "git_sha": git_sha(),
         "git_dirty": git_dirty(),
+        # Everything that changes what a run measures. The Phase 3 diagnostic
+        # had to identify six saved runs by their MRR values because the
+        # retrieval settings were missing here, which is not a method that
+        # survives two variants scoring the same.
         "config": {
             "llm_model": settings.llm_model,
             "embedding_model": settings.embedding_model,
             "embedding_dimensions": settings.embedding_dimensions,
             "retrieval_top_k": settings.retrieval_top_k,
+            "retrieval_mode": settings.retrieval_mode,
+            "retrieval_rerank": settings.retrieval_rerank,
+            "rerank_model": settings.rerank_model if settings.retrieval_rerank else None,
+            "retrieval_rerank_candidates": (
+                settings.retrieval_rerank_candidates if settings.retrieval_rerank else None
+            ),
+            # RRF parameters only mean something for the hybrid strategy.
+            "retrieval_rrf_k": (
+                settings.retrieval_rrf_k if settings.retrieval_mode == "hybrid" else None
+            ),
+            "retrieval_candidates": (
+                settings.retrieval_candidates if settings.retrieval_mode == "hybrid" else None
+            ),
+            "embed_strip_boilerplate": settings.embed_strip_boilerplate,
         },
         "case_count": len(results),
         "metrics": metrics,

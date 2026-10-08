@@ -60,10 +60,12 @@ class Settings(BaseSettings):
     # Which retrieval strategy `search()` uses. A setting so the eval suite can
     # compare Phase 3 variants without a code change.
     #
-    # "vector" is the Phase 1 baseline. "text" is Postgres full-text search,
-    # which is worse on its own — MRR 0.611 against the baseline's 0.747 — and
-    # is here because it fails on different cases, which is what makes the
-    # hybrid in task 2 worth building.
+    # "vector" is the default and what the baseline measures. "text" and
+    # "hybrid" remain available and documented, but Phase 3 measured both as
+    # worse: full-text alone scores MRR 0.665, and hybrid's rank 1 was
+    # identical to vector's in 73 of 75 cases once a reranker was involved.
+    # They are kept because the finding is more useful than the code is costly
+    # — someone can switch and see for themselves.
     retrieval_mode: Literal["vector", "text", "hybrid"] = "vector"
 
     # Reciprocal Rank Fusion. Score for a chunk is the sum over strategies of
@@ -101,6 +103,23 @@ class Settings(BaseSettings):
     # bge-reranker as an option; it is a setting so both can be measured
     # rather than one assumed.
     rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+    # --- Ingestion variants -------------------------------------------------
+    # Strip the repeated title and disclaimer line from what gets *embedded*,
+    # leaving the stored content untouched so citations still quote the real
+    # text and full-text search still indexes it.
+    #
+    # On by default as of Phase 3: it was the only variant in that phase to
+    # improve hit@1, moving it from 62.9% to 64.3% with MRR up 0.8, and nothing
+    # regressed. Every ranking method tried — full-text, hybrid at twenty RRF
+    # settings, and a cross-encoder over both candidate sets — left hit@1 at
+    # 61.4% or 62.9%. See docs/EXPERIMENTS.md.
+    #
+    # A setting rather than an edit to ingestion, so both corpora can be
+    # rebuilt on demand and the comparison stays reproducible. Changing it
+    # requires a re-ingest with --force: the vectors on disk were produced
+    # under whichever value was set at the time.
+    embed_strip_boilerplate: bool = True
 
     openai_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None

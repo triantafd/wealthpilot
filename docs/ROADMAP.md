@@ -53,8 +53,12 @@ first idea always worked.
 - [x] Cross-encoder reranker — **report latency alongside accuracy.** A reranker
       that adds 400ms to every request is a different proposition from one that
       adds 40ms, and accuracy alone hides that
-- [ ] Try 2–3 chunk sizes
-- [ ] Variant: exclude the repeated title and disclaimer boilerplate from what
+- [ ] Try 2–3 chunk sizes — **skipped deliberately**, reason recorded in
+      `docs/EXPERIMENTS.md`: the evidence points at a question-shaped
+      restatement out-matching the governing prose, which moving passage
+      boundaries would not address. Cheap to run later if the FAQ work does
+      not explain the remaining failures
+- [x] Variant: exclude the repeated title and disclaimer boilerplate from what
       gets embedded, measured on its own, **across all documents and not only
       the factsheets**. Eight of the 81 chunks — the first chunk of eight
       documents — open with a `# Title` line and then the identical sentence

@@ -355,3 +355,40 @@ def test_a_count_metric_is_not_printed_as_a_percentage() -> None:
     assert "%" not in _format("answer.prose_refs_written", 16.3)
     assert "16.3" in _format("answer.prose_refs_written", 16.3)
     assert "%" in _format("answer.must_include", 0.938)
+
+
+def test_a_report_records_what_produced_it() -> None:
+    """The Phase 3 diagnostic had to identify six saved runs by their MRR
+    values, because the retrieval settings were absent from the config block.
+    Two variants that happen to score the same would have been
+    indistinguishable."""
+    from app.evals.report import build_report
+
+    report = build_report("all", {}, [])
+
+    assert set(report["config"]) >= {
+        "llm_model",
+        "embedding_model",
+        "retrieval_top_k",
+        "retrieval_mode",
+        "retrieval_rerank",
+        "embed_strip_boilerplate",
+    }
+
+
+def test_rrf_parameters_are_recorded_only_for_the_hybrid_strategy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recording an RRF value for a vector-only run would suggest it affected
+    the result."""
+    from app.config import get_settings
+    from app.evals.report import build_report
+
+    assert build_report("all", {}, [])["config"]["retrieval_rrf_k"] is None
+
+    monkeypatch.setenv("RETRIEVAL_MODE", "hybrid")
+    get_settings.cache_clear()
+    try:
+        assert build_report("all", {}, [])["config"]["retrieval_rrf_k"] == 60
+    finally:
+        get_settings.cache_clear()

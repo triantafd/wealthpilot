@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Chunk as ChunkRow
 from app.db.models import Document
-from app.rag.chunking import CHUNK_OVERLAP, CHUNK_SIZE, chunk_pages
+from app.rag.chunking import CHUNK_OVERLAP, CHUNK_SIZE, chunk_pages, text_for_embedding
 from app.rag.chunking import Chunk as TextChunk
 from app.rag.documents import SourceDocument
 from app.rag.embeddings import Embedder
@@ -126,7 +126,9 @@ async def run_ingest(
     prepared: list[tuple[SourceDocument, list[TextChunk], list[list[float]]]] = []
     for source in plan.to_index:
         chunks = chunk_pages(source.id, source.pages, size=size, overlap=overlap)
-        vectors = await embedder.embed([chunk.content for chunk in chunks])
+        # text_for_embedding applies the configured ingestion variant; the
+        # stored content below is always the chunk as written.
+        vectors = await embedder.embed([text_for_embedding(chunk.content) for chunk in chunks])
         prepared.append((source, chunks, vectors))
         report.vectors_embedded += len(vectors)
 

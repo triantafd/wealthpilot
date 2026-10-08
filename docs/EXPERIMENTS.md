@@ -366,3 +366,211 @@ its CUDA build, and this machine has no GPU. Pinning the CPU wheel through
 `[tool.uv.index]` brought it to **1.3 GB**. `[tool.uv.sources]` only binds
 *direct* dependencies, so torch also had to be named explicitly in the group —
 without that line the pin is silently ignored and the CUDA build returns.
+
+---
+
+## Diagnostic — is the hit@1 ceiling in the ranker or the data?
+
+Free: six method runs were already on disk, so this is arithmetic over saved
+reports with no model calls. Run because the inference "every method gave the
+same hit@1, so it must be the data" does not hold on its own — the *count* was
+the same but the failing cases were not, with reranking gaining seven and losing
+eight. A real ceiling means the *same* cases failing everywhere.
+
+Methods compared: vector, full-text, hybrid at depth 20 and 10, vector+rerank,
+hybrid+rerank. Scored cases: 70 of 75 (five expect refusals and have no source).
+
+| | cases |
+|---|---|
+| rank 1 under **every** method | 27 |
+| rank 1 under **some** method | 26 |
+| rank 1 under **no** method | **17** |
+
+So there is both a hard core and real headroom: 26 cases change hands between
+methods, and 17 resist all six. **All 17 reach the top 6 under at least one
+method**, so nothing is unretrievable — every one of them is a rank-2-to-6
+ordering problem, which is recoverable.
+
+### The data hypothesis is confirmed, and it has a name
+
+`compliance-faq` is a wrong rank-1 winner in **all 17** of the never-rank-1
+cases, and the *only* wrong winner in six of them.
+
+| Document | Wrong rank-1s |
+|---|---|
+| **`compliance-faq`** | **96** |
+| `client-restrictions` | 17 |
+| `factsheet-meridian-uk-corporate-bond` | 14 |
+| `account-types` | 11 |
+
+It takes **20.8% of all retrieved slots but 57.1% of all wrong rank-1s** —
+punching about 2.7x above its weight.
+
+The cause is a property of the corpus, not a defect in any ranker. The FAQ
+restates rules from every other document in question-shaped language, and the
+golden set asks questions. For a question, a passage that *reads like an answer
+to that question* legitimately looks like the better match; the governing
+document states the rule as prose. No ranker is wrong to prefer it. This is why
+vector, term matching, fusion and a cross-encoder all make the same mistake.
+
+### This demotes the boilerplate hypothesis
+
+Only **34 of 168 wrong rank-1s (20%) are a `#p1` chunk at all**, and that
+includes p1 chunks from documents other than the FAQ. The shared
+title-and-disclaimer text lives exclusively in p1 chunks, so it can explain at
+most a fifth of the symptom — and `compliance-faq` wins wrongly from p1, p2 and
+p3 alike.
+
+The boilerplate variant is still worth running, because it is cheap and a
+negative result is worth recording. But it should be expected to produce a small
+effect, and this diagnostic is the reason to expect that rather than a surprise
+after the fact.
+
+### Hypothesis, not yet tested: the reranker prefers FAQ-style text
+
+Recorded with the two observations that prompted it, and deliberately untested.
+
+1. `mandate-consent-01` was unretrievable under vector search, reached rank 4
+   under hybrid, and the **reranker pushed it back out of the top 6** in favour
+   of a `compliance-faq` passage.
+2. `prohibited-no-assessment-01` fails in the same shape — the FAQ restates the
+   rule, the governing document rules.
+
+Two cases is a hypothesis. The diagnostic above, however, suggests the
+hypothesis as originally framed is **too narrow**: the preference is not
+specific to the cross-encoder. Every method tried prefers `compliance-faq`, so
+any test should compare how strongly each method over-ranks it rather than
+treating it as a reranker quirk.
+
+The test, when it is run: score `compliance-faq` chunks against
+governing-document chunks for the same question across the whole set, and check
+whether the gap is wider for the cross-encoder than for cosine distance. Not run
+yet.
+
+### A reproducibility gap this exposed
+
+The six runs had to be identified **by their MRR values**, because a report's
+`config` block records `llm_model`, `embedding_model`, `embedding_dimensions`
+and `retrieval_top_k` — but not `retrieval_mode`, `retrieval_rerank` or the RRF
+parameters. A report should say what produced it. Worth fixing before the next
+variant, or the reports pile up indistinguishable.
+
+---
+
+## Phase 3, task 4 — Excluding repeated boilerplate from embeddings
+
+`embed_strip_boilerplate` removes a chunk's leading H1 title and the identical
+`**WealthPilot Advisers Ltd** — fictional firm, synthetic document.` line from
+**what gets embedded**. The stored content is untouched, so a citation still
+quotes the document as written and the generated `tsvector` still indexes the
+text. The hypothesis is about vector similarity, so the experiment changes only
+the vectors.
+
+A setting rather than an edit to ingestion, so both corpora can be rebuilt on
+demand. Changing it needs a re-ingest with `--force`, because the vectors on
+disk were produced under whichever value was set at the time.
+
+### Result: the only thing in Phase 3 that improved hit@1
+
+| Variant | MRR | hit@1 | hit@6 |
+|---|---|---|---|
+| vector (baseline) | 0.747 | 62.9% | 97.1% |
+| **vector + strip boilerplate** | **0.754** (+0.8) | **64.3%** (+1.4) | 97.1% |
+| vector + rerank | **0.759** | 61.4% | 97.1% |
+| vector + strip + rerank | 0.756 | 61.4% | 97.1% |
+
+Every ranking method tried in this phase left hit@1 at 61.4% or 62.9%. A
+one-line change to what gets embedded moved it to **64.3%** — the best figure
+recorded, and the diagnostic's prediction that the ceiling was in the data
+rather than the ranker, confirmed from a second direction.
+
+The effect was expected to be small, and it is small. It is also the only
+positive one.
+
+### The reranker overrides it
+
+Reranking the improved candidate set returns hit@1 to exactly **61.4%** — the
+same value it produces from plain vector candidates, from hybrid candidates, and
+from fused candidates at twenty different RRF settings. The cross-encoder's
+rank-1 choice is insensitive to how good the shortlist it was handed is, which
+is a stronger version of the 73-of-75 finding in task 3 and further evidence
+that its preference is systematic rather than incidental.
+
+### Two implementations were wrong before this one
+
+Worth recording, because both looked right and quietly tested something else.
+
+1. **Stripped every markdown heading, anywhere in the chunk.** Turned
+   `## 2. Annual allowances` followed by a table into a bare table.
+2. **Stripped every *leading* heading.** Chunking splits on headings, so a chunk
+   usually starts with one — same outcome for most chunks.
+
+A section heading is the most retrievable text in a chunk. Removing it tests a
+far more aggressive hypothesis than the repeated-boilerplate one, and would have
+been reported as "excluding boilerplate" either way. The shipped version removes
+a leading **H1** only: in this corpus `#` is the document title and `##`/`###`
+are sections.
+
+---
+
+## Free check — does the FAQ winning cause wrong answers, or only weaker citations?
+
+Asked of the 17 cases that never reach rank 1 under any method, using the
+existing full-suite baseline report. No new runs.
+
+| | cases |
+|---|---|
+| Answer still correct (`must_include` passes) | **14** |
+| Answer wrong | **2** |
+| Prose-only, nothing to judge | 1 |
+
+**`compliance-faq` winning rank 1 costs citation authority, not correctness.**
+The model reads all six retrieved passages, and the FAQ restates the rule
+accurately, so the figure comes out right — attributed to the FAQ rather than to
+the document that governs.
+
+The two wrong answers are `mandate-consent-01` and
+`prohibited-no-assessment-01`, and they are wrong for a different reason: in
+those the governing document is outside the top **six**, not merely below rank
+one. A passage at rank 4 still reaches the prompt; a passage that was never
+retrieved cannot be cited however the ranking is ordered.
+
+### So the FAQ-exclusion diagnostic is not warranted
+
+The plan was to measure retrieval with `compliance-faq` removed from the index
+*if* the FAQ caused wrong answers. On this evidence it does not, in 14 of 16
+judgeable cases. Removing it would measure a corpus nobody will ship against to
+diagnose a problem that costs attribution rather than accuracy.
+
+What this reframes: **hit@1 is the wrong metric to chase for answer
+correctness.** hit@6 governs correctness, it is 97.1%, and no variant in this
+phase moved it. hit@1 governs whether the citation points at the authoritative
+document, which matters for a compliance tool but is a different claim from
+getting the answer right.
+
+The two genuinely-wrong cases are hit@6 misses. Hybrid is the only variant that
+fixed either — `mandate-consent-01` from unretrievable to rank 4 — and the
+reranker then undid it.
+
+---
+
+## Phase 3, task 5 — Chunk sizes: not run
+
+Skipped deliberately, with the reason recorded rather than left as an untouched
+checkbox.
+
+The diagnostic established that 17 of 70 cases resist every ranking method and
+that `compliance-faq` is a wrong rank-1 winner in all 17, taking 20.8% of
+retrieved slots and 57.1% of wrong rank-1s. The free check above then
+established that this costs citation authority rather than correctness, and that
+the two genuinely wrong answers are hit@6 misses.
+
+A chunk-size sweep would move the boundaries of passages whose *content* is the
+problem. It would not stop a question-shaped restatement from matching a
+question better than the prose that governs it. Three re-ingests and three
+measurements is real cost against a hypothesis this phase's own evidence points
+away from.
+
+It is a cheap experiment to run later if the FAQ work does not explain the
+remaining failures, and `chunking.py` already keeps its sizes in one place and
+its function pure, so nothing blocks it.
