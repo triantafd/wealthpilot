@@ -57,6 +57,15 @@ class Settings(BaseSettings):
     # How many chunks reach the prompt. Ported from chatapp-rag-streaming.
     retrieval_top_k: int = 6
 
+    # Which retrieval strategy `search()` uses. A setting so the eval suite can
+    # compare Phase 3 variants without a code change.
+    #
+    # "vector" is the Phase 1 baseline. "text" is Postgres full-text search,
+    # which is worse on its own — MRR 0.611 against the baseline's 0.747 — and
+    # is here because it fails on different cases, which is what makes the
+    # hybrid in task 2 worth building.
+    retrieval_mode: Literal["vector", "text"] = "vector"
+
     openai_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
 

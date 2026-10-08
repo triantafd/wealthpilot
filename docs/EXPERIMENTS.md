@@ -71,3 +71,110 @@ the fix cannot hide what the model does.
 **Lesson.** A prompt rule is a prior, not a guarantee. Where a property must
 hold every time, enforce it in code and use the prompt to reduce how often the
 code has to intervene.
+
+---
+
+## Phase 3, task 1 — Full-text search with `tsvector`
+
+Measured with `--suite all --retrieval-only --retrieval text` against the frozen
+baseline. Retrieval-only, so no LLM and no judge: every number here is
+deterministic and reproducible from the report in `evals/reports/`.
+
+### Result: worse overall, better where predicted
+
+| Metric | Vector baseline | Full-text | Delta |
+|---|---|---|---|
+| MRR | 0.747 | **0.665** | −0.082 |
+| hit@1 | 62.9% | **51.4%** | −11.4 |
+| hit@6 | 97.1% | 92.9% | −4.3 |
+| p50 latency | 2072 ms | **1 ms** | −2071 |
+| Cost per query | $0.00032 | **$0** | — |
+
+Full-text search alone is **not** a replacement for vector search, and was not
+expected to be: it matches strings, not meaning. It is kept because it fails on
+a *different* set of cases, which is the entire premise of the hybrid in task 2.
+Six cases gained hit@1 and fourteen lost it — if the two methods failed on the
+same cases, fusing them could not help.
+
+The latency and cost columns are not a rounding artefact. Text search makes no
+model call at all, so it skips the ~90 ms embedding round trip and the whole
+per-query cost. A hybrid pays for one embedding, not two searches.
+
+### Where it wins
+
+| Tag | n | Vector | Full-text | Delta |
+|---|---|---|---|---|
+| `id-lookup` | 4 | 0.521 | **0.750** | +0.229 |
+| `multi-hop` | 8 | 0.535 | **0.729** | +0.194 |
+| `filtered` | 3 | 0.583 | **0.667** | +0.083 |
+
+**`id-lookup` is the result this task was predicted to produce, and it held —
+with a caveat worth stating.** Two of four cases improved, two were unchanged,
+**none regressed**:
+
+| Case | Vector | Full-text | Note |
+|---|---|---|---|
+| `id-ticker-ocf-01` | 0.33 | **1.00** | The clean win. "MER012 — what's the OCF on that one?" moved from rank 3 to rank 1 |
+| `instrument-ocf-01` | 0.25 | **0.50** | Also `filtered`, so this improvement is *within* one document — an easier task than unfiltered retrieval, and not fully full-text's doing |
+| `id-instrument-name-01` | 1.00 | 1.00 | Vector already ranked it first |
+| `id-ticker-risk-01` | 0.50 | 0.50 | Still returns the wrong factsheet first |
+
+So the honest claim is **one unfiltered case genuinely fixed**, on a four-case
+tag. The direction matches the hypothesis and nothing regressed, but n=4 cannot
+carry a strong conclusion on its own.
+
+`multi-hop` improving by more than `id-lookup` was not predicted. A multi-hop
+question names entities from two documents, and term matching finds both where a
+single averaged embedding lands between them.
+
+### Where it loses
+
+| Tag | n | Vector | Full-text | Delta |
+|---|---|---|---|---|
+| `negation` | 4 | 0.875 | 0.500 | −0.375 |
+| `policy` | 7 | 0.786 | 0.529 | −0.257 |
+| `vague-phrasing` | 5 | 0.417 | **0.190** | −0.227 |
+
+All three are the same failure. A negation question ("can he *not* hold crypto?")
+shares every content word with the passage that says he can, and term matching
+cannot tell them apart. `vague-phrasing` was already the worst tag in the suite
+and full-text makes it worse: a vague question has no rare terms to match on.
+
+Formal questions score 0.861 and informal ones 0.517 — a far wider split than
+vector search shows, because formal phrasing reuses the documents' own
+vocabulary.
+
+### The limitation to understand before task 2
+
+**`ts_rank` has no IDF.** Every query term counts equally, so a chunk matching
+several common words outranks the one chunk matching a rare identifier. This is
+why `id-ticker-risk-01` still fails: "MER011 — how risky is it on the 1-7
+scale?" matches "risk" and "scale" across many passages, and `mer011` gets no
+extra weight for appearing exactly once in the corpus.
+
+Also worth knowing: `to_tsvector('english', 'IN-0011')` produces `'-0011'`, not
+`'in-0011'` — the `IN` prefix is dropped as an English stopword. Matching still
+works because `to_tsquery` normalises identically, but two identifiers whose
+prefixes are both stopwords would collide. `MER012` survives intact.
+
+### Variants tried and rejected
+
+Recorded so the next person does not repeat them.
+
+| Variant | MRR | Why rejected |
+|---|---|---|
+| `plainto_tsquery` (AND) | — | **Returned zero rows for all 75 cases.** A prose question's every word never appears in one passage |
+| `websearch_to_tsquery` | 0.091 | ANDs by default too; near-total recall failure |
+| OR + `ts_rank_cd` | 0.504 | Cover density rewards query terms appearing *close together*, which suits phrase search, not a question whose terms are scattered |
+| OR + `ts_rank` | **0.611** | **Chosen.** Best of the four |
+| Rare-terms weighting (drop query terms with corpus df above a threshold, as a cheap stand-in for the IDF `ts_rank` lacks) | 0.504–0.526 at thresholds 10%, 20%, 35% | **Worse than plain OR at every threshold.** Dropping common terms loses more signal than the spurious matches it avoids. Real IDF may still help — this crude proxy does not, and a proper BM25 would mean maintaining a lexeme-frequency table |
+
+The rare-terms result was the surprise. It was the obvious fix for the missing
+IDF and it made things worse at all three thresholds, which is why the limitation
+is carried into task 2 rather than patched here.
+
+### Not changed
+
+`retrieval_mode` defaults to `vector`. Full-text is opt-in via the setting or
+`--retrieval text`, because on this corpus it is worse overall. The baseline is
+untouched.

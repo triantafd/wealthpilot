@@ -18,6 +18,7 @@ ranked lists it has no scores for.
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
 from langfuse import observe
 from sqlalchemy import Integer, String, bindparam, text
@@ -25,6 +26,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.rag.embeddings import Embedder
+
+# Mirrors the Literal on Settings.retrieval_mode.
+RetrievalMode = Literal["vector", "text"]
 
 
 @dataclass(frozen=True)
@@ -108,6 +112,85 @@ async def search_by_vector(
     ]
 
 
+# Full-text search over the generated `tsv` column (GIN indexed).
+#
+# The query is built by OR-ing the question's lexemes rather than AND-ing them.
+# `plainto_tsquery` ANDs, and a prose question's every word almost never appears
+# in one passage: measured across the 75-case golden set, the AND form returned
+# **zero rows for every single case**. `websearch_to_tsquery` ANDs too, and
+# scores MRR 0.091.
+#
+# Ranked by `ts_rank` rather than `ts_rank_cd`. Cover density rewards query
+# terms appearing close together, which suits phrase search and not a question
+# whose terms are scattered: 0.611 against 0.504 on the same set.
+#
+# The weakness to know about: `ts_rank` has no IDF, so every query term counts
+# equally and a chunk matching several common words outranks the one chunk
+# matching a rare identifier. That is why "What does IN-0011 cost to hold?"
+# returns `fee-schedule` first — "cost" matches it strongly and `-0011` carries
+# no extra weight. Weighting by corpus rarity was tried and scored *worse*
+# (0.526); see docs/EXPERIMENTS.md.
+_SEARCH_TEXT = text(
+    """
+    WITH q AS (
+        -- Cast through text to flip the conjunction. Postgres has no
+        -- "or"-flavoured plainto_tsquery, and building the query in Python
+        -- would apply a different dictionary than the indexed column used.
+        SELECT replace(plainto_tsquery('english', :query)::text, '&', '|')::tsquery AS tq
+    )
+    SELECT
+        c.id AS chunk_id,
+        c.document_id,
+        c.page,
+        c.content,
+        -- Expressed as a distance so a caller can order results from either
+        -- strategy the same way: 0.0 is the best possible match.
+        1.0 - ts_rank(c.tsv, q.tq) AS distance
+    FROM chunks c, q
+    WHERE c.tsv @@ q.tq
+      AND (:document_id IS NULL OR c.document_id = :document_id)
+    ORDER BY ts_rank(c.tsv, q.tq) DESC, c.document_id, c.page
+    LIMIT :top_k
+    """
+).bindparams(
+    bindparam("query", type_=String),
+    bindparam("document_id", type_=String),
+    bindparam("top_k", type_=Integer),
+)
+
+
+async def search_by_text(
+    session: AsyncSession,
+    query: str,
+    *,
+    top_k: int | None = None,
+    document_id: str | None = None,
+) -> list[RetrievedChunk]:
+    """Full-text matches for a question, best first.
+
+    Takes no embedder: this is the one retrieval path that costs no model call,
+    which also makes it the fastest.
+    """
+    limit = top_k if top_k is not None else get_settings().retrieval_top_k
+    if limit < 1:
+        raise ValueError(f"top_k must be at least 1, got {limit}")
+
+    rows = await session.execute(
+        _SEARCH_TEXT,
+        {"query": query, "document_id": document_id, "top_k": limit},
+    )
+    return [
+        RetrievedChunk(
+            chunk_id=row.chunk_id,
+            document_id=row.document_id,
+            page=row.page,
+            content=row.content,
+            distance=float(row.distance),
+        )
+        for row in rows
+    ]
+
+
 @observe(name="retrieval", as_type="retriever")
 async def search(
     session: AsyncSession,
@@ -116,15 +199,26 @@ async def search(
     *,
     top_k: int | None = None,
     document_id: str | None = None,
+    mode: RetrievalMode | None = None,
 ) -> list[RetrievedChunk]:
-    """Embed a question and return the nearest chunks.
+    """Retrieve chunks for a question using the configured strategy.
 
-    The query goes through the same model as the documents did — two models
-    produce vectors in unrelated spaces, and the distances between them would be
-    meaningless rather than wrong in an obvious way.
+    `mode` defaults to the `retrieval_mode` setting, so the eval suite compares
+    Phase 3 variants by flag rather than by editing code.
+
+    In "vector" mode the query goes through the same model as the documents did
+    — two models produce vectors in unrelated spaces, and the distances between
+    them would be meaningless rather than wrong in an obvious way. In "text"
+    mode `embedder` is unused and no model is called at all, which is also why
+    that path is the fastest.
     """
     if not query.strip():
         raise ValueError("query is empty")
+
+    strategy = mode or get_settings().retrieval_mode
+
+    if strategy == "text":
+        return await search_by_text(session, query, top_k=top_k, document_id=document_id)
 
     (vector,) = await embedder.embed([query])
     return await search_by_vector(session, vector, top_k=top_k, document_id=document_id)

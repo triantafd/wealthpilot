@@ -15,6 +15,7 @@ case. `--ragas` and `--no-ragas` override either way.
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -110,6 +111,12 @@ def main() -> None:
     )
     parser.add_argument("--model", default=None, help="override LLM_MODEL for this run")
     parser.add_argument(
+        "--retrieval",
+        default=None,
+        choices=["vector", "text"],
+        help="retrieval strategy for this run; default is the retrieval_mode setting",
+    )
+    parser.add_argument(
         "--repeat",
         type=int,
         default=1,
@@ -139,6 +146,13 @@ def main() -> None:
     # Before the first traced call: @observe resolves the Langfuse singleton on
     # its own, so deciding after that point would be too late.
     configure_tracing(enabled=args.trace)
+
+    # Set in the environment rather than passed down: search() reads the
+    # setting, so this overrides every call site including the ones the eval
+    # runner does not own.
+    if args.retrieval:
+        os.environ["RETRIEVAL_MODE"] = args.retrieval
+        get_settings.cache_clear()
 
     try:
         raise SystemExit(asyncio.run(_run(args)))

@@ -38,13 +38,39 @@ Work top to bottom. Each phase ends with something that runs and a number you ca
 
 ## Phase 3 — Better retrieval, proven by numbers (1 week)
 
-- [ ] Full-text search with `tsvector`
+- [x] Full-text search with `tsvector`
 - [ ] Hybrid with Reciprocal Rank Fusion
-- [ ] Cross-encoder reranker
+- [ ] Cross-encoder reranker — **report latency alongside accuracy.** A reranker
+      that adds 400ms to every request is a different proposition from one that
+      adds 40ms, and accuracy alone hides that
 - [ ] Try 2–3 chunk sizes
+- [ ] Variant: exclude the repeated title and disclaimer boilerplate from what
+      gets embedded, measured on its own. Every factsheet opens and closes with
+      near-identical text, which dilutes the embedding of the part that
+      distinguishes one document from another
 - [ ] Eval each variant; record results in `docs/EXPERIMENTS.md`
 
-**Done when:** you have a table of variants vs metrics and a justified default. (CV line: "Improved hit@5 from X to Y with hybrid search and reranking.")
+**Done when:** you have a table of variants vs metrics and a justified default.
+(CV line: "Improved hit@5 from X to Y with hybrid search and reranking.")
+
+### Known failures to track
+
+These are the cases Phase 3 exists to fix. Measure each variant against them by
+name, not only on the aggregate — a change can move MRR a point while leaving
+every one of them broken.
+
+| Case or tag | Problem | What should fix it |
+|---|---|---|
+| `mandate-consent-01` | Loses to a `compliance-faq` chunk that restates the rule; the governing document is never retrieved | Hybrid or reranking |
+| `prohibited-no-assessment-01` | Same shape: FAQ phrasing matches a question better than the governing document's prose | Hybrid or reranking |
+| `fee-etf-trade-01` | Not a retrieval miss. The right chunk **is** retrieved at rank 3 and the model answers from ranks 1–2, quoting "this is a fund, not an ETF" and concluding the opposite | Reranking, by moving it to rank 1 |
+| tag `id-lookup` | Exact identifiers and figures that vector search blurs | Full-text search |
+| tag `vague-phrasing` | MRR 0.125, the worst tag in the suite | Unclear — may need query rewriting rather than retrieval |
+
+Record **every** variant in `docs/EXPERIMENTS.md`, including the ones that do
+not help. A variant that was tried and rejected is the most useful thing in that
+file: without it the next person repeats the experiment, and a table of only
+successes implies the first idea always worked.
 
 ## Phase 4 — Multi-agent graph (1–2 weeks)
 
