@@ -109,17 +109,25 @@ class Settings(BaseSettings):
     # leaving the stored content untouched so citations still quote the real
     # text and full-text search still indexes it.
     #
-    # On by default as of Phase 3: it was the only variant in that phase to
-    # improve hit@1, moving it from 62.9% to 64.3% with MRR up 0.8, and nothing
-    # regressed. Every ranking method tried — full-text, hybrid at twenty RRF
-    # settings, and a cross-encoder over both candidate sets — left hit@1 at
-    # 61.4% or 62.9%. See docs/EXPERIMENTS.md.
+    # Off by default, after being adopted and then reverted in Phase 3.
+    #
+    # It is the only variant that improved retrieval's primary metrics — hit@1
+    # from 62.9% to 64.3%, MRR up 0.8, where every ranking method tried left
+    # hit@1 at 61.4% or 62.9%. But a full-suite run then showed it costs
+    # answer.refusal_correct, which EVALS.md gates at 1.00: it fell to 0.973
+    # with +/-0.000 spread across three runs, so reproducibly rather than as
+    # noise. 1.4 points of rank-1 ordering is not worth a reproducible refusal
+    # failure in a compliance tool.
+    #
+    # The retrieval-only measurement could not see this, which is the lesson:
+    # a retrieval change is not validated until the answer metrics are run.
+    # See docs/EXPERIMENTS.md for the per-case detail.
     #
     # A setting rather than an edit to ingestion, so both corpora can be
     # rebuilt on demand and the comparison stays reproducible. Changing it
     # requires a re-ingest with --force: the vectors on disk were produced
     # under whichever value was set at the time.
-    embed_strip_boilerplate: bool = True
+    embed_strip_boilerplate: bool = False
 
     openai_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None

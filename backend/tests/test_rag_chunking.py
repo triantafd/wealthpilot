@@ -127,12 +127,13 @@ def test_content_is_untouched_when_the_variant_is_off(
         get_settings.cache_clear()
 
 
-def test_the_variant_is_on_by_default() -> None:
+def test_the_variant_is_off_by_default() -> None:
     """Pinned separately, so flipping the default fails here with a clear name
-    rather than inside a behaviour test."""
+    rather than inside a behaviour test. Off because it costs
+    answer.refusal_correct, which is gated at 1.00 — see docs/EXPERIMENTS.md."""
     from app.config import Settings
 
-    assert Settings(_env_file=None).embed_strip_boilerplate is True
+    assert Settings(_env_file=None).embed_strip_boilerplate is False
 
 
 def test_a_leading_h1_and_the_disclaimer_are_stripped(

@@ -69,7 +69,41 @@ first idea always worked.
       (YAML frontmatter is already stripped at ingestion and is not the issue.)
 
 **Done when:** you have a table of variants vs metrics and a justified default.
-(CV line: "Improved hit@5 from X to Y with hybrid search and reranking.")
+
+**Outcome.** Four retrieval variants measured against the frozen 75-case
+baseline; the default is unchanged, and that is the result rather than a
+failure to get one.
+
+- **Diagnosed the hit@1 ceiling.** 17 of 70 scored cases never reach rank 1
+  under any of six methods. `compliance-faq` is a wrong rank-1 winner in all
+  17, taking 20.8% of retrieved slots but 57.1% of wrong rank-1s — it restates
+  rules from every other document in question-shaped language, so for a
+  question it legitimately out-matches the prose that governs.
+- **Showed the ceiling costs attribution, not accuracy.** Of those 17 cases,
+  14 still answer correctly; the figure is right but cited to the FAQ instead
+  of the governing document. The 2 wrong answers are hit@6 misses, not hit@1
+  misses. hit@6 is 97.1% and no variant moved it.
+- **Full-text search:** MRR 0.665 against 0.747, but +0.229 on `id-lookup` and
+  +0.194 on `multi-hop` — it fails on different cases, which is what justified
+  trying fusion.
+- **Hybrid (RRF):** MRR 0.755, hit@1 61.4%. Rejected — rank 1 was identical to
+  vector's in 73 of 75 cases once reranking was involved, and hit@1 was exactly
+  61.4% across all 20 `rrf_k` x depth combinations, so the regression is
+  structural rather than untuned.
+- **Cross-encoder reranker:** best MRR at 0.759 and solves `id-lookup`
+  outright (0.521 to 1.000), but costs 2.9 points of hit@1, adds ~300 ms per
+  query and an optional torch dependency, and pushes `mandate-consent-01` back
+  out of the top 6. Rejected as a default, kept as an option.
+- **Boilerplate stripping:** the only variant to improve hit@1 (62.9% to
+  64.3%, MRR +0.8). Adopted, then **reverted**: a full-suite run showed
+  `answer.refusal_correct` falling from 1.000 to 0.973 with ±0.000 spread, and
+  that metric is gated at 1.00. Refusal hardening is a Phase 6 follow-up, after
+  which this becomes adoptable.
+
+The transferable lesson: **a retrieval change is not validated by retrieval
+metrics.** Every variant here was measured retrieval-only — cheap, deterministic
+and the right tool for comparing rankers — and the one adopted on that basis
+failed on answer metrics those runs could not see.
 
 ### Known failures to track
 
@@ -77,13 +111,13 @@ These are the cases Phase 3 exists to fix. Measure each variant against them by
 name, not only on the aggregate — a change can move MRR a point while leaving
 every one of them broken.
 
-| Case or tag | Problem | What should fix it |
+| Case or tag | Problem | Outcome after Phase 3 |
 |---|---|---|
-| `mandate-consent-01` | Loses to a `compliance-faq` chunk that restates the rule; the governing document is never retrieved | Hybrid or reranking |
-| `prohibited-no-assessment-01` | Same shape: FAQ phrasing matches a question better than the governing document's prose | Hybrid or reranking |
-| `fee-etf-trade-01` | Not a retrieval miss. The right chunk **is** retrieved at rank 3 and the model answers from ranks 1–2, quoting "this is a fund, not an ETF" and concluding the opposite | Reranking, by moving it to rank 1 |
-| tag `id-lookup` | Exact identifiers and figures that vector search blurs | Full-text search |
-| tag `vague-phrasing` | MRR 0.125, the worst tag in the suite | Unclear — may need query rewriting rather than retrieval |
+| `mandate-consent-01` | Loses to a `compliance-faq` chunk that restates the rule; the governing document is never retrieved | **Still broken in the shipped config.** Hybrid fixed it (0.00 to rank 4) and the reranker then pushed it back out of the top 6. One of only 2 of the 17 ceiling cases that produces a genuinely *wrong* answer |
+| `prohibited-no-assessment-01` | Same shape: FAQ phrasing matches a question better than the governing document's prose | **Still broken in the shipped config.** Best result 0.50 under vector+rerank, which is not the default. The other genuinely wrong answer |
+| `fee-etf-trade-01` | Not a retrieval miss. The right chunk **is** retrieved at rank 3 and the model answers from ranks 1–2, quoting "this is a fund, not an ETF" and concluding the opposite | **Still broken, and not a retrieval problem.** No variant helped; reranking made it slightly worse (0.33 to 0.25). It is a comprehension failure and belongs with prompt work |
+| tag `id-lookup` | Exact identifiers and figures that vector search blurs | **Solved — but only with the reranker, which is off by default.** 0.521 to 1.000 with reranking, 0.750 with full-text alone. In the shipped config it stays at 0.521, a deliberate trade: the reranker costs 2.9 points of hit@1, ~300 ms per query and a torch dependency |
+| tag `vague-phrasing` | MRR 0.125, the worst tag in the suite | **Worse under every variant tried** (0.417 vector, 0.367 hybrid, 0.357 reranked). A vague question gives neither term matching nor a cross-encoder anything to work with. Strongest candidate for query rewriting rather than retrieval tuning |
 
 ## Phase 4 — Multi-agent graph (1–2 weeks)
 
@@ -114,6 +148,13 @@ report, and `/usage` shows a non-zero row after a request.
 
 - [ ] Input guard: heuristic rules + LLM classifier
 - [ ] Output guard: citation verification, cross-client data check
+- [ ] Harden refusal against passage order. `refusal-poa-policy-01` refused
+      correctly under one retrieval config and answered confidently and
+      irrelevantly under another, **with the same six passages retrieved** and
+      only ranks 1 and 2 swapped. Measure the `out-of-scope` and `adversarial`
+      tags under several retrieval configurations, not one. Boilerplate
+      stripping (Phase 3) becomes adoptable once this holds — it is worth
+      +1.4 hit@1 at no runtime cost and was reverted only for this
 - [ ] Indirect injection test: a seeded document containing hidden instructions
 - [ ] `safety.jsonl` (≥40 attacks): must never trigger a HIGH tool without approval, never leak another client's data
 

@@ -470,6 +470,11 @@ A setting rather than an edit to ingestion, so both corpora can be rebuilt on
 demand. Changing it needs a re-ingest with `--force`, because the vectors on
 disk were produced under whichever value was set at the time.
 
+> **Adopted, then reverted.** The table below is a retrieval-only measurement.
+> A full-suite run afterwards showed it costs `answer.refusal_correct`, which is
+> gated at 1.00, so the default went back to off. The full story is in
+> "Adopting it, and reverting" below.
+
 ### Result: the only thing in Phase 3 that improved hit@1
 
 | Variant | MRR | hit@1 | hit@6 |
@@ -574,3 +579,95 @@ away from.
 It is a cheap experiment to run later if the FAQ work does not explain the
 remaining failures, and `chunking.py` already keeps its sizes in one place and
 its function pure, so nothing blocks it.
+
+---
+
+## Phase 3 — adopting boilerplate stripping, and reverting it
+
+Made the default on the retrieval-only evidence above, then re-measured the
+baseline over the full suite, three runs, on a clean tree. The retrieval numbers
+reproduced exactly. Two **gated** answer metrics did not.
+
+| Metric | Old baseline | With stripping | Spread |
+|---|---|---|---|
+| `retrieval.mrr` | 0.747 | **0.754** | ±0.000 |
+| `retrieval.hit_at_1` | 62.9% | **64.3%** | ±0.000 |
+| `retrieval.hit_at_6` | 97.1% | 97.1% | ±0.000 |
+| `citations.validity` | 0.984 | 0.987 | ±0.011 |
+| **`answer.must_include`** | 0.933 | **0.898** | ±0.013 |
+| **`answer.refusal_correct`** | **1.000** | **0.973** | **±0.000** |
+| `answer.faithfulness` | 0.870 | 0.841 | ±0.007 |
+
+`answer.refusal_correct` is gated at 1.00 in `docs/EVALS.md`. It failed
+identically in all three runs — ±0.000 spread, so reproducible rather than
+noise. The default was reverted: 1.4 points of rank-1 ordering is not worth a
+reproducible refusal failure in a tool whose job includes declining to answer.
+
+### Ruled out first: did stripping reach the text the model reads?
+
+The obvious explanation would be that stripping leaked past the embedding into
+the passage text, so the model was reading truncated documents. **It did not.**
+Checked against the index built under stripping: all 54 chunks beginning with a
+heading and all 8 carrying the disclaimer retained that text in `content`, and
+`format_passages` renders `chunk.content`. The model read the documents as
+written.
+
+So the cause is not truncated passages. It is that **changing the vectors
+changed which passages arrive, and in one case their order.**
+
+### Which cases failed, and why
+
+Three `must_include` cases were lost and one gained. They do not share a cause,
+which is why the aggregate alone would have been misleading.
+
+| Case | Retrieval changed? | Cause |
+|---|---|---|
+| `fee-floor-01` | **yes** | `fee-schedule#p1`, the only passage containing £1,500, **dropped out of the top 6** and was replaced by `fee-schedule#p3`. The model then correctly said the documents did not answer — so this one case cost `must_include` *and* `refusal_correct` at once. Genuinely caused by stripping |
+| `rebalance-eo-02` | **no — byte-identical** | The answer says "must have a specific instruction"; `must_include` wants "specifically instructed". Pure wording variation, **not caused by the change** |
+| `restriction-bond-01` | yes, but the expected source was present before and after | Ranks 4 and 6 swapped within the factsheets. The answer is substantively right and omits the phrase "underlying holdings". Ambiguous attribution |
+
+So of three losses, **one is attributable, one is demonstrably not, and one is
+ambiguous** — against a ±0.013 spread of roughly one case. On its own
+`must_include` would have been a weak signal.
+
+### The refusal failure is the serious one, and it is not really retrieval
+
+`refusal-poa-policy-01` asks about powers of attorney, which the corpus does not
+cover, and must refuse. Under stripping the model answered:
+
+> "An `execution_only` account must **never** be rebalanced by the firm, even
+> when it breaches allocation bands."
+
+Confident, well-cited, and irrelevant to the question.
+
+**The same six passages were retrieved before and after.** The only difference
+is that ranks 1 and 2 swapped — `mandates-and-rebalancing#p1` moved ahead of
+`compliance-faq#p1`. Identical passage set, different order, and a correct
+refusal became a confident wrong answer.
+
+That is a prompt-robustness problem wearing a retrieval problem's clothes. If
+the refusal decision turns on which of two passages is listed first, then it
+will keep turning on that, and any future retrieval change can flip it back.
+`fee-floor-01` is the second refusal failure and is the opposite error — it
+refused when the answer was simply absent from its passages, which is arguably
+correct behaviour that the case's `expect_refusal=False` does not allow for.
+
+### Follow-up recorded for Phase 6
+
+Refusal hardening belongs with the guardrails work, not with retrieval, and is
+noted in the Phase 6 checklist. The specific target: an out-of-scope question
+must refuse regardless of the order its passages arrive in, measured by running
+the `out-of-scope` and `adversarial` tags under several retrieval
+configurations rather than one.
+
+If that holds, boilerplate stripping becomes adoptable — the retrieval gain is
+real and costs nothing at runtime — and this entry is the evidence for trying it
+again rather than rediscovering it.
+
+### The lesson worth keeping
+
+A retrieval change is not validated by retrieval metrics. Four variants in this
+phase were measured retrieval-only, which is cheap and deterministic and made
+the comparisons clean. The one that was adopted then failed on metrics the
+retrieval-only runs could not see. **Measure the answer side before changing a
+default**, not after.
