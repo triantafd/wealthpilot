@@ -169,10 +169,16 @@ actual unknowns live. A spike settled those before any design was locked; see
       start — no tool executes without a row
 - [x] **Research agent** wrapping the existing Phase 1 retrieval — no new
       retrieval work
+- [x] **Action agent** turning a request into a `ProposedAction`, never
+      executing it. ARCHITECTURE §3 names this node; this checklist went
+      straight from the tool registry to the gate and left it out, so routing
+      to `action` proposed nothing and the thread finished without pausing.
+      Found by streaming the slice end to end, not by a test — every test set
+      `pending_action` itself
 - [x] **Supervisor** routing between exactly **two** destinations, `research`
       and `action`, plus refuse. Two is the minimum that makes routing a real
       decision rather than a pass-through
-- [ ] **Stream graph events** over the contract from
+- [x] **Stream graph events** over the contract from
       `POST /threads/{id}/messages`. Mapping LangGraph's event stream onto our
       ten event types is the remaining unknown, and its shape is
       version-sensitive

@@ -333,3 +333,33 @@ async def test_the_checkpoint_holds_json_not_a_pickled_model(
 
     assert isinstance(state.values["pending_action"], dict)
     assert state.values["pending_action"]["tool"] == "propose_rebalance"
+
+
+async def test_a_tool_that_fails_after_approval_is_reported_not_raised(
+    db_session: AsyncSession, checkpointer_dsn: str
+) -> None:
+    """An approved action can still fail — an account that does not exist, a
+    limit breached. Found live: it surfaced as a 500 with the reason only in
+    the server log, where the adviser could not see it.
+
+    The audit row is already written by `execute` with outcome="error"; this is
+    about the thread finishing with an explanation.
+    """
+    thread = f"t-{uuid.uuid4()}"
+    # No account seeded, so propose_rebalance will refuse.
+    action = get("propose_rebalance").propose({"account_id": "AC-NOPE"})
+
+    async with checkpointer(checkpointer_dsn) as saver:
+        graph = _gated_graph(saver, db_session)
+        state = initial_state("rebalance it", thread_id=thread, user_id="adviser-7")
+        state["pending_action"] = action.model_dump(by_alias=True)
+        await graph.ainvoke(state, thread_config(thread))
+
+        approval_id = (await list_approvals(db_session, status="pending"))[-1].id
+        await decide(db_session, approval_id, "approve", decided_by="adviser-7")
+        final = await graph.ainvoke(Command(resume="approve"), thread_config(thread))
+
+    assert any(f.startswith("action_failed:") for f in final["guardrail_flags"])
+    assert "could not be completed" in final["messages"][-1].content
+    rows = list((await db_session.execute(select(AuditLogEntry))).scalars().all())
+    assert "error" in [r.outcome for r in rows]

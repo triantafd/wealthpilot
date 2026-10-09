@@ -5,9 +5,10 @@ graph rather than three that drift.
 
 Phase 4a's shape:
 
-    START -> supervisor -> research        -> END
-                        -> request_approval -> approval_gate -> END
-                        -> out_of_scope    -> END
+    START -> supervisor -> research                -> END
+                        -> propose_action -> request_approval
+                                          -> approval_gate  -> END
+                        -> out_of_scope             -> END
 
 The portfolio agent and a confidence threshold arrive in Phase 4; the state's
 `Route` already allows `portfolio` so adding it does not change a persisted
@@ -28,6 +29,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.nodes.action import propose_action
 from app.agents.nodes.approval_gate import approval_gate, request_approval
 from app.agents.nodes.research import research_agent
 from app.agents.nodes.supervisor import refuse_out_of_scope, supervise
@@ -38,6 +40,7 @@ from app.rag.embeddings import Embedder
 # reaches a node, which is harder to see than a NameError.
 SUPERVISOR = "supervisor"
 RESEARCH = "research"
+PROPOSE_ACTION = "propose_action"
 REQUEST_APPROVAL = "request_approval"
 APPROVAL_GATE = "approval_gate"
 OUT_OF_SCOPE = "out_of_scope"
@@ -52,7 +55,7 @@ def _destination(state: AgentState) -> str:
     """
     route = state.get("route")
     if route == "action":
-        return REQUEST_APPROVAL
+        return PROPOSE_ACTION
     if route == "out_of_scope":
         return OUT_OF_SCOPE
     return RESEARCH
@@ -72,6 +75,9 @@ def build_graph(
     async def research_node(state: AgentState) -> dict[str, Any]:
         return await research_agent(dict(state), session, embedder, chat_model)
 
+    async def propose_node(state: AgentState) -> dict[str, Any]:
+        return await propose_action(dict(state), chat_model)
+
     async def request_node(state: AgentState) -> dict[str, Any]:
         return await request_approval(dict(state), session)
 
@@ -83,6 +89,7 @@ def build_graph(
 
     graph.add_node(SUPERVISOR, supervisor_node)
     graph.add_node(RESEARCH, research_node)
+    graph.add_node(PROPOSE_ACTION, propose_node)
     graph.add_node(REQUEST_APPROVAL, request_node)
     graph.add_node(APPROVAL_GATE, gate_node)
     graph.add_node(OUT_OF_SCOPE, out_of_scope_node)
@@ -91,9 +98,10 @@ def build_graph(
     graph.add_conditional_edges(
         SUPERVISOR,
         _destination,
-        {RESEARCH: RESEARCH, REQUEST_APPROVAL: REQUEST_APPROVAL, OUT_OF_SCOPE: OUT_OF_SCOPE},
+        {RESEARCH: RESEARCH, PROPOSE_ACTION: PROPOSE_ACTION, OUT_OF_SCOPE: OUT_OF_SCOPE},
     )
     graph.add_edge(RESEARCH, END)
+    graph.add_edge(PROPOSE_ACTION, REQUEST_APPROVAL)
     graph.add_edge(REQUEST_APPROVAL, APPROVAL_GATE)
     graph.add_edge(APPROVAL_GATE, END)
     graph.add_edge(OUT_OF_SCOPE, END)

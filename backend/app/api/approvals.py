@@ -34,6 +34,7 @@ from app.approvals import (
     ApprovalRecord,
     Decision,
     decide,
+    get_approval,
     list_approvals,
 )
 from app.db.models.ops import APPROVAL_STATUSES
@@ -146,7 +147,13 @@ async def post_decision(
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
     resumed = await _resume(request, session, record.thread_id, body.decision)
-    return DecisionResponse(approval=_public(record), resumed=resumed)
+
+    # Re-read: the resume spends the approval, so the record from `decide` is
+    # already stale and would report consumed_at as null for an approval the
+    # registry has just used.
+    return DecisionResponse(
+        approval=_public(await get_approval(session, approval_id)), resumed=resumed
+    )
 
 
 async def _resume(

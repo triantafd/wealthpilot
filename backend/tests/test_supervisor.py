@@ -109,7 +109,9 @@ async def test_a_parsing_failure_is_an_error_not_a_silent_default() -> None:
     ("route", "expected"),
     [
         ("research", RESEARCH),
-        ("action", "request_approval"),
+        # action now reaches the gate via the action agent, which proposes
+        # what the gate then asks a human about.
+        ("action", "propose_action"),
         ("out_of_scope", OUT_OF_SCOPE),
     ],
 )
@@ -171,17 +173,13 @@ async def test_an_action_request_pauses_at_the_gate(db_session: AsyncSession) ->
         db_session,
         InMemorySaver(),
         embedder=FakeEmbedder(),
-        chat_model=fake_graph_model(route="action"),
+        chat_model=fake_graph_model(route="action", account_id="AC-0042"),
     )
-    state = initial_state("rebalance AC-0042", thread_id="t-1")
-    state["pending_action"] = {
-        "tool": "propose_rebalance",
-        "tier": "HIGH",
-        "args": {"account_id": "AC-0042"},
-        "summary": "Raise a rebalance task.",
-    }
 
-    await graph.ainvoke(state, thread_config("t-1"))
+    # No pending_action set by hand: the action agent proposes it. That gap —
+    # routing to action and proposing nothing — is what streaming the slice end
+    # to end exposed.
+    await graph.ainvoke(initial_state("rebalance AC-0042", thread_id="t-1"), thread_config("t-1"))
     snapshot = await graph.aget_state(thread_config("t-1"))
 
     assert snapshot.next == ("approval_gate",)

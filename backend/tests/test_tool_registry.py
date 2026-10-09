@@ -415,3 +415,27 @@ async def test_a_rejected_approval_cannot_be_marked_consumed(
             .values(consumed_at=datetime.now(UTC))
         )
     await db_session.rollback()
+
+
+def test_importing_the_registry_is_enough_to_register_the_tools() -> None:
+    """The bug this guards is invisible to every other test in this file,
+    because they all import `app.tools.actions` themselves.
+
+    The application did not. The registry was populated under pytest and empty
+    in production, and streaming a real "rebalance AC-0001" failed with
+    `UnknownToolError`. `app/tools/__init__.py` now imports the tools, so
+    anything that reaches the registry has them.
+    """
+    import subprocess
+    import sys
+
+    # A fresh interpreter, importing only the registry — no test imports, no
+    # conftest, nothing that would mask the failure.
+    result = subprocess.run(
+        [sys.executable, "-c", "from app.tools.registry import REGISTRY; print(sorted(REGISTRY))"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert "propose_rebalance" in result.stdout

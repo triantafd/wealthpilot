@@ -22,12 +22,13 @@ by the registry, not trusted by the gate.
 
 from typing import Any
 
+from langchain_core.messages import AIMessage
 from langgraph.types import interrupt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.events import ProposedAction
 from app.approvals import create_approval
-from app.tools.registry import ApprovalRequiredError, execute
+from app.tools.registry import ApprovalRequiredError, ToolError, execute
 
 
 def _action(state: dict[str, Any]) -> ProposedAction | None:
@@ -104,6 +105,20 @@ async def approval_gate(state: dict[str, Any], session: AsyncSession) -> dict[st
         return {
             "pending_action": None,
             "guardrail_flags": [f"action_unauthorised:{exc}"],
+        }
+    except ToolError as exc:
+        # The tool itself refused — an account that does not exist, a limit
+        # breached. An expected outcome, not a crash: `execute` has already
+        # written the audit row with outcome="error", and an approved action
+        # that then failed is something the adviser must be told rather than
+        # a 500 with the reason only in the server log.
+        #
+        # Deliberately `ToolError` and not `Exception`: a programming error
+        # should still surface loudly.
+        return {
+            "messages": [AIMessage(content=f"The action could not be completed: {exc}")],
+            "pending_action": None,
+            "guardrail_flags": [f"action_failed:{type(exc).__name__}"],
         }
 
     return {"pending_action": None, "action_result": result}

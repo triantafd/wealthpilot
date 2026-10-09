@@ -29,6 +29,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, create_async_engine
 
@@ -298,6 +299,9 @@ def fake_graph_model(
     confidence: float = 0.9,
     answer: str = "An answer.",
     citations: "tuple[Citation, ...]" = (),
+    account_id: str = "AC-TEST01",
+    reason: str = "drift",
+    problem: str = "",
 ) -> Any:
     """A chat model for a whole graph run: routes, then answers.
 
@@ -306,11 +310,31 @@ def fake_graph_model(
     outlives each test's event loop — the symptom is "Event loop is closed"
     inside the supervisor node, in the full suite but not in isolation.
     """
+    from app.agents.nodes.action import RebalanceRequest
     from app.agents.nodes.supervisor import Routing
 
     return FakeChatModel(
         {
             Routing: Routing(route=route, confidence=confidence, reason="test"),  # type: ignore[arg-type]
+            RebalanceRequest: RebalanceRequest(
+                account_id=account_id, reason=reason, problem=problem
+            ),
             GeneratedAnswer: GeneratedAnswer(answer=answer, citations=list(citations)),
         }
     )
+
+
+@pytest.fixture
+async def saver(checkpointer_dsn: str) -> AsyncIterator[AsyncPostgresSaver]:
+    """A checkpointer on the test database, installed on the app.
+
+    The lifespan's own checkpointer points at development data, so leaving it
+    in place would have these tests resume real threads.
+    """
+    async with AsyncPostgresSaver.from_conn_string(checkpointer_dsn) as test_saver:
+        previous = getattr(app.state, "checkpointer", None)
+        app.state.checkpointer = test_saver
+        try:
+            yield test_saver
+        finally:
+            app.state.checkpointer = previous

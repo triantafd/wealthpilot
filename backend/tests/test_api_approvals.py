@@ -9,21 +9,17 @@ Without that a test would resume threads in development data.
 """
 
 import uuid
-from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
 from httpx import AsyncClient
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy import func, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import app.tools.actions
 from app.agents.graph import compile_graph
 from app.agents.state import initial_state, thread_config
 from app.approvals import create_approval, get_approval, list_approvals
 from app.db.models.firm import Account, Client, Task
-from app.main import app
 from app.tools.registry import get
 from tests.conftest import fake_graph_model
 
@@ -43,22 +39,6 @@ async def _an_account(session: AsyncSession) -> None:
             id=ACCOUNT, client_id="CL-TEST01", account_type="GIA", mandate="discretionary"
         )
     )
-
-
-@pytest.fixture
-async def saver(checkpointer_dsn: str) -> AsyncIterator[AsyncPostgresSaver]:
-    """A checkpointer on the test database, installed on the app.
-
-    The lifespan's own checkpointer points at development data, so leaving it
-    in place would have these tests resume real threads.
-    """
-    async with AsyncPostgresSaver.from_conn_string(checkpointer_dsn) as test_saver:
-        previous = getattr(app.state, "checkpointer", None)
-        app.state.checkpointer = test_saver
-        try:
-            yield test_saver
-        finally:
-            app.state.checkpointer = previous
 
 
 async def _paused_thread(saver: Any, session: AsyncSession) -> tuple[str, str]:
@@ -243,3 +223,21 @@ async def test_the_endpoints_are_in_the_openapi_schema(client: AsyncClient) -> N
 
     assert "/approvals" in schema["paths"]
     assert "/approvals/{approval_id}" in schema["paths"]
+
+
+async def test_the_response_reports_the_approval_after_the_resume(
+    client: AsyncClient, db_session: AsyncSession, saver: Any
+) -> None:
+    """The resume spends the approval, so reporting the record from `decide`
+    showed consumed_at as null for an approval the registry had just used."""
+    await _an_account(db_session)
+    _, approval_id = await _paused_thread(saver, db_session)
+
+    body = (
+        await client.post(
+            f"/approvals/{approval_id}",
+            json={"decision": "approve", "decided_by": "adviser-7"},
+        )
+    ).json()
+
+    assert body["approval"]["consumed_at"] is not None

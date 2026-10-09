@@ -100,5 +100,7 @@ async def research_agent(
             "inputTokens": result.usage.input_tokens,
             "outputTokens": result.usage.output_tokens,
         },
-        "route": "research",
     }
+    # Deliberately does not write `route`: the supervisor decides it, and this
+    # node echoing it produced a second `route` stream event with no confidence
+    # attached. A node confirming its own identity is not information.

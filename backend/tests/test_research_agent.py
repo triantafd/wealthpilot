@@ -79,7 +79,9 @@ async def test_the_answer_becomes_an_ai_message(db_session: AsyncSession) -> Non
     )
 
     assert [m.content for m in update["messages"]] == ["There is a £9.95 charge per trade."]
-    assert update["route"] == "research"
+    # The node does not write `route`: the supervisor decides it, and echoing it
+    # produced a duplicate `route` stream event.
+    assert "route" not in update
 
 
 async def test_retrieved_passages_carry_provenance_but_not_content(
