@@ -89,6 +89,7 @@ research prompt explicitly requires, so a drop there can mean the answer got
 cp .env.example .env            # add your LLM API key
 docker compose up -d db         # Postgres + pgvector
 cd backend && uv sync && uv run alembic upgrade head
+uv run python -m app.scripts.setup_checkpointer   # LangGraph's tables
 uv run python -m app.scripts.seed        # synthetic clients, portfolios, docs
 uv run python -m app.scripts.ingest      # embed documents
 uv run uvicorn app.main:app --reload     # http://localhost:8000

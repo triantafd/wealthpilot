@@ -153,7 +153,7 @@ actual unknowns live. A spike settled those before any design was locked; see
       Pydantic mirrors in `backend/app/api/events.py`, and the contract test on
       each side. Neither existed — Phase 0 left `shared/` holding only a
       `.gitkeep`, so CLAUDE.md rule 5 had nothing to keep green
-- [ ] **`AgentState` and the Postgres checkpointer**, with a committed test
+- [x] **`AgentState` and the Postgres checkpointer**, with a committed test
       proving interrupt → resume. Everything downstream depends on the state
       shape, so it is settled early
 - [ ] **Tool registry** with `READ`/`LOW`/`HIGH` tiers and **one** HIGH tool,
