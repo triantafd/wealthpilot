@@ -116,6 +116,14 @@ ignore = [
 module = ["ragas.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# sentence-transformers lives in the optional 'rerank' group, so it is absent
+# wherever that group is not installed — CI included, which is how this was
+# found: mypy passed locally with the group installed and failed in CI without
+# it. The import is lazy and confined to app/rag/rerank.py.
+module = ["sentence_transformers.*"]
+ignore_missing_imports = true
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
