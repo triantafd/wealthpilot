@@ -11,7 +11,6 @@ with another LLM would make the metric as unreliable as the thing it measures.
 """
 
 from pathlib import Path
-from typing import Any
 
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -23,7 +22,6 @@ from app.rag.generate import (
     NO_ANSWER,
     AnswerResult,
     Citation,
-    GeneratedAnswer,
     answer_question,
     build_messages,
     format_passages,
@@ -32,6 +30,7 @@ from app.rag.generate import (
 )
 from app.rag.ingest import run_ingest
 from app.rag.retrieve import RetrievedChunk
+from tests.conftest import fake_model
 
 FEE_TEXT = (
     "The minimum annual advisory fee is £1,500, regardless of portfolio value.\n"
@@ -50,31 +49,6 @@ def chunk(document_id: str, page: int, content: str, distance: float = 0.1) -> R
         content=content,
         distance=distance,
     )
-
-
-class FakeChatModel:
-    """Returns a prepared GeneratedAnswer and records what it was asked.
-
-    Implements only `with_structured_output`, which is all `generate_answer`
-    uses. A real fake chat model from langchain would still have to be told what
-    structured output to produce, so this is both smaller and clearer.
-    """
-
-    def __init__(self, answer: GeneratedAnswer) -> None:
-        self._answer = answer
-        self.messages: list[Any] = []
-
-    def with_structured_output(self, schema: type, **_: object) -> "FakeChatModel":
-        self.schema = schema
-        return self
-
-    async def ainvoke(self, messages: Any, **_: object) -> GeneratedAnswer:
-        self.messages = messages
-        return self._answer
-
-
-def fake_model(answer: str, *citations: Citation) -> Any:
-    return FakeChatModel(GeneratedAnswer(answer=answer, citations=list(citations)))
 
 
 # --- Citation checking: the part that has to be exactly right ----------------

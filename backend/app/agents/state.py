@@ -16,6 +16,14 @@ Which reducer each field gets is the design decision worth reading:
 * `retrieved` **replaces**. It feeds citations and the eval harness, and both
   want what this turn actually retrieved, not everything ever retrieved on the
   thread.
+* `citations` and `usage` **replace** for the same reason: they describe this
+  turn.
+
+Every value here is JSON-able — dicts and primitives, never a dataclass or a
+Pydantic model. The checkpointer serialises state, LangGraph warns that
+deserialising unregistered classes will be blocked in a future version, and a
+checkpoint only one build of the app can read is not a checkpoint. Nodes convert
+at the boundary.
 * `sql_queries` and `guardrail_flags` **accumulate**: both are audit trails, and
   an audit trail that overwrites itself is not one.
 """
@@ -26,8 +34,6 @@ from typing import Annotated, Any, Literal, TypedDict
 from langchain_core.messages import AnyMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.message import add_messages
-
-from app.rag.retrieve import RetrievedChunk
 
 # Every destination the state can hold, per ARCHITECTURE section 3.
 #
@@ -67,7 +73,7 @@ class AgentState(TypedDict, total=False):
     user_id: str | None
     route: Route | None
     route_confidence: float | None
-    retrieved: list[RetrievedChunk]
+    retrieved: list[dict[str, Any]]
     sql_queries: Annotated[list[SqlTrace], operator.add]
     # A plain dict, not the Pydantic model: the checkpointer serialises state,
     # and LangGraph warns that deserialising unregistered classes will stop
@@ -82,6 +88,10 @@ class AgentState(TypedDict, total=False):
     approval_id: str | None
     # What the tool returned, for the stream and the final answer.
     action_result: dict[str, Any] | None
+    # Verified quotes, in the shape the `citations` stream event carries.
+    citations: list[dict[str, Any]]
+    # Tokens for this turn, for the `done` event and the usage row.
+    usage: dict[str, Any] | None
 
 
 def initial_state(question: str, *, thread_id: str, user_id: str | None = None) -> AgentState:
@@ -104,6 +114,8 @@ def initial_state(question: str, *, thread_id: str, user_id: str | None = None) 
         guardrail_flags=[],
         approval_id=None,
         action_result=None,
+        citations=[],
+        usage=None,
     )
 
 

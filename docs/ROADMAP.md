@@ -167,7 +167,7 @@ actual unknowns live. A spike settled those before any design was locked; see
       flow that does not write an audit row is one you have to go back and
       thread logging through, and together the invariant can be a test from the
       start — no tool executes without a row
-- [ ] **Research agent** wrapping the existing Phase 1 retrieval — no new
+- [x] **Research agent** wrapping the existing Phase 1 retrieval — no new
       retrieval work
 - [ ] **Supervisor** routing between exactly **two** destinations, `research`
       and `action`, plus refuse. Two is the minimum that makes routing a real

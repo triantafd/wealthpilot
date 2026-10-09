@@ -22,6 +22,7 @@ import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from typing import Any
 
 import psycopg
 import pytest
@@ -37,6 +38,7 @@ from app.config import get_settings
 from app.db.session import get_session
 from app.main import app
 from app.observability import get_langfuse
+from app.rag.generate import Citation, GeneratedAnswer
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
@@ -245,3 +247,35 @@ def checkpointer_dsn(test_database: str) -> str:
     transaction is open — including this test's own.
     """
     return _checkpointer_dsn(_test_database_name())
+
+
+# --- A fake chat model -------------------------------------------------------
+# Shared rather than defined per module: the research-agent tests need the same
+# fake the Phase 1 generation tests use, and importing across test modules to
+# get it would make one module's refactor break another's collection.
+
+
+class FakeChatModel:
+    """Returns a prepared GeneratedAnswer and records what it was asked.
+
+    Implements only `with_structured_output`, which is all `generate_answer`
+    uses. A real fake chat model from langchain would still have to be told
+    what structured output to produce, so this is both smaller and clearer.
+    """
+
+    def __init__(self, answer: "GeneratedAnswer") -> None:
+        self._answer = answer
+        self.messages: list[Any] = []
+
+    def with_structured_output(self, schema: type, **_: object) -> "FakeChatModel":
+        self.schema = schema
+        return self
+
+    async def ainvoke(self, messages: Any, **_: object) -> "GeneratedAnswer":
+        self.messages = messages
+        return self._answer
+
+
+def fake_model(answer: str, *citations: "Citation") -> Any:
+    """A chat model that will answer `answer` citing `citations`."""
+    return FakeChatModel(GeneratedAnswer(answer=answer, citations=list(citations)))
