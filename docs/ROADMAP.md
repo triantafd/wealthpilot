@@ -153,8 +153,13 @@ any layer, so every item here is deliberately the smallest version that works.
 - [ ] `interrupt()` approval gate; `POST /approvals/{id}/approve|reject`;
       resume with `Command(resume=...)`
 - [ ] `audit_log` entry for the tool call and the decision
-- [ ] SSE streaming over the existing `shared/stream-events.ts` contract,
-      keeping the contract test green
+- [x] Define the SSE contract from ARCHITECTURE §6 in
+      `shared/stream-events.ts` with Pydantic mirrors in
+      `backend/app/api/events.py`, and **write** the contract test. Neither
+      existed: Phase 0 left `shared/` holding only a `.gitkeep`, so CLAUDE.md's
+      rule 5 — "keep the contract test passing" — had nothing to keep
+- [ ] Stream graph events over that contract from
+      `POST /threads/{id}/messages`
 - [ ] Request path calls `record_usage`, with a test that a real request
       produces a `usage` row
 - [ ] Minimal chat page: ask → stream tokens → route badge → citations →
