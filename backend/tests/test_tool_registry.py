@@ -46,7 +46,13 @@ async def _an_account(session: AsyncSession) -> str:
     return ACCOUNT
 
 
-async def _approval(session: AsyncSession, *, tool: str, status: str) -> str:
+async def _approval(
+    session: AsyncSession,
+    *,
+    tool: str,
+    status: str,
+    args: dict[str, Any] | None = None,
+) -> str:
     """An approval row, created as the approvals API will create it.
 
     A decided approval has to name its approver and the time: Phase 0 put a
@@ -61,7 +67,7 @@ async def _approval(session: AsyncSession, *, tool: str, status: str) -> str:
             thread_id="t-1",
             tool_name=tool,
             tier="HIGH",
-            args={"account_id": ACCOUNT},
+            args=args if args is not None else {"account_id": ACCOUNT},
             status=status,
             decided_by="adviser-7" if decided else None,
             decided_at=datetime.now(UTC) if decided else None,
@@ -119,7 +125,7 @@ async def test_a_high_tool_cannot_run_without_an_approval(db_session: AsyncSessi
     """The rule the whole registry exists for."""
     await _an_account(db_session)
 
-    with pytest.raises(ApprovalRequiredError, match="needs an approved approval"):
+    with pytest.raises(ApprovalRequiredError, match="was not authorised"):
         await execute(db_session, "propose_rebalance", {"account_id": ACCOUNT}, thread_id="t-1")
 
     assert (await db_session.execute(select(func.count()).select_from(Task))).scalar_one() == 0
@@ -166,14 +172,13 @@ async def test_an_approval_for_another_tool_cannot_be_replayed(
 
 async def test_an_approved_approval_lets_the_tool_run(db_session: AsyncSession) -> None:
     await _an_account(db_session)
-    approval_id = await _approval(db_session, tool="propose_rebalance", status="approved")
+    args = {"account_id": ACCOUNT, "reason": "equity 4pp over band"}
+    approval_id = await _approval(
+        db_session, tool="propose_rebalance", status="approved", args=args
+    )
 
     result = await execute(
-        db_session,
-        "propose_rebalance",
-        {"account_id": ACCOUNT, "reason": "equity 4pp over band"},
-        thread_id="t-1",
-        approval_id=approval_id,
+        db_session, "propose_rebalance", args, thread_id="t-1", approval_id=approval_id
     )
 
     task = (await db_session.execute(select(Task).where(Task.id == result["task_id"]))).scalar_one()
@@ -222,14 +227,16 @@ async def test_a_failing_call_is_audited_and_still_raises(
 ) -> None:
     """A tool that errored is exactly what an audit log is for, and swallowing
     the exception would hide it from the caller."""
-    approval_id = await _approval(db_session, tool="propose_rebalance", status="approved")
+    approval_id = await _approval(
+        db_session,
+        tool="propose_rebalance",
+        status="approved",
+        args={"account_id": "AC-NOPE"},
+    )
 
     with pytest.raises(Exception, match="no account"):
         await execute(
-            db_session,
-            "propose_rebalance",
-            {"account_id": "AC-NOPE"},
-            approval_id=approval_id,
+            db_session, "propose_rebalance", {"account_id": "AC-NOPE"}, approval_id=approval_id
         )
 
     rows = await _audit_rows(db_session)
@@ -255,3 +262,156 @@ def test_the_registry_uses_the_schemas_outcome_vocabulary() -> None:
     from app.tools.registry import DENIED, ERROR, OK
 
     assert {OK, ERROR, DENIED} <= set(AUDIT_OUTCOMES)
+
+
+# --- An approval authorises one specific act, once ---------------------------
+
+
+async def test_an_approval_does_not_authorise_different_arguments(
+    db_session: AsyncSession,
+) -> None:
+    """The escalation this closes: an approval for account A must not let the
+    same tool run against account B. Without the argument check, a human
+    approving one rebalance would be approving the capability to rebalance
+    anything."""
+    await _an_account(db_session)
+    approval_id = await _approval(
+        db_session,
+        tool="propose_rebalance",
+        status="approved",
+        args={"account_id": "AC-OTHER"},
+    )
+
+    with pytest.raises(ApprovalRequiredError, match="different arguments"):
+        await execute(
+            db_session,
+            "propose_rebalance",
+            {"account_id": ACCOUNT},
+            approval_id=approval_id,
+        )
+
+    assert (await db_session.execute(select(func.count()).select_from(Task))).scalar_one() == 0
+
+
+async def test_adding_an_argument_is_also_a_mismatch(db_session: AsyncSession) -> None:
+    """A superset is not a match. An approval for {account} must not authorise
+    {account, reason} — the reason is what the human read before deciding."""
+    await _an_account(db_session)
+    approval_id = await _approval(
+        db_session,
+        tool="propose_rebalance",
+        status="approved",
+        args={"account_id": ACCOUNT},
+    )
+
+    with pytest.raises(ApprovalRequiredError, match="different arguments"):
+        await execute(
+            db_session,
+            "propose_rebalance",
+            {"account_id": ACCOUNT, "reason": "snuck in"},
+            approval_id=approval_id,
+        )
+
+
+async def test_argument_order_is_not_a_mismatch(db_session: AsyncSession) -> None:
+    """A dict's order is not meaningful and JSONB does not preserve it, so the
+    comparison has to be canonical or every approval would fail at random."""
+    await _an_account(db_session)
+    args_in_one_order = {"account_id": ACCOUNT, "reason": "drift"}
+    approval_id = await _approval(
+        db_session, tool="propose_rebalance", status="approved", args=args_in_one_order
+    )
+
+    result = await execute(
+        db_session,
+        "propose_rebalance",
+        {"reason": "drift", "account_id": ACCOUNT},
+        approval_id=approval_id,
+    )
+
+    assert result["account_id"] == ACCOUNT
+
+
+async def test_an_approval_is_single_use(db_session: AsyncSession) -> None:
+    """Replay protection. Without it one approved rebalance authorises every
+    later rebalance of the same account, which is a replay rather than a
+    decision."""
+    await _an_account(db_session)
+    args = {"account_id": ACCOUNT}
+    approval_id = await _approval(
+        db_session, tool="propose_rebalance", status="approved", args=args
+    )
+
+    first = await execute(db_session, "propose_rebalance", args, approval_id=approval_id)
+    assert first["task_id"]
+
+    with pytest.raises(ApprovalRequiredError, match="already been used"):
+        await execute(db_session, "propose_rebalance", args, approval_id=approval_id)
+
+    # Exactly one task, not two.
+    assert (await db_session.execute(select(func.count()).select_from(Task))).scalar_one() == 1
+
+
+async def test_consumption_is_recorded_on_the_approval(db_session: AsyncSession) -> None:
+    await _an_account(db_session)
+    args = {"account_id": ACCOUNT}
+    approval_id = await _approval(
+        db_session, tool="propose_rebalance", status="approved", args=args
+    )
+
+    await execute(db_session, "propose_rebalance", args, approval_id=approval_id)
+
+    consumed = (
+        await db_session.execute(select(Approval.consumed_at).where(Approval.id == approval_id))
+    ).scalar_one()
+    assert consumed is not None
+
+
+async def test_an_approval_is_spent_even_if_the_tool_fails(
+    db_session: AsyncSession,
+) -> None:
+    """Fails closed. A tool that errored has still used its approval, so a human
+    decides again rather than the caller retrying a HIGH action freely."""
+    args = {"account_id": "AC-NOPE"}
+    approval_id = await _approval(
+        db_session, tool="propose_rebalance", status="approved", args=args
+    )
+
+    with pytest.raises(Exception, match="no account"):
+        await execute(db_session, "propose_rebalance", args, approval_id=approval_id)
+
+    consumed = (
+        await db_session.execute(select(Approval.consumed_at).where(Approval.id == approval_id))
+    ).scalar_one()
+    assert consumed is not None, "a failed attempt must still spend the approval"
+
+
+async def test_a_nonexistent_approval_is_refused(db_session: AsyncSession) -> None:
+    """An invented id must not pass for authorisation."""
+    await _an_account(db_session)
+
+    with pytest.raises(ApprovalRequiredError, match="does not exist"):
+        await execute(
+            db_session,
+            "propose_rebalance",
+            {"account_id": ACCOUNT},
+            approval_id=str(uuid.uuid4()),
+        )
+
+
+async def test_a_rejected_approval_cannot_be_marked_consumed(
+    db_session: AsyncSession,
+) -> None:
+    """Enforced by the schema, not only by execute(): without it a rejected
+    approval could be marked spent and later read as authorisation."""
+    from sqlalchemy.exc import IntegrityError
+
+    approval_id = await _approval(db_session, tool="propose_rebalance", status="rejected")
+
+    with pytest.raises(IntegrityError):
+        await db_session.execute(
+            Approval.__table__.update()
+            .where(Approval.id == approval_id)
+            .values(consumed_at=datetime.now(UTC))
+        )
+    await db_session.rollback()

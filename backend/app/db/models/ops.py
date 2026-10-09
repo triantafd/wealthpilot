@@ -58,6 +58,13 @@ class Approval(Base, TimestampMixin):
             "num_nulls(decided_at, decided_by) = CASE status WHEN 'pending' THEN 2 ELSE 0 END",
             name="decision_fields_match_status",
         ),
+        # Only an approved approval can be spent. Without this a rejected one
+        # could be marked consumed and then, if the status check were ever
+        # loosened, read as authorisation.
+        CheckConstraint(
+            "consumed_at IS NULL OR status = 'approved'",
+            name="only_approved_is_consumed",
+        ),
         # Serves GET /approvals?status=pending, the inbox's only query.
         Index("ix_approvals_status_created_at", "status", "created_at"),
         Index("ix_approvals_thread_id", "thread_id"),
@@ -80,6 +87,14 @@ class Approval(Base, TimestampMixin):
     decided_by: Mapped[str | None] = mapped_column(Text)
     decision_note: Mapped[str | None] = mapped_column(Text)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Set when the approval is spent. An approval is single-use: without this,
+    # one approved rebalance authorises every later rebalance of the same
+    # account, which is a replay rather than a decision. Separate from `status`
+    # because the human's decision and the execution are different events — and
+    # overloading `status` would mean an executed approval no longer reads as
+    # approved.
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AuditLogEntry(Base, TimestampMixin):

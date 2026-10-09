@@ -5,9 +5,12 @@ Working rule 3 in CLAUDE.md: every tool is registered here with a tier of
 bypassed, including in tests.
 
 A comment cannot enforce that, so `execute()` is the only sanctioned path to a
-tool's body and it checks the tier itself. A HIGH tool reached without an
-*approved* approval row raises `ApprovalRequiredError` and the call does not
-happen. The tool functions take a session and are registered rather than
+tool's body and it checks the tier itself. A HIGH tool reached without a valid
+approval raises `ApprovalRequiredError` and the call does not happen.
+
+An approval authorises **one specific act, once**: it is bound to the tool *and
+to the exact arguments*, so an approval for account A cannot authorise account
+B, and it is consumed on use, so it cannot be replayed. See `_claim_approval`. The tool functions take a session and are registered rather than
 exported, so the obvious way to call one is through here.
 
 **Every attempt is audited, including a refused one.** An audit log that records
@@ -25,12 +28,13 @@ Three tiers, and what they mean here:
            positions or money.
 """
 
+import json
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import insert, select
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.events import ProposedAction, Tier
@@ -121,20 +125,82 @@ def get(name: str) -> ToolSpec:
         raise UnknownToolError(f"no tool named {name!r}; registered: {known}") from exc
 
 
-async def _approved(session: AsyncSession, approval_id: str | None, tool: str) -> bool:
-    """Whether `approval_id` is an approved approval for this tool.
+def _canonical(args: dict[str, Any]) -> str:
+    """Arguments as one comparable string.
 
-    The tool name is checked too. Without it an approval for a harmless LOW
-    action could be replayed to authorise a HIGH one.
+    Sorted keys, because a dict's order is not meaningful and JSONB does not
+    preserve it. Compared as text rather than as dicts so that a value which
+    changed type on the way through JSONB — 1 against "1" — reads as a
+    mismatch rather than as equal.
+    """
+    return json.dumps(args, sort_keys=True, separators=(",", ":"), default=str)
+
+
+async def _claim_approval(
+    session: AsyncSession, approval_id: str | None, tool: str, args: dict[str, Any]
+) -> str | None:
+    """Spend an approval, or explain why it cannot be spent.
+
+    Returns None when the approval is valid and now consumed; otherwise a
+    reason, for the audit row and the exception.
+
+    Three things are checked, and the second and third are the ones a tool name
+    alone would miss:
+
+    * **status** — only `approved` authorises anything. Pending means no human
+      has decided yet.
+    * **the tool** — an approval for a harmless action must not authorise a
+      dangerous one.
+    * **the arguments** — an approval for account A must not authorise account
+      B. The approval is for a specific act, not for a capability.
+
+    Consumption is a conditional UPDATE rather than a read followed by a write.
+    Two concurrent resumes of the same approval would both pass a read, and
+    both would execute; the UPDATE's WHERE clause means exactly one row is
+    changed and the loser sees no row returned. It is spent *before* the tool
+    runs, so a tool that fails has still used its approval and a human has to
+    decide again — failing closed. Within the caller's transaction, so a
+    rollback un-spends it, which is correct: nothing happened.
     """
     if approval_id is None:
-        return False
+        return "no approval id supplied"
+
     row = (
         await session.execute(
-            select(Approval.status, Approval.tool_name).where(Approval.id == approval_id)
+            select(Approval.status, Approval.tool_name, Approval.args, Approval.consumed_at).where(
+                Approval.id == approval_id
+            )
         )
     ).one_or_none()
-    return row is not None and row.status == "approved" and row.tool_name == tool
+
+    if row is None:
+        return f"approval {approval_id!r} does not exist"
+    if row.status != "approved":
+        return f"approval is {row.status!r}, not 'approved'"
+    if row.tool_name != tool:
+        return f"approval is for {row.tool_name!r}, not {tool!r}"
+    if _canonical(row.args or {}) != _canonical(args):
+        return "approval was granted for different arguments"
+    if row.consumed_at is not None:
+        return "approval has already been used"
+
+    claimed = (
+        await session.execute(
+            update(Approval)
+            .where(
+                Approval.id == approval_id,
+                Approval.status == "approved",
+                Approval.consumed_at.is_(None),
+            )
+            .values(consumed_at=func.now())
+            .returning(Approval.id)
+        )
+    ).scalar_one_or_none()
+
+    if claimed is None:
+        # Lost a race with a concurrent resume of the same approval.
+        return "approval was used concurrently"
+    return None
 
 
 async def _audit(
@@ -182,19 +248,21 @@ async def execute(
     """
     spec = get(name)
 
-    if spec.requires_approval and not await _approved(session, approval_id, name):
-        await _audit(
-            session,
-            spec,
-            args,
-            thread_id=thread_id,
-            user_id=user_id,
-            outcome=DENIED,
-            error=f"{spec.tier} tool requires an approved approval; got {approval_id!r}",
-        )
-        raise ApprovalRequiredError(
-            f"{name} is {spec.tier}-risk and needs an approved approval before it can run"
-        )
+    if spec.requires_approval:
+        refusal = await _claim_approval(session, approval_id, name, args)
+        if refusal is not None:
+            await _audit(
+                session,
+                spec,
+                args,
+                thread_id=thread_id,
+                user_id=user_id,
+                outcome=DENIED,
+                error=f"{spec.tier} tool refused: {refusal}",
+            )
+            raise ApprovalRequiredError(
+                f"{name} is {spec.tier}-risk and was not authorised: {refusal}"
+            )
 
     started = time.perf_counter()
     try:
