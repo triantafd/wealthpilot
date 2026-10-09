@@ -31,7 +31,12 @@ from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from app import observability
 from app.agents.checkpointer import setup_checkpointer
@@ -39,6 +44,7 @@ from app.config import get_settings
 from app.db.session import get_session
 from app.main import app
 from app.observability import get_langfuse
+from app.rag.embeddings import FakeEmbedder
 from app.rag.generate import Citation, GeneratedAnswer
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -333,8 +339,52 @@ async def saver(checkpointer_dsn: str) -> AsyncIterator[AsyncPostgresSaver]:
     """
     async with AsyncPostgresSaver.from_conn_string(checkpointer_dsn) as test_saver:
         previous = getattr(app.state, "checkpointer", None)
+        previous_maker = getattr(app.state, "sessionmaker", None)
         app.state.checkpointer = test_saver
+        # The streaming handler opens its own session from here. Without this
+        # it would reach for the global sessionmaker and write to development
+        # data — which is exactly what happened, and /usage read zero because
+        # the row was in the wrong database.
+        app.state.sessionmaker = async_sessionmaker(
+            create_async_engine(_url(_test_database_name(), driver="asyncpg")),
+            expire_on_commit=False,
+        )
+        # A fake model and embedder, for the same reason. Without this seam the
+        # streaming tests called a real provider: it costs money, and
+        # langchain_openai caches its httpx client globally, so the second such
+        # test in a fresh event loop failed on a client the first had created.
+        previous_model = getattr(app.state, "chat_model", None)
+        previous_embedder = getattr(app.state, "embedder", None)
+        app.state.chat_model = fake_graph_model(route="research", answer="A trade costs £9.95.")
+        app.state.embedder = FakeEmbedder()
         try:
             yield test_saver
         finally:
             app.state.checkpointer = previous
+            app.state.sessionmaker = previous_maker
+            app.state.chat_model = previous_model
+            app.state.embedder = previous_embedder
+
+
+@pytest.fixture(autouse=True)
+async def _no_committed_leftovers(test_database: str) -> AsyncIterator[None]:
+    """Clear the tables an HTTP test can commit to, before every test.
+
+    Most tests run inside `db_session`'s rolled-back transaction and leave
+    nothing behind. The streaming endpoint cannot: it opens its own session and
+    commits, which is the right behaviour for a `StreamingResponse` and means
+    its rows outlive the test. The Phase 2 usage tests count rows over the
+    whole table, so a committed row from an earlier test made them fail with
+    off-by-one counts that looked like bugs in aggregation.
+
+    Done before the test rather than after, so teardown ordering cannot leave a
+    DELETE waiting on a transaction another fixture still holds open.
+    """
+    engine = create_async_engine(_url(_test_database_name(), driver="asyncpg"))
+    try:
+        async with engine.begin() as connection:
+            for table in ("usage", "audit_log", "approvals", "tasks"):
+                await connection.execute(text(f"DELETE FROM {table}"))  # noqa: S608
+    finally:
+        await engine.dispose()
+    yield

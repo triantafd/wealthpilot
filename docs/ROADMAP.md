@@ -182,12 +182,14 @@ actual unknowns live. A spike settled those before any design was locked; see
       `POST /threads/{id}/messages`. Mapping LangGraph's event stream onto our
       ten event types is the remaining unknown, and its shape is
       version-sensitive
-- [ ] **Request path calls `record_usage`**, with a test that a real request
+- [x] **Request path calls `record_usage`**, with a test that a real request
       produces a `usage` row — `/usage` was built in Phase 2 and returns zeros
       until something records, so without this it stays at zero and looks like
       it works
-- [ ] **Minimal chat page**: ask → stream tokens → route badge → citations →
-      approve or reject inline. No dashboards, no polish
+- [ ] **Minimal chat page**: ask → route badge → answer → citations →
+      approve or reject inline. No dashboards, no polish. Deliberately not
+      "stream tokens": the answer arrives as one event, and why is recorded in
+      Phase 7 rather than ticked here
 - [ ] `evals/datasets/routing_slice.jsonl` — ~18 cases across research / action
       / refuse, including 4 deliberately ambiguous
 - [ ] `evals/datasets/actions_slice.jsonl` — ~15 cases asserting correct tool,
@@ -276,6 +278,19 @@ owed from Phase 3 is fixed.*
 so this raises quality rather than enabling it.*
 
 - [ ] Chat with streaming, route badge, agent timeline, citations drawer
+- [ ] **Stream the answer token by token.** Today it arrives as a single
+      `token` event. The research agent uses `with_structured_output`, so the
+      model streams JSON fragments — `{"`, `route`, `":"` — and the usable
+      prose only exists once the object closes; verified, not assumed. The fix
+      is to parse the streaming JSON incrementally and emit `token` deltas as
+      the `answer` field grows: one model call, same prompt, no change to
+      `shared/stream-events.ts`. It is here rather than in Phase 4a because it
+      needs four modules plus LangGraph's `get_stream_writer()` plumbing, and
+      it changes how `answer_question` is invoked — which is the path the
+      frozen baseline measures, so it needs its own before/after. The
+      alternative, two calls streaming prose then fetching citations, costs
+      double and risks citations that do not match the prose that was
+      streamed
 - [ ] Approvals inbox
 - [ ] Documents page
 - [ ] Usage dashboard

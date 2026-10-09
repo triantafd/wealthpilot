@@ -16,6 +16,7 @@ from app.api.approvals import router as approvals_router
 from app.api.threads import router as threads_router
 from app.api.usage import router as usage_router
 from app.config import get_settings
+from app.db.session import get_sessionmaker
 from app.observability import flush
 
 
@@ -39,6 +40,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     async with checkpointer() as saver:
         app.state.checkpointer = saver
+        # Published for the same reason: the streaming handler needs a session
+        # of its own — a dependency with `yield` is closed before a
+        # StreamingResponse finishes — and a handler reaching straight for
+        # `get_sessionmaker()` writes to whatever settings point at, which in a
+        # test is the development database.
+        app.state.sessionmaker = get_sessionmaker()
         yield
     flush()
 

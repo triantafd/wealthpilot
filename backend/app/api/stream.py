@@ -47,6 +47,7 @@ from app.api.events import (
 )
 from app.pricing import cost_of
 from app.rag.embeddings import Embedder
+from app.usage import record_usage
 
 # LangGraph reports an interrupt under this synthetic node name.
 INTERRUPT_NODE = "__interrupt__"
@@ -160,6 +161,10 @@ async def stream_turn(
     started = time.perf_counter()
     graph = compile_graph(session, checkpointer, embedder=embedder, chat_model=chat_model)
     totals: dict[str, int] = {}
+    # Captured so the usage row carries it: without a route, /usage's per-route
+    # breakdown is a single null bucket and cannot answer "what does research
+    # cost us against actions".
+    route: str | None = None
 
     try:
         async for mode, chunk in graph.astream(
@@ -173,13 +178,72 @@ async def stream_turn(
                 if isinstance(update, dict):
                     for key, value in (update.get("usage") or {}).items():
                         totals[key] = totals.get(key, 0) + int(value)
+                    route = update.get("route") or route
                 for event in events_for(node, update):
                     yield event
     except Exception as exc:
+        # Recorded even on failure: the tokens were spent either way, and a
+        # spend figure that silently excludes failed turns understates cost
+        # exactly when something is going wrong.
+        await _record(
+            session,
+            totals,
+            elapsed_ms=(time.perf_counter() - started) * 1000,
+            thread_id=thread_id,
+            user_id=user_id,
+            route=route,
+        )
         yield ErrorEvent(message=f"{type(exc).__name__}: {exc}")
         return
 
-    yield DoneEvent(usage=usage_for(totals, elapsed_ms=(time.perf_counter() - started) * 1000))
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    await _record(
+        session,
+        totals,
+        elapsed_ms=elapsed_ms,
+        thread_id=thread_id,
+        user_id=user_id,
+        route=route,
+    )
+    yield DoneEvent(usage=usage_for(totals, elapsed_ms=elapsed_ms))
+
+
+async def _record(
+    session: AsyncSession,
+    totals: dict[str, int],
+    *,
+    elapsed_ms: float,
+    thread_id: str,
+    user_id: str | None,
+    route: str | None,
+) -> None:
+    """Write the turn's `usage` row.
+
+    Here rather than in the route handler, because this is where the totals,
+    the elapsed time and the route all exist. `record_usage` derives the cost
+    from `app/pricing.py`, so only tokens are passed — one price table, and the
+    row agrees with the eval report about what a request cost.
+
+    Does not commit: the caller owns the transaction, so the usage row lands
+    with whatever else the turn wrote.
+    """
+    if not totals:
+        # No model was called — a turn that failed before the supervisor. A row
+        # of zeros would make the per-request averages in /usage wrong.
+        return
+
+    from app.config import get_settings
+
+    await record_usage(
+        session,
+        model=get_settings().llm_model,
+        input_tokens=totals.get("inputTokens", 0),
+        output_tokens=totals.get("outputTokens", 0),
+        latency_ms=int(elapsed_ms),
+        route=route,
+        thread_id=thread_id,
+        user_id=user_id,
+    )
 
 
 def usage_for(totals: dict[str, int], *, elapsed_ms: float, model: str | None = None) -> Usage:

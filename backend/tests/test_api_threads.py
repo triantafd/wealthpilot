@@ -292,3 +292,207 @@ def test_an_sse_frame_round_trips() -> None:
     frame = as_sse(RouteEvent(route="research", confidence=0.9))
 
     assert frame == 'data: {"type":"route","route":"research","confidence":0.9}\n\n'
+
+
+# --- Usage recording ---------------------------------------------------------
+# /usage was built in Phase 2 and returns zeros until something records. Without
+# these a zeroed dashboard looks like a working one.
+
+
+async def test_a_turn_records_a_usage_row(db_session: AsyncSession) -> None:
+    """The requirement, stated plainly: a real request produces a row."""
+    from sqlalchemy import select
+
+    from app.db.models.ops import UsageRecord
+
+    embedder = await _seed(db_session)
+    thread = f"t-{uuid.uuid4()}"
+
+    async for _ in stream_turn(
+        db_session,
+        InMemorySaver(),
+        thread_id=thread,
+        question="what does a trade cost?",
+        user_id="adviser-7",
+        embedder=embedder,
+        chat_model=fake_graph_model(route="research", answer="£9.95."),
+    ):
+        pass
+
+    # Scoped to this thread: the HTTP test below commits, so a count over the
+    # whole table would see another test's row.
+    rows = list(
+        (await db_session.execute(select(UsageRecord).where(UsageRecord.thread_id == thread)))
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].user_id == "adviser-7"
+
+
+async def test_the_usage_row_carries_the_route(db_session: AsyncSession) -> None:
+    """Without it /usage's per-route breakdown is one null bucket and cannot
+    answer what research costs against actions."""
+    from sqlalchemy import select
+
+    from app.db.models.ops import UsageRecord
+
+    embedder = await _seed(db_session)
+    thread = f"t-{uuid.uuid4()}"
+
+    async for _ in stream_turn(
+        db_session,
+        InMemorySaver(),
+        thread_id=thread,
+        question="what will the FTSE do?",
+        embedder=embedder,
+        chat_model=fake_graph_model(route="out_of_scope"),
+    ):
+        pass
+
+    route = (
+        await db_session.execute(select(UsageRecord.route).where(UsageRecord.thread_id == thread))
+    ).scalar_one()
+    assert route == "out_of_scope"
+
+
+async def test_a_failed_turn_still_records_what_it_spent(
+    db_session: AsyncSession,
+) -> None:
+    """A spend figure that silently excludes failed turns understates cost
+    exactly when something is going wrong."""
+    from sqlalchemy import select
+
+    from app.agents.nodes.supervisor import Routing
+    from app.db.models.ops import UsageRecord
+    from tests.conftest import FakeChatModel
+
+    class RoutesThenBreaks(FakeChatModel):
+        async def ainvoke(self, messages: Any, **_: object) -> Any:
+            if self.schema is Routing:
+                return await super().ainvoke(messages)
+            raise RuntimeError("provider exploded")
+
+    model = RoutesThenBreaks({Routing: Routing(route="research", confidence=0.9, reason="x")})
+    await _seed(db_session)
+    thread = f"t-{uuid.uuid4()}"
+
+    events = [
+        e
+        async for e in stream_turn(
+            db_session,
+            InMemorySaver(),
+            thread_id=thread,
+            question="cost?",
+            embedder=FakeEmbedder(),
+            chat_model=model,  # type: ignore[arg-type]
+        )
+    ]
+
+    assert events[-1].type == "error"  # type: ignore[attr-defined]
+    rows = list(
+        (await db_session.execute(select(UsageRecord).where(UsageRecord.thread_id == thread)))
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1, "a failed turn still spent tokens"
+
+
+async def test_a_turn_that_called_no_model_records_nothing(
+    db_session: AsyncSession,
+) -> None:
+    """A row of zeros would make the per-request averages in /usage wrong."""
+    from sqlalchemy import func, select
+
+    from app.db.models.ops import UsageRecord
+
+    class BreaksImmediately:
+        def with_structured_output(self, schema: type, **_: object) -> "BreaksImmediately":
+            return self
+
+        async def ainvoke(self, messages: Any, **_: object) -> Any:
+            raise RuntimeError("down before a single token")
+
+    thread = f"t-{uuid.uuid4()}"
+
+    async for _ in stream_turn(
+        db_session,
+        InMemorySaver(),
+        thread_id=thread,
+        question="cost?",
+        embedder=FakeEmbedder(),
+        chat_model=BreaksImmediately(),  # type: ignore[arg-type]
+    ):
+        pass
+
+    count = (
+        await db_session.execute(
+            select(func.count()).select_from(UsageRecord).where(UsageRecord.thread_id == thread)
+        )
+    ).scalar_one()
+    assert count == 0
+
+
+async def test_usage_appears_on_the_usage_endpoint_after_a_turn(
+    client: AsyncClient, db_session: AsyncSession, saver: Any
+) -> None:
+    """The whole point, over HTTP: /usage stops reading zero once a request has
+    been served."""
+    from app.db.models.ops import UsageRecord
+
+    await _seed(db_session)
+    await db_session.commit()  # the handler uses its own session and will not see an open one
+    thread = (await client.post("/threads")).json()["thread_id"]
+
+    before = (await client.get("/usage")).json()["totals"]["requests"]
+    try:
+        await client.post(
+            f"/threads/{thread}/messages",
+            json={"message": "what does a trade cost?", "user_id": "adviser-7"},
+        )
+        after = (await client.get("/usage")).json()
+
+        # A delta, not an absolute: this is the one test whose handler commits,
+        # so the table is not empty for it and will not be empty after it.
+        assert after["totals"]["requests"] == before + 1
+    finally:
+        # Committed rows outlive the rolled-back fixture, so this cleans up.
+        async with client._transport.app.state.sessionmaker() as cleanup:  # type: ignore[attr-defined]
+            await cleanup.execute(
+                UsageRecord.__table__.delete().where(UsageRecord.thread_id == thread)
+            )
+            await cleanup.commit()
+
+
+async def test_the_streaming_handler_uses_the_injected_model(
+    client: AsyncClient, db_session: AsyncSession, saver: Any
+) -> None:
+    """Proves the seam, and that these tests do not call a real provider.
+
+    No documents are seeded, so retrieval finds nothing and Phase 1's refusal
+    fires before the fake's answer is used — which is why this asserts on the
+    routing confidence and the token counts rather than on the answer text.
+
+    Without it the streaming tests spent money and collided: langchain_openai
+    caches its httpx client globally, so the second one in a fresh event loop
+    failed on a client the first had created, recorded no usage, and the
+    failure looked like a bug in usage recording.
+    """
+    thread = (await client.post("/threads")).json()["thread_id"]
+
+    response = await client.post(
+        f"/threads/{thread}/messages", json={"message": "what does a trade cost?"}
+    )
+
+    frames = [
+        json.loads(f.removeprefix("data: ")) for f in response.text.split("\n\n") if f.strip()
+    ]
+    route = next(f for f in frames if f["type"] == "route")
+    done = next(f for f in frames if f["type"] == "done")
+
+    # The fake's fixed confidence, which a real model would not return exactly.
+    assert route["confidence"] == 0.9
+    # And the proof that no provider was called: a fake reports no token usage,
+    # where a real call always reports some.
+    assert done["usage"]["inputTokens"] == 0
+    assert done["usage"]["outputTokens"] == 0

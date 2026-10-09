@@ -4,11 +4,20 @@ ARCHITECTURE section 6. `POST /threads/{id}/messages` answers with an SSE
 stream of the events in `shared/stream-events.ts`.
 
 The streaming handler opens its **own** session rather than taking the request
-dependency. A `StreamingResponse` outlives the handler that returned it, so a
-session tied to the dependency's scope would be closed under the generator —
-and the graph writes the approval row, the tool's effect and the audit rows,
-which have to commit together after the last event rather than at whatever
-point the framework decided the request was over.
+dependency. A dependency with `yield` is closed before a `StreamingResponse`
+finishes, so a session tied to that scope would be closed under the generator —
+and the graph writes the approval row, the tool's effect, the audit rows and the
+usage row, which have to commit together after the last event rather than at
+whatever point the framework decided the request was over.
+
+Everything the turn needs — the sessionmaker, the embedder and the chat model —
+comes from `app.state`, with the real ones as defaults. Reaching for globals
+instead meant two things under test: the usage row was written to the
+*development* database, because `get_sessionmaker()` reads settings; and the
+streaming tests called a real provider, because there was no seam to inject a
+fake. The second cost money and broke the tests — `langchain_openai` caches its
+httpx client globally, so the second streaming test in a fresh event loop failed
+on a client the first one had created.
 
 Like `/approvals`, these are unauthenticated and `user_id` comes from the
 request. See ROADMAP Phase 9: this must be the authenticated principal before
@@ -90,9 +99,13 @@ async def post_message(
             "the graph's checkpointer is not available",
         )
 
+    sessionmaker = getattr(request.app.state, "sessionmaker", None) or get_sessionmaker()
+    embedder = getattr(request.app.state, "embedder", None)
+    chat_model = getattr(request.app.state, "chat_model", None)
+
     async def frames() -> AsyncIterator[str]:
         # Its own session: see the module docstring.
-        async with get_sessionmaker()() as session:
+        async with sessionmaker() as session:
             try:
                 async for event in stream_turn(
                     session,
@@ -100,6 +113,8 @@ async def post_message(
                     thread_id=thread_id,
                     question=body.message,
                     user_id=body.user_id,
+                    embedder=embedder,
+                    chat_model=chat_model,
                 ):
                     yield as_sse(event)
                 await session.commit()
