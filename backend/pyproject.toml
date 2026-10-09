@@ -19,12 +19,23 @@ dependencies = [
     "pyyaml>=6.0",
     "openai>=1.60",
     "langchain-text-splitters>=0.3",
-    "langchain>=0.3",
-    "langchain-openai>=0.2",
+    # Upper bounds because ">=0.3" silently allowed langchain 1.x when
+    # langgraph was added — a major bump under the Phase 1 code, discovered by
+    # a spike rather than by a failure. Pinned to what the baseline is measured
+    # against.
+    "langchain>=1.4,<2",
+    "langchain-openai>=0.2,<2",
     # Runtime, unlike ragas below: the service traces itself in production.
     # v4 renamed the span API (start_as_current_observation) and the client
     # argument is base_url, so the major is pinned rather than floating.
     "langfuse>=4,<5",
+    # The graph and its checkpointer. The checkpointer runs on psycopg3 while
+    # the app runs on asyncpg, so there are two pools against one database;
+    # that is the library's design, not a mistake. Its four checkpoint* tables
+    # are created by saver.setup() and are filtered out of Alembic autogenerate
+    # by app/db/migrations/env.py, verified in the spike.
+    "langgraph>=1.2,<2",
+    "langgraph-checkpoint-postgres>=3.1,<4",
 ]
 
 # `app` is installed into the venv rather than merely being on sys.path, so

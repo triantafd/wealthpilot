@@ -143,26 +143,42 @@ One question, through a real graph, streamed to a real page, with one action a
 human must approve. The point is to make the whole path exist before deepening
 any layer, so every item here is deliberately the smallest version that works.
 
-- [ ] `AgentState` and the Postgres checkpointer — enough to resume one interrupted run
-- [ ] Supervisor routing between exactly **two** destinations, `research` and
-      `action`, plus refuse. Two is the minimum that makes routing a real
+**Tasks are listed in the order they are done, and the order is deliberate:
+riskiest first.** Sequencing by what is easiest to test would have put the tool
+registry — a dict with an enum — before the checkpointer, which is where the
+actual unknowns live. A spike settled those before any design was locked; see
+`docs/EXPERIMENTS.md`.
+
+- [x] **The SSE contract.** `shared/stream-events.ts` from ARCHITECTURE §6,
+      Pydantic mirrors in `backend/app/api/events.py`, and the contract test on
+      each side. Neither existed — Phase 0 left `shared/` holding only a
+      `.gitkeep`, so CLAUDE.md rule 5 had nothing to keep green
+- [ ] **`AgentState` and the Postgres checkpointer**, with a committed test
+      proving interrupt → resume. Everything downstream depends on the state
+      shape, so it is settled early
+- [ ] **Tool registry** with `READ`/`LOW`/`HIGH` tiers and **one** HIGH tool,
+      `propose_rebalance(account_id)`, writing a `ProposedAction` row. Cheap,
+      and the gate needs something to approve
+- [ ] **The approval gate**: `interrupt()`, `POST /approvals/{id}/approve|reject`,
+      resume with `Command(resume=...)`, **and** the `audit_log` row for the
+      tool call and the decision. Done as one task rather than two: an approval
+      flow that does not write an audit row is one you have to go back and
+      thread logging through, and together the invariant can be a test from the
+      start — no tool executes without a row
+- [ ] **Research agent** wrapping the existing Phase 1 retrieval — no new
+      retrieval work
+- [ ] **Supervisor** routing between exactly **two** destinations, `research`
+      and `action`, plus refuse. Two is the minimum that makes routing a real
       decision rather than a pass-through
-- [ ] Research agent wrapping the existing Phase 1 retrieval — no new retrieval work
-- [ ] Tool registry with `READ`/`LOW`/`HIGH` tiers and **one** HIGH tool:
-      `propose_rebalance(account_id)`, writing a `ProposedAction` row
-- [ ] `interrupt()` approval gate; `POST /approvals/{id}/approve|reject`;
-      resume with `Command(resume=...)`
-- [ ] `audit_log` entry for the tool call and the decision
-- [x] Define the SSE contract from ARCHITECTURE §6 in
-      `shared/stream-events.ts` with Pydantic mirrors in
-      `backend/app/api/events.py`, and **write** the contract test. Neither
-      existed: Phase 0 left `shared/` holding only a `.gitkeep`, so CLAUDE.md's
-      rule 5 — "keep the contract test passing" — had nothing to keep
-- [ ] Stream graph events over that contract from
-      `POST /threads/{id}/messages`
-- [ ] Request path calls `record_usage`, with a test that a real request
-      produces a `usage` row
-- [ ] Minimal chat page: ask → stream tokens → route badge → citations →
+- [ ] **Stream graph events** over the contract from
+      `POST /threads/{id}/messages`. Mapping LangGraph's event stream onto our
+      ten event types is the remaining unknown, and its shape is
+      version-sensitive
+- [ ] **Request path calls `record_usage`**, with a test that a real request
+      produces a `usage` row — `/usage` was built in Phase 2 and returns zeros
+      until something records, so without this it stays at zero and looks like
+      it works
+- [ ] **Minimal chat page**: ask → stream tokens → route badge → citations →
       approve or reject inline. No dashboards, no polish
 - [ ] `evals/datasets/routing_slice.jsonl` — ~18 cases across research / action
       / refuse, including 4 deliberately ambiguous

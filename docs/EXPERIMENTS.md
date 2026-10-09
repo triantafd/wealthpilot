@@ -677,3 +677,61 @@ phase were measured retrieval-only, which is cheap and deterministic and made
 the comparisons clean. The one that was adopted then failed on metrics the
 retrieval-only runs could not see. **Measure the answer side before changing a
 default**, not after.
+
+---
+
+## Phase 4a spike — does the checkpointer actually resume?
+
+Throwaway, deleted after running. The point was to answer the riskiest question
+in Phase 4a before `AgentState`'s shape — which everything downstream depends
+on — got locked in.
+
+The task order had been set by what was easiest to test, which would have put
+the tool registry (a dict with an enum) before the checkpointer. That is
+backwards for de-risking: the registry cannot fail in an interesting way, and
+the checkpointer involves a new dependency, a second database driver, and
+`interrupt()` semantics inside an async graph.
+
+### What it proved
+
+A three-node graph — one node, an `interrupt()`, one node — run in **two
+separate processes**:
+
+```
+process A   ran to the interrupt, state persisted, payload retrievable
+            next=('gate',)  interrupt={'question': 'approve?', ...}
+
+process B   found the state, resumed with Command(resume="approved"),
+            completed:  steps=['a','gate','b']  decision='approved'
+```
+
+So interrupt, persistence and resume all work, **including across a process
+boundary**. The polished version of that still belongs in Phase 5, but the
+assumption most likely to be false is no longer an assumption.
+
+### Three findings that changed the plan
+
+**1. `langchain` silently jumped 0.3 → 1.4.3.** Adding `langgraph` let uv
+resolve `langchain>=0.3` up across a major version, under all the Phase 1 code.
+448 tests still passed and ragas still imported, so nothing broke — but nothing
+had declared an upper bound either. Checked properly rather than assumed: the
+smoke suite returns `mrr 0.693, hit@1 0.600, validity 0.963, must_include
+0.889`, **identical to the pre-bump run**, so the major changed no measured
+behaviour and no re-baseline is needed. Both libraries now carry upper bounds.
+
+**2. Two database drivers, by design.** `AsyncPostgresSaver` runs on psycopg3
+while the application runs on asyncpg, so there are two pools against one
+database. That is the library's design rather than a mistake, and it is now
+written down in `pyproject.toml` so it does not read as an accident later.
+
+**3. The Phase 0 Alembic filter works.** `saver.setup()` creates four tables —
+`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`.
+`alembic check` still reports no drift, and a fresh `--autogenerate` produces
+**zero** references to them, so the `env.py` filter written in Phase 0 does
+exactly what it was written for. Worth recording because the failure mode would
+have been a migration that drops LangGraph's tables.
+
+### Cost
+
+About twenty minutes, one throwaway file, and the spike's test thread was
+deleted from the checkpointer tables afterwards.
