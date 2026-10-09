@@ -159,7 +159,9 @@ actual unknowns live. A spike settled those before any design was locked; see
 - [x] **Tool registry** with `READ`/`LOW`/`HIGH` tiers and **one** HIGH tool,
       `propose_rebalance(account_id)`, writing a `ProposedAction` row. Cheap,
       and the gate needs something to approve
-- [ ] **The approval gate**: `interrupt()`, `POST /approvals/{id}/approve|reject`,
+- [x] **The approval gate**: `interrupt()`, `GET /approvals?status=pending`
+      and `POST /approvals/{id}` taking `{decision, note}` as ARCHITECTURE §6
+      specifies — not the `/approve|reject` paths this line used to claim —
       resume with `Command(resume=...)`, **and** the `audit_log` row for the
       tool call and the decision. Done as one task rather than two: an approval
       flow that does not write an audit row is one you have to go back and
@@ -302,6 +304,13 @@ of the credit.*
       sensitive on its own, and a free read on how the system is used.
       It is unauthenticated today because nothing is deployed; shipping it
       as-is would publish that data
+- [ ] Authenticate `/approvals` before deployment, and **take `decided_by`
+      from the authenticated user rather than the request body**. Unauthenticated
+      it is worse than `/usage`: `/usage` leaks, `/approvals` *acts* — anyone
+      could approve a HIGH-risk action. And while the decider is a body field,
+      a real caller can attribute their own decision to someone else, which
+      makes the audit log worse than useless: it would name an approver who
+      never approved. Both are marked in `app/api/approvals.py`
 
 ## Phase 10 — Stretch modules · **Optional**
 

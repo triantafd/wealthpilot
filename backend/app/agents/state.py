@@ -24,6 +24,7 @@ import operator
 from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.messages import AnyMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph.message import add_messages
 
 from app.rag.retrieve import RetrievedChunk
@@ -106,10 +107,14 @@ def initial_state(question: str, *, thread_id: str, user_id: str | None = None) 
     )
 
 
-def thread_config(thread_id: str) -> dict[str, Any]:
+def thread_config(thread_id: str) -> RunnableConfig:
     """The config LangGraph needs to find a thread's checkpoints.
 
     One place, because a typo in `configurable` does not raise — it silently
     starts a new thread, and the symptom is an approval that never resumes.
+
+    Typed as `RunnableConfig` rather than a plain dict, so passing it to
+    `ainvoke` or `aget_state` type-checks instead of being accepted structurally
+    and drifting later.
     """
     return {"configurable": {"thread_id": thread_id}}
