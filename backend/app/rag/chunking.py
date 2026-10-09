@@ -9,9 +9,12 @@ matches nothing precisely. Splitting also keeps prompts within budget and gives
 a citation somewhere specific to point.
 """
 
+import re
 from dataclasses import dataclass
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from app.config import get_settings
 
 # Ported from chatapp-rag-streaming. Treated as a starting point to beat, not a
 # settled choice: Phase 3 measures 2-3 sizes against the eval set.
@@ -88,3 +91,43 @@ def chunk_pages(
             index += 1
 
     return chunks
+
+
+# The first chunk of eight of the ten documents opens with a markdown title and
+# then an identical disclaimer line. Measured over the corpus, that makes every
+# first chunk partly similar to every other first chunk, and a #p1 chunk is the
+# wrong rank-1 winner in a fifth of all retrieval failures.
+#
+# Only what is *embedded* is stripped. The stored content keeps the text, so a
+# citation still quotes the document as written and the generated tsvector still
+# indexes it — the hypothesis is about vector similarity, so the experiment
+# should change only the vectors.
+#
+# Only a leading **H1** is removed. In this corpus `#` is the document title
+# and `##`/`###` are section headings, and chunking splits on headings, so a
+# chunk frequently starts with one. Two earlier versions were wrong about this:
+# the first stripped every heading anywhere, the second every leading heading,
+# and both turned "## 2. Annual allowances" followed by a table into a bare
+# table. A section heading is the most retrievable text in a chunk; removing it
+# tests a far more aggressive hypothesis than the repeated-boilerplate one.
+_LEADING_TITLE = re.compile(r"\A\#[ \t]+\S[^\n]*\n?")
+_DISCLAIMER = re.compile(
+    r"^\*\*[^*\n]+\*\*[ \t]*[\u2014-][ \t]*fictional[ \t]+firm,[ \t]*"
+    r"synthetic[ \t]+document\.?[ \t]*",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def text_for_embedding(content: str) -> str:
+    """What should be embedded for a chunk, given the configured variant.
+
+    Returns `content` unchanged unless `embed_strip_boilerplate` is set. Falls
+    back to the original when stripping would empty the chunk: a chunk that is
+    *only* a title still has to be embeddable, and an empty string would be a
+    vector with no meaning rather than no vector.
+    """
+    if not get_settings().embed_strip_boilerplate:
+        return content
+
+    stripped = _DISCLAIMER.sub("", _LEADING_TITLE.sub("", content)).strip()
+    return stripped or content

@@ -101,3 +101,95 @@ def test_every_document_produces_at_least_one_chunk_per_page() -> None:
 def test_default_parameters_are_the_ported_ones() -> None:
     """Phase 3 changes these deliberately; this records the starting point."""
     assert (CHUNK_SIZE, CHUNK_OVERLAP) == (800, 120)
+
+
+# --- The boilerplate variant -------------------------------------------------
+# Phase 3, task 4. Only what is embedded is stripped; stored content keeps the
+# text so citations still quote the document as written.
+
+
+def test_content_is_untouched_when_the_variant_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sets the variable rather than relying on the default, which flipped to
+    true in Phase 3 — a test that reads the default tests the default, not the
+    behaviour."""
+    from app.config import get_settings
+    from app.rag.chunking import text_for_embedding
+
+    content = "# A Title\n\nSome prose."
+
+    monkeypatch.setenv("EMBED_STRIP_BOILERPLATE", "false")
+    get_settings.cache_clear()
+    try:
+        assert text_for_embedding(content) == content
+    finally:
+        get_settings.cache_clear()
+
+
+def test_the_variant_is_off_by_default() -> None:
+    """Pinned separately, so flipping the default fails here with a clear name
+    rather than inside a behaviour test. Off because it costs
+    answer.refusal_correct, which is gated at 1.00 — see docs/EXPERIMENTS.md."""
+    from app.config import Settings
+
+    assert Settings(_env_file=None).embed_strip_boilerplate is False
+
+
+def test_a_leading_h1_and_the_disclaimer_are_stripped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import get_settings
+    from app.rag.chunking import text_for_embedding
+
+    monkeypatch.setenv("EMBED_STRIP_BOILERPLATE", "true")
+    get_settings.cache_clear()
+    try:
+        out = text_for_embedding(
+            "# Account Types and Allowances\n\n"
+            "**WealthPilot Advisers Ltd** — fictional firm, synthetic document. "
+            "The allowances below are invented."
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert out == "The allowances below are invented."
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "## 2. Annual allowances\n\n| Account | Allowance |",
+        "### Sector exclusions\n\nA list of sectors the client will not hold.",
+    ],
+)
+def test_a_section_heading_is_never_stripped(content: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two earlier implementations removed these and silently tested a much more
+    aggressive hypothesis. A section heading is the most retrievable text in a
+    chunk: in this corpus `#` is the document title and `##`/`###` are
+    sections."""
+    from app.config import get_settings
+    from app.rag.chunking import text_for_embedding
+
+    monkeypatch.setenv("EMBED_STRIP_BOILERPLATE", "true")
+    get_settings.cache_clear()
+    try:
+        assert text_for_embedding(content) == content
+    finally:
+        get_settings.cache_clear()
+
+
+def test_a_chunk_that_is_only_a_title_falls_back_to_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty string would be a vector with no meaning rather than no
+    vector."""
+    from app.config import get_settings
+    from app.rag.chunking import text_for_embedding
+
+    monkeypatch.setenv("EMBED_STRIP_BOILERPLATE", "true")
+    get_settings.cache_clear()
+    try:
+        assert text_for_embedding("# Just A Title") == "# Just A Title"
+    finally:
+        get_settings.cache_clear()

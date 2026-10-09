@@ -49,6 +49,18 @@ dev = [
     "ruff>=0.8",
     "types-pyyaml>=6.0.12.20260906",
 ]
+# The cross-encoder reranker. Its own group rather than a runtime dependency:
+# sentence-transformers pulls torch, which is a few hundred megabytes, and
+# neither CI nor the other eval variants need it. A deployment that wants
+# reranking installs this group deliberately — see app/rag/rerank.py, which
+# imports it lazily and fails with an actionable message if it is absent.
+rerank = [
+    # torch is listed explicitly even though sentence-transformers pulls it:
+    # [tool.uv.sources] below only binds direct dependencies, so without this
+    # line the CPU pin is ignored and the CUDA build is installed.
+    "torch>=2.4",
+    "sentence-transformers>=3.0",
+]
 evals = [
     # ragas 0.3.1 imports langchain_community.chat_models.vertexai, removed in
     # community 0.4, and imports PIL without declaring pillow. Both of these are
@@ -58,6 +70,19 @@ evals = [
     "pillow>=12.3.0",
     "ragas>=0.3.1",
 ]
+
+# torch defaults to its CUDA build, which pulled a 5.9 GB virtualenv on a
+# machine with no GPU — several gigabytes of unusable CUDA libraries. The
+# reranker is a small cross-encoder on CPU, so the CPU wheel is pinned
+# explicitly. `explicit = true` keeps this index out of resolution for every
+# other package.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
 
 [tool.ruff]
 line-length = 100
@@ -89,6 +114,14 @@ ignore = [
 # ragas ships no py.typed marker. Only the eval harness imports it, and it is
 # imported lazily there, so the untyped surface is small and contained.
 module = ["ragas.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# sentence-transformers lives in the optional 'rerank' group, so it is absent
+# wherever that group is not installed — CI included, which is how this was
+# found: mypy passed locally with the group installed and failed in CI without
+# it. The import is lazy and confined to app/rag/rerank.py.
+module = ["sentence_transformers.*"]
 ignore_missing_imports = true
 
 [tool.mypy]

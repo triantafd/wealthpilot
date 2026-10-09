@@ -57,6 +57,78 @@ class Settings(BaseSettings):
     # How many chunks reach the prompt. Ported from chatapp-rag-streaming.
     retrieval_top_k: int = 6
 
+    # Which retrieval strategy `search()` uses. A setting so the eval suite can
+    # compare Phase 3 variants without a code change.
+    #
+    # "vector" is the default and what the baseline measures. "text" and
+    # "hybrid" remain available and documented, but Phase 3 measured both as
+    # worse: full-text alone scores MRR 0.665, and hybrid's rank 1 was
+    # identical to vector's in 73 of 75 cases once a reranker was involved.
+    # They are kept because the finding is more useful than the code is costly
+    # — someone can switch and see for themselves.
+    retrieval_mode: Literal["vector", "text", "hybrid"] = "vector"
+
+    # Reciprocal Rank Fusion. Score for a chunk is the sum over strategies of
+    # 1 / (rrf_k + rank).
+    #
+    # 60 is the value from Cormack et al.'s original paper and the de facto
+    # default. It controls how flat the contribution curve is: a large k makes
+    # ranks 1 and 10 nearly equivalent, a small k makes rank 1 dominate. It is a
+    # setting so it can be tuned against the golden set rather than assumed.
+    retrieval_rrf_k: int = 60
+
+    # How many candidates each strategy contributes before fusion. Deeper costs
+    # nothing extra in model calls — both searches run regardless — but a
+    # candidate at rank 30 can only enter the final list if something else ranks
+    # it highly too, which is the point.
+    #
+    # 10 by measurement rather than by argument: a sweep of rrf_k in
+    # {5,10,20,60,120} against depth in {6,10,20,30} moved MRR only between
+    # 0.746 and 0.755, and left hit@1 at exactly 61.4% in all twenty
+    # combinations. Depth 10 ties for the best MRR and does the least work. See
+    # docs/EXPERIMENTS.md — the insensitivity is the result, not the value.
+    retrieval_candidates: int = 10
+
+    # --- Reranking ----------------------------------------------------------
+    # Off by default; the eval suite turns it on per run with --rerank so the
+    # same candidate set can be measured with and without it.
+    retrieval_rerank: bool = False
+
+    # How many candidates the reranker sees. Larger gives it more chance to
+    # find the right passage and costs linearly more cross-encoder work, which
+    # is the trade the latency column exists to expose.
+    retrieval_rerank_candidates: int = 20
+
+    # A small cross-encoder by default. ARCHITECTURE section 4 names
+    # bge-reranker as an option; it is a setting so both can be measured
+    # rather than one assumed.
+    rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+    # --- Ingestion variants -------------------------------------------------
+    # Strip the repeated title and disclaimer line from what gets *embedded*,
+    # leaving the stored content untouched so citations still quote the real
+    # text and full-text search still indexes it.
+    #
+    # Off by default, after being adopted and then reverted in Phase 3.
+    #
+    # It is the only variant that improved retrieval's primary metrics — hit@1
+    # from 62.9% to 64.3%, MRR up 0.8, where every ranking method tried left
+    # hit@1 at 61.4% or 62.9%. But a full-suite run then showed it costs
+    # answer.refusal_correct, which EVALS.md gates at 1.00: it fell to 0.973
+    # with +/-0.000 spread across three runs, so reproducibly rather than as
+    # noise. 1.4 points of rank-1 ordering is not worth a reproducible refusal
+    # failure in a compliance tool.
+    #
+    # The retrieval-only measurement could not see this, which is the lesson:
+    # a retrieval change is not validated until the answer metrics are run.
+    # See docs/EXPERIMENTS.md for the per-case detail.
+    #
+    # A setting rather than an edit to ingestion, so both corpora can be
+    # rebuilt on demand and the comparison stays reproducible. Changing it
+    # requires a re-ingest with --force: the vectors on disk were produced
+    # under whichever value was set at the time.
+    embed_strip_boilerplate: bool = False
+
     openai_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
 
