@@ -1,8 +1,32 @@
 # WealthPilot
 
-A multi-agent AI assistant for a (synthetic) wealth-management firm. Advisors ask questions in plain language; a LangGraph supervisor routes them to specialist agents that search policy documents (hybrid RAG), query client portfolios (safe text-to-SQL), and propose actions that a human must approve before they run.
+A multi-agent AI assistant for a (synthetic) wealth-management firm. Advisors ask questions in plain language; a LangGraph supervisor routes them to specialist agents that search policy documents (RAG, with hybrid search and reranking measured and available as options), query client portfolios (safe text-to-SQL), and propose actions that a human must approve before they run.
 
-The point of the project is not the chatbot. It is the engineering around it: every change is measured by an eval suite in CI, every request is traced with cost and latency, and every tool has an explicit risk tier.
+The point of the project is not the chatbot. It is the engineering around it: every change is measured by an eval suite, every request is traced with cost and latency, and every tool has an explicit risk tier.
+
+## Status
+
+**Phases 0–3 complete. Phase 4a — a thin end-to-end slice — is next.** Working
+today: document ingestion, retrieval, and answers with mechanically verified
+citations; a 75-case eval suite with a frozen baseline and variant comparison;
+Langfuse tracing; and per-request token, cost and latency accounting.
+
+| Area | State |
+|---|---|
+| RAG pipeline: ingest → retrieve → cite | **working** (`backend/app/rag/`) |
+| Eval suite, frozen baseline, variant comparison | **working** (75 cases, `evals/`) |
+| Tracing, `usage` table, `/usage`, per-model pricing | **working** |
+| Retrieval variants: full-text, hybrid RRF, cross-encoder | **measured, off by default** (`docs/EXPERIMENTS.md`) |
+| LangGraph supervisor and agents | not built — Phase 4a |
+| SSE streaming, chat page | not built — Phase 4a |
+| Risk-tiered tools, approval gate, audit log | not built — Phase 4a |
+| Text-to-SQL portfolio agent | not built — Phase 4 |
+| Guardrails, prompt-injection defence, safety evals | not built — Phase 6 |
+| CI eval gate | not built — Phase 8 |
+| AWS deployment, MCP server | not built — Phases 9–10 |
+
+The table below describes the intended architecture. Rows marked *not built*
+are planned, not present; `docs/ROADMAP.md` is the current state of play.
 
 ## What it demonstrates
 
@@ -23,7 +47,7 @@ The point of the project is not the chatbot. It is the engineering around it: ev
 
 - **Backend:** Python 3.12, FastAPI, LangGraph, LangChain, SQLAlchemy, Alembic, uv
 - **Data:** PostgreSQL 16 with pgvector (vectors, full-text search, and relational data in one DB)
-- **AI:** model-agnostic via LangChain (OpenAI, Anthropic, or AWS Bedrock), sentence-transformers reranker
+- **AI:** model-agnostic via LangChain (OpenAI, Anthropic, or AWS Bedrock); optional sentence-transformers cross-encoder reranker, off by default
 - **Evals & observability:** Ragas, pytest, Langfuse
 - **Frontend:** Vite, React, TypeScript, Tailwind CSS, shadcn/ui, TanStack Query, Recharts
 - **Infra:** Docker Compose locally, AWS for deployment, GitHub Actions CI
@@ -56,7 +80,8 @@ retrieval, and it is kept because it becomes informative as the corpus grows.
 The Ragas metrics are **report-only**, not gates. An LLM judge moves on its own
 — the spread column is how much — and answer relevancy penalises the caveats the
 research prompt explicitly requires, so a drop there can mean the answer got
-*more* correct. Everything with a ±0.000 spread is deterministic and gates CI.
+*more* correct. Everything with a ±0.000 spread is deterministic and therefore
+**eligible** to gate CI; the gate itself arrives in Phase 8.
 
 ## Quick start
 

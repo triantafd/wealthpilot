@@ -406,6 +406,12 @@ cases, and the *only* wrong winner in six of them.
 It takes **20.8% of all retrieved slots but 57.1% of all wrong rank-1s** —
 punching about 2.7x above its weight.
 
+**Caveat on generality:** this ceiling is partly an artefact of our synthetic
+corpus — we wrote a single FAQ that restates the rules of all nine other
+documents, so one document shadows the whole set in a way a real corpus is
+unlikely to reproduce as cleanly. The method here (find which cases no ranker
+fixes, then find what wins instead) transfers; the specific finding may not.
+
 The cause is a property of the corpus, not a defect in any ranker. The FAQ
 restates rules from every other document in question-shaped language, and the
 golden set asks questions. For a question, a passage that *reads like an answer
