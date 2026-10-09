@@ -14,12 +14,11 @@ default, and settings point at the development database.
 import uuid
 from typing import Any
 
-import pytest
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
-from app.agents.checkpointer import checkpointer, setup_checkpointer
+from app.agents.checkpointer import checkpointer
 from app.agents.state import AgentState, initial_state, thread_config
 from tests.conftest import _test_database_name, _url
 
@@ -131,18 +130,6 @@ def _gated_graph(saver: Any) -> Any:
     graph.add_edge("gate", "finish")
     graph.add_edge("finish", END)
     return graph.compile(checkpointer=saver)
-
-
-@pytest.fixture
-async def checkpointer_dsn(test_database: str) -> str:
-    """The test database with LangGraph's tables created.
-
-    Depends on `test_database` for its side effect — dropping, recreating and
-    migrating the database — rather than for its value.
-    """
-    dsn = _checkpointer_dsn()
-    await setup_checkpointer(dsn)
-    return dsn
 
 
 async def test_a_run_pauses_at_the_gate_and_exposes_its_payload(

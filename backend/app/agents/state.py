@@ -26,7 +26,6 @@ from typing import Annotated, Any, Literal, TypedDict
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
-from app.api.events import ProposedAction
 from app.rag.retrieve import RetrievedChunk
 
 # Every destination the state can hold, per ARCHITECTURE section 3.
@@ -69,8 +68,19 @@ class AgentState(TypedDict, total=False):
     route_confidence: float | None
     retrieved: list[RetrievedChunk]
     sql_queries: Annotated[list[SqlTrace], operator.add]
-    pending_action: ProposedAction | None
+    # A plain dict, not the Pydantic model: the checkpointer serialises state,
+    # and LangGraph warns that deserialising unregistered classes will stop
+    # working. A checkpoint only one build of the app can read is not a
+    # checkpoint. Nodes convert at the boundary.
+    pending_action: dict[str, Any] | None
     guardrail_flags: Annotated[list[str], operator.add]
+
+    # The approval the gate created, kept in the state because LangGraph re-runs
+    # a node from the top on resume: without it the gate would create a second
+    # approval row every time a thread resumed.
+    approval_id: str | None
+    # What the tool returned, for the stream and the final answer.
+    action_result: dict[str, Any] | None
 
 
 def initial_state(question: str, *, thread_id: str, user_id: str | None = None) -> AgentState:
@@ -91,6 +101,8 @@ def initial_state(question: str, *, thread_id: str, user_id: str | None = None) 
         sql_queries=[],
         pending_action=None,
         guardrail_flags=[],
+        approval_id=None,
+        action_result=None,
     )
 
 

@@ -10,8 +10,10 @@ approval raises `ApprovalRequiredError` and the call does not happen.
 
 An approval authorises **one specific act, once**: it is bound to the tool *and
 to the exact arguments*, so an approval for account A cannot authorise account
-B, and it is consumed on use, so it cannot be replayed. See `_claim_approval`. The tool functions take a session and are registered rather than
-exported, so the obvious way to call one is through here.
+B, and it is consumed on use, so it cannot be replayed. See `_claim_approval`.
+
+The tool functions take a session and are registered rather than exported,
+so the obvious way to call one is through here.
 
 **Every attempt is audited, including a refused one.** An audit log that records
 only what succeeded is missing exactly the rows an investigation starts from, so

@@ -18,6 +18,7 @@ The result is that a test behaves identically whether your development database
 is empty or holds the full corpus — and nothing a test does can damage it.
 """
 
+import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -31,6 +32,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, create_async_engine
 
 from app import observability
+from app.agents.checkpointer import setup_checkpointer
 from app.config import get_settings
 from app.db.session import get_session
 from app.main import app
@@ -53,6 +55,11 @@ def _unavailable(reason: str) -> None:
 
 def _test_database_name() -> str:
     return f"{get_settings().postgres_db}_test"
+
+
+def _checkpointer_dsn(database: str) -> str:
+    """The same database, spelled for psycopg rather than SQLAlchemy."""
+    return _url(database, driver="psycopg").replace("postgresql+psycopg://", "postgresql://", 1)
 
 
 def _url(database: str, *, driver: str) -> str:
@@ -105,6 +112,13 @@ def test_database() -> Iterator[str]:
     config.set_main_option("script_location", str(BACKEND_DIR / "app" / "db" / "migrations"))
     config.set_main_option("sqlalchemy.url", _url(name, driver="psycopg"))
     command.upgrade(config, "head")
+
+    # LangGraph's checkpoint tables, created here rather than in a per-test
+    # fixture. `AsyncPostgresSaver.setup()` issues CREATE INDEX CONCURRENTLY,
+    # which by definition waits for every concurrent transaction to finish —
+    # and `db_session` holds one open for the whole test, so a test that set up
+    # the checkpointer itself hung forever, blocked on its own fixture.
+    asyncio.run(setup_checkpointer(_checkpointer_dsn(name)))
 
     yield _url(name, driver="asyncpg")
 
@@ -220,3 +234,14 @@ async def client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
         # In a finally: a failing test must not leave the override in place for
         # whatever runs next.
         app.dependency_overrides.pop(get_session, None)
+
+
+@pytest.fixture
+def checkpointer_dsn(test_database: str) -> str:
+    """A DSN for the checkpointer against the test database.
+
+    The tables already exist: `test_database` creates them, because
+    `setup()` runs CREATE INDEX CONCURRENTLY and cannot complete while any
+    transaction is open — including this test's own.
+    """
+    return _checkpointer_dsn(_test_database_name())
