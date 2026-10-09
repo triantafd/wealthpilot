@@ -1,6 +1,21 @@
 # Roadmap
 
-Work top to bottom. Each phase ends with something that runs and a number you can put in the README. Tick boxes as you go; Claude Code reads this file to know where you are.
+Work top to bottom, with one exception noted below. Each phase ends with
+something that runs and a number you can put in the README. Tick boxes as you
+go; Claude Code reads this file to know where you are.
+
+**Running order.** `0 → 1 → 2 → 3 → 4a → 4 → 8 → 5 → 6 → 7 → 9 → 10`.
+
+Phase 8, the CI eval gate, moves up to run straight after Phase 4 rather than
+last. The README's central claim is that every change is measured by an eval
+suite in CI, which is currently false; the gate is about two days' work and
+protects every phase after it, so running it late means the phases that most
+need protecting are the ones that go without. Numbers are unchanged, because
+`docs/EXPERIMENTS.md`, `docs/EVALS.md` and several commit messages already
+reference phases by number.
+
+Each remaining phase is labelled **Core**, **Important** or **Optional**. Core
+phases are the ones without which the README is not true.
 
 ---
 
@@ -119,32 +134,98 @@ every one of them broken.
 | tag `id-lookup` | Exact identifiers and figures that vector search blurs | **Solved — but only with the reranker, which is off by default.** 0.521 to 1.000 with reranking, 0.750 with full-text alone. In the shipped config it stays at 0.521, a deliberate trade: the reranker costs 2.9 points of hit@1, ~300 ms per query and a torch dependency |
 | tag `vague-phrasing` | MRR 0.125, the worst tag in the suite | **Worse under every variant tried** (0.417 vector, 0.367 hybrid, 0.357 reranked). A vague question gives neither term matching nor a cross-encoder anything to work with. Strongest candidate for query rewriting rather than retrieval tuning |
 
-## Phase 4 — Multi-agent graph (1–2 weeks)
+## Phase 4a — Vertical slice, thin (4–6 days) · **Core**
 
-- [ ] `AgentState`, Postgres checkpointer
-- [ ] Supervisor with structured output and confidence threshold
-- [ ] Research agent (wraps Phase 3 retrieval)
-- [ ] Portfolio agent: text-to-SQL on `v_*` views, read-only role, sqlglot validation, LIMIT, timeout
-- [ ] SSE streaming of graph events using the contract in ARCHITECTURE §6
+*The only phase that makes the README's central claim true. Without it this is a
+well-measured RAG project with a description promising something else.*
+
+One question, through a real graph, streamed to a real page, with one action a
+human must approve. The point is to make the whole path exist before deepening
+any layer, so every item here is deliberately the smallest version that works.
+
+- [ ] `AgentState` and the Postgres checkpointer — enough to resume one interrupted run
+- [ ] Supervisor routing between exactly **two** destinations, `research` and
+      `action`, plus refuse. Two is the minimum that makes routing a real
+      decision rather than a pass-through
+- [ ] Research agent wrapping the existing Phase 1 retrieval — no new retrieval work
+- [ ] Tool registry with `READ`/`LOW`/`HIGH` tiers and **one** HIGH tool:
+      `propose_rebalance(account_id)`, writing a `ProposedAction` row
+- [ ] `interrupt()` approval gate; `POST /approvals/{id}/approve|reject`;
+      resume with `Command(resume=...)`
+- [ ] `audit_log` entry for the tool call and the decision
+- [ ] SSE streaming over the existing `shared/stream-events.ts` contract,
+      keeping the contract test green
 - [ ] Request path calls `record_usage`, with a test that a real request
-      produces a `usage` row — `/usage` was built in Phase 2 and returns
-      zeros until something records, so without this it can stay at zero
-      silently and look like it works
-- [ ] Evals: `routing.jsonl` (≥60 cases), `sql.jsonl` (≥40 cases, compared by **result rows**, not SQL text)
+      produces a `usage` row
+- [ ] Minimal chat page: ask → stream tokens → route badge → citations →
+      approve or reject inline. No dashboards, no polish
+- [ ] `evals/datasets/routing_slice.jsonl` — ~18 cases across research / action
+      / refuse, including 4 deliberately ambiguous
+- [ ] `evals/datasets/actions_slice.jsonl` — ~15 cases asserting correct tool,
+      correct tier, and `must_interrupt` for every HIGH call
+
+**Done when:** a 60-second screen recording shows a question answered with
+citations, a rebalance proposed, the run pausing, a human approving, and the run
+resuming. Routing accuracy and interrupt compliance appear in the eval report.
+
+**Not in this phase:** restart safety (Phase 5), the portfolio/SQL agent and the
+full routing taxonomy (Phase 4), guardrails (Phase 6), the usage, documents and
+evals pages (Phase 7), and growing the slice datasets to full size (Phase 4).
+The two `_slice` files stay separate rather than becoming `routing.jsonl` early,
+so an 18-case file never passes for the real thing.
+
+## Phase 4 — Multi-agent graph, complete (1–2 weeks) · **Core**
+
+*Text-to-SQL against systems of record is a named job requirement, and the
+second genuine agent. Everything here is a **delta on Phase 4a**, which already
+built `AgentState`, the checkpointer, the research agent, SSE streaming and the
+`record_usage` call — those boxes are not repeated.*
+
+- [ ] **Portfolio agent:** text-to-SQL on the `v_*` views, through the read-only
+      role, with sqlglot validation, an enforced `LIMIT` and a statement
+      timeout. The bulk of this phase
+- [ ] **Supervisor gains a third destination** and a confidence threshold with a
+      defined fallback. Phase 4a routes between two destinations with no
+      threshold, which is enough to make routing a real decision but not enough
+      to need one
+- [ ] **Grow** `routing_slice.jsonl` into `evals/datasets/routing.jsonl`
+      (≥60 cases) covering every destination, and retire the slice file
+- [ ] `evals/datasets/sql.jsonl` (≥40 cases, compared by **result rows**, not
+      SQL text)
+- [ ] **Extend** the SSE contract with whatever events the portfolio agent needs,
+      updating `shared/stream-events.ts` and `backend/app/api/events.py` together
+      and keeping the contract test green
 
 **Done when:** routing accuracy and SQL execution accuracy are in the eval
-report, and `/usage` shows a non-zero row after a request.
+report.
 
-## Phase 5 — Actions and human-in-the-loop (1 week)
+## Phase 5 — Actions and human-in-the-loop, complete (1 week) · **Important**
 
-- [ ] Tool registry with risk tiers (READ / LOW / HIGH) and per-tool feature flags
-- [ ] Action agent producing `ProposedAction`
-- [ ] `interrupt()` approval gate; `/approvals` endpoints; resume with `Command(resume=...)`
-- [ ] `audit_log` entries for every tool call and decision
+*Phase 4a already built the tool registry with its three tiers, one HIGH tool,
+the `interrupt()` gate, the approve and reject endpoints, resume, and an
+`audit_log` entry for that one tool. This phase hardens all of it; those boxes
+are not repeated.*
 
-**Done when:** a HIGH-risk action pauses, appears in the approvals inbox, and resumes correctly after approve or reject, even after a server restart.
+- [ ] **Restart safety**, deferred from Phase 4a: a HIGH action interrupted
+      before a server restart resumes correctly after it. This is the
+      checkpointer's real test and the reason it exists
+- [ ] **More tools** — at least one further `HIGH` and one `LOW`, so the registry
+      is exercised rather than illustrated, and so tier handling is tested on
+      more than a single row
+- [ ] **Per-tool feature flags**, so a tool can be disabled without a deploy
+- [ ] **`audit_log` for every tool call and decision**, not only the Phase 4a
+      tool — with a test that asserts no tool can execute without a row
+- [ ] **Grow** `actions_slice.jsonl` into `evals/datasets/actions.jsonl`
+      (≥30 cases), and retire the slice file
 
-## Phase 6 — Guardrails and safety evals (3–5 days)
+**Done when:** a HIGH-risk action pauses, appears in the approvals inbox, and
+resumes correctly after approve or reject, **including across a server
+restart** — the part Phase 4a deliberately leaves out.
+
+## Phase 6 — Guardrails and safety evals (3–5 days) · **Core**
+
+*The strongest differentiator in the plan, and where the refusal-order bug
+owed from Phase 3 is fixed.*
 
 - [ ] Input guard: heuristic rules + LLM classifier
 - [ ] Output guard: citation verification, cross-client data check
@@ -160,7 +241,10 @@ report, and `/usage` shows a non-zero row after a request.
 
 **Done when:** safety pass rate is in the report and gated in CI.
 
-## Phase 7 — Frontend polish (1 week)
+## Phase 7 — Frontend polish (1 week) · **Important**
+
+*Someone will look at this. But Phase 4a's thin page already demos the flow,
+so this raises quality rather than enabling it.*
 
 - [ ] Chat with streaming, route badge, agent timeline, citations drawer
 - [ ] Approvals inbox
@@ -172,13 +256,20 @@ report, and `/usage` shows a non-zero row after a request.
 
 **Done when:** a 2-minute screen recording shows the whole flow. Put it at the top of the README.
 
-## Phase 8 — CI eval gate (2 days)
+## Phase 8 — CI eval gate (2 days) · **Core**
+
+*Runs straight after Phase 4, not last. The README says every change is
+measured in CI; today that is false, and it is two days to make true.*
 
 - [ ] `evals/thresholds.yaml`; fail CI if a metric drops below threshold or regresses more than X% vs baseline
 - [ ] Small smoke subset on every PR, full suite nightly
 - [ ] Post the metrics table as a PR comment
 
-## Phase 9 — AWS deployment (1 week)
+## Phase 9 — AWS deployment (1 week) · **Optional**
+
+*Expensive in time and money and rarely verified by a reader. A convincing
+`docker compose up` plus an honest "how I would deploy this" section gets most
+of the credit.*
 
 - [ ] RDS Postgres with pgvector
 - [ ] Backend on App Runner or ECS Fargate; frontend on S3 + CloudFront
@@ -191,7 +282,10 @@ report, and `/usage` shows a non-zero row after a request.
       It is unauthenticated today because nothing is deployed; shipping it
       as-is would publish that data
 
-## Phase 10 — Stretch modules
+## Phase 10 — Stretch modules · **Optional**
+
+*Pick at most one, and only after 4a, 4, 8 and 6. MCP is the cheapest and the
+most topical.*
 
 - [ ] **MCP server** exposing `ask`, `search_docs`, `portfolio_query` (read-only tools only)
 - [ ] **LoRA fine-tune** of a small open model for intent routing; compare against the prompted supervisor on accuracy, latency and cost
