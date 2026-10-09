@@ -23,6 +23,8 @@ uv run pytest -m llm               # opt in to tests that call a real provider
 uv run ruff check . && uv run ruff format .
 uv run mypy app
 uv run alembic revision --autogenerate -m "msg" && uv run alembic upgrade head
+uv run python -m app.scripts.setup_checkpointer   # LangGraph's checkpoint tables;
+                                   # run once per database, alongside alembic upgrade
 uv run python -m app.scripts.seed
 uv run python -m app.scripts.ingest
 

@@ -156,7 +156,7 @@ actual unknowns live. A spike settled those before any design was locked; see
 - [x] **`AgentState` and the Postgres checkpointer**, with a committed test
       proving interrupt → resume. Everything downstream depends on the state
       shape, so it is settled early
-- [ ] **Tool registry** with `READ`/`LOW`/`HIGH` tiers and **one** HIGH tool,
+- [x] **Tool registry** with `READ`/`LOW`/`HIGH` tiers and **one** HIGH tool,
       `propose_rebalance(account_id)`, writing a `ProposedAction` row. Cheap,
       and the gate needs something to approve
 - [ ] **The approval gate**: `interrupt()`, `POST /approvals/{id}/approve|reject`,
