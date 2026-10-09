@@ -16,8 +16,11 @@ Which reducer each field gets is the design decision worth reading:
 * `retrieved` **replaces**. It feeds citations and the eval harness, and both
   want what this turn actually retrieved, not everything ever retrieved on the
   thread.
-* `citations` and `usage` **replace** for the same reason: they describe this
-  turn.
+* `citations` **replaces** for the same reason: it describes this turn.
+* `usage` **accumulates by summing tokens**. More than one node calls a model —
+  the supervisor routes and the research agent answers — and a replacing
+  reducer would report only the last one, undercounting every turn and
+  understating cost in the `usage` table.
 
 Every value here is JSON-able — dicts and primitives, never a dataclass or a
 Pydantic model. The checkpointer serialises state, LangGraph warns that
@@ -44,6 +47,22 @@ from langgraph.graph.message import add_messages
 # node behind it — see app/agents/nodes/. Keeping the state's own Literal
 # complete means adding that agent does not change the persisted shape.
 Route = Literal["research", "portfolio", "action", "out_of_scope"]
+
+
+def add_usage(left: dict[str, int] | None, right: dict[str, int] | None) -> dict[str, int]:
+    """Sum token counts across the nodes of one turn.
+
+    More than one node calls a model, so a replacing reducer would report only
+    whichever ran last — undercounting every turn and understating what the
+    `usage` table says the system cost.
+
+    Keys are summed rather than merged, and unknown keys are carried through, so
+    adding a cached-token count later needs no change here.
+    """
+    merged: dict[str, int] = dict(left or {})
+    for key, value in (right or {}).items():
+        merged[key] = merged.get(key, 0) + value
+    return merged
 
 
 class SqlTrace(TypedDict):
@@ -90,8 +109,9 @@ class AgentState(TypedDict, total=False):
     action_result: dict[str, Any] | None
     # Verified quotes, in the shape the `citations` stream event carries.
     citations: list[dict[str, Any]]
-    # Tokens for this turn, for the `done` event and the usage row.
-    usage: dict[str, Any] | None
+    # Tokens for this turn, for the `done` event and the usage row. Summed
+    # across nodes by `add_usage`.
+    usage: Annotated[dict[str, int], add_usage]
 
 
 def initial_state(question: str, *, thread_id: str, user_id: str | None = None) -> AgentState:
@@ -115,7 +135,7 @@ def initial_state(question: str, *, thread_id: str, user_id: str | None = None) 
         approval_id=None,
         action_result=None,
         citations=[],
-        usage=None,
+        usage={},
     )
 
 

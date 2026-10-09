@@ -25,6 +25,7 @@ from app.approvals import create_approval, get_approval, list_approvals
 from app.db.models.firm import Account, Client, Task
 from app.main import app
 from app.tools.registry import get
+from tests.conftest import fake_graph_model
 
 ACCOUNT = "AC-TEST01"
 
@@ -63,7 +64,9 @@ async def saver(checkpointer_dsn: str) -> AsyncIterator[AsyncPostgresSaver]:
 async def _paused_thread(saver: Any, session: AsyncSession) -> tuple[str, str]:
     """A thread paused at the gate. Returns its id and the approval's id."""
     thread = f"t-{uuid.uuid4()}"
-    graph = compile_graph(session, saver)
+    # A fake model, or compile_graph builds a real ChatOpenAI and the
+    # supervisor calls the API — see fake_graph_model.
+    graph = compile_graph(session, saver, chat_model=fake_graph_model(route="action"))
     state = initial_state("rebalance it", thread_id=thread, user_id="adviser-7")
     state["pending_action"] = _action().model_dump(by_alias=True)
     await graph.ainvoke(state, thread_config(thread))

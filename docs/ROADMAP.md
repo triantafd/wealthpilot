@@ -169,7 +169,7 @@ actual unknowns live. A spike settled those before any design was locked; see
       start — no tool executes without a row
 - [x] **Research agent** wrapping the existing Phase 1 retrieval — no new
       retrieval work
-- [ ] **Supervisor** routing between exactly **two** destinations, `research`
+- [x] **Supervisor** routing between exactly **two** destinations, `research`
       and `action`, plus refuse. Two is the minimum that makes routing a real
       decision rather than a pass-through
 - [ ] **Stream graph events** over the contract from

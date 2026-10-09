@@ -256,26 +256,61 @@ def checkpointer_dsn(test_database: str) -> str:
 
 
 class FakeChatModel:
-    """Returns a prepared GeneratedAnswer and records what it was asked.
+    """Returns a prepared structured output, chosen by the schema requested.
 
-    Implements only `with_structured_output`, which is all `generate_answer`
-    uses. A real fake chat model from langchain would still have to be told
-    what structured output to produce, so this is both smaller and clearer.
+    Keyed by schema because one graph run asks for two different ones: the
+    supervisor wants a `Routing` and the research agent wants a
+    `GeneratedAnswer`. A fake that returned a single object would satisfy
+    whichever node ran first and break the other.
+
+    Implements only `with_structured_output`, which is all either node uses.
     """
 
-    def __init__(self, answer: "GeneratedAnswer") -> None:
-        self._answer = answer
+    def __init__(self, by_schema: dict[type, Any]) -> None:
+        self._by_schema = by_schema
+        self.schema: type | None = None
         self.messages: list[Any] = []
 
     def with_structured_output(self, schema: type, **_: object) -> "FakeChatModel":
         self.schema = schema
         return self
 
-    async def ainvoke(self, messages: Any, **_: object) -> "GeneratedAnswer":
+    async def ainvoke(self, messages: Any, **_: object) -> Any:
         self.messages = messages
-        return self._answer
+        if self.schema not in self._by_schema:
+            raise AssertionError(
+                f"FakeChatModel was not given a response for {self.schema!r}; "
+                f"it has {list(self._by_schema)}"
+            )
+        return self._by_schema[self.schema]
 
 
 def fake_model(answer: str, *citations: "Citation") -> Any:
     """A chat model that will answer `answer` citing `citations`."""
-    return FakeChatModel(GeneratedAnswer(answer=answer, citations=list(citations)))
+    return FakeChatModel(
+        {GeneratedAnswer: GeneratedAnswer(answer=answer, citations=list(citations))}
+    )
+
+
+def fake_graph_model(
+    *,
+    route: str = "research",
+    confidence: float = 0.9,
+    answer: str = "An answer.",
+    citations: "tuple[Citation, ...]" = (),
+) -> Any:
+    """A chat model for a whole graph run: routes, then answers.
+
+    Any test that compiles the real graph needs one of these. Without it
+    `compile_graph` builds a real ChatOpenAI, whose cached async client
+    outlives each test's event loop — the symptom is "Event loop is closed"
+    inside the supervisor node, in the full suite but not in isolation.
+    """
+    from app.agents.nodes.supervisor import Routing
+
+    return FakeChatModel(
+        {
+            Routing: Routing(route=route, confidence=confidence, reason="test"),  # type: ignore[arg-type]
+            GeneratedAnswer: GeneratedAnswer(answer=answer, citations=list(citations)),
+        }
+    )
