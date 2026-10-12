@@ -11,7 +11,16 @@ export default defineConfig({
     // shadcn/ui generates imports as "@/components/ui/...", so the alias has to
     // exist in both vite and tsconfig or one of them resolves and the other
     // does not.
-    alias: { "@": path.resolve(import.meta.dirname, "./src") },
+    //
+    // "@shared" points at the repo-level `shared/` directory, which holds the
+    // SSE event contract. Without it the contract was shared only in name: the
+    // test compared its shape to the backend's, but no application code could
+    // import the types, so the browser and the server agreed by coincidence
+    // rather than by compilation.
+    alias: {
+      "@": path.resolve(import.meta.dirname, "./src"),
+      "@shared": path.resolve(import.meta.dirname, "../shared"),
+    },
   },
   server: {
     port: 5173,

@@ -1,0 +1,214 @@
+/**
+ * The chat page, driven by a fake stream.
+ *
+ * `fetch` is stubbed rather than the module mocked, so the page goes through
+ * the real SSE client: the frame splitting, the JSON parsing and the reducer
+ * are all exercised, which is where a blank screen would come from.
+ */
+
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { SidebarProvider } from "@/components/ui/sidebar";
+import { TooltipProvider } from "@/components/ui/tooltip";
+
+import { ChatPage } from "./chat-page";
+
+/**
+ * The page inside the providers the app shell gives it.
+ *
+ * `PageHeader` renders a `SidebarTrigger`, which reads the sidebar context, so
+ * rendering the page bare fails with "useSidebar must be used within a
+ * SidebarProvider" — a shell dependency rather than anything about chat.
+ */
+function renderChat() {
+  return render(
+    <TooltipProvider>
+      <SidebarProvider>
+        <ChatPage />
+      </SidebarProvider>
+    </TooltipProvider>,
+  );
+}
+
+/** An SSE body from a list of events, split across chunks like a real one. */
+function sseBody(events: object[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  const frames = events.map((event) => `data: ${JSON.stringify(event)}\n\n`);
+  return new ReadableStream({
+    start(controller) {
+      for (const frame of frames) controller.enqueue(encoder.encode(frame));
+      controller.close();
+    },
+  });
+}
+
+function stubFetch(events: object[], options: { decideOk?: boolean } = {}) {
+  return vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    const path = typeof url === "string" ? url : url.toString();
+
+    if (path === "/api/threads" && init?.method === "POST") {
+      return new Response(JSON.stringify({ thread_id: "t-1" }), { status: 201 });
+    }
+    if (path.includes("/messages")) {
+      return new Response(sseBody(events), {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    }
+    if (path.startsWith("/api/approvals/")) {
+      return options.decideOk === false
+        ? new Response("no", { status: 409 })
+        : new Response(JSON.stringify({ resumed: true }), { status: 200 });
+    }
+    throw new Error(`unexpected request: ${path}`);
+  });
+}
+
+const RESEARCH_TURN = [
+  { type: "route", route: "research", confidence: 0.91 },
+  { type: "retrieval", chunks: [{ id: 1, documentId: "fee-schedule", page: 1, score: 0.9 }] },
+  { type: "token", text: "The minimum annual advisory fee is £1,500." },
+  {
+    type: "citations",
+    items: [{ documentId: "fee-schedule", page: 1, quote: "a minimum annual fee of £1,500" }],
+  },
+  { type: "done", usage: { inputTokens: 2612, outputTokens: 48, costUsd: 0.000421, ms: 2814 } },
+];
+
+const ACTION_TURN = [
+  { type: "route", route: "action", confidence: 0.88 },
+  {
+    type: "approval_required",
+    approvalId: "a-1",
+    action: {
+      tool: "propose_rebalance",
+      tier: "HIGH",
+      args: { account_id: "AC-0042" },
+      summary: "Raise a rebalance task for account AC-0042.",
+    },
+  },
+  { type: "done", usage: { inputTokens: 681, outputTokens: 28, costUsd: 0.000118, ms: 1061 } },
+];
+
+async function ask(question: string) {
+  await userEvent.type(screen.getByLabelText("Message"), question);
+  await userEvent.click(screen.getByRole("button", { name: "Ask" }));
+}
+
+beforeEach(() => {
+  vi.stubGlobal("fetch", stubFetch(RESEARCH_TURN));
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("ChatPage", () => {
+  it("invites a question before anything is asked", () => {
+    renderChat();
+
+    expect(screen.getByText(/Ask a question about the firm/i)).toBeInTheDocument();
+    // The thing that distinguishes this from a chatbot, said up front.
+    expect(screen.getByText(/pauses for approval/i)).toBeInTheDocument();
+  });
+
+  it("shows the route, the answer and the citations", async () => {
+    renderChat();
+
+    await ask("Is there a floor on what we charge?");
+
+    await waitFor(() => expect(screen.getByTestId("answer")).toBeInTheDocument());
+    expect(screen.getByTestId("route")).toHaveTextContent("research");
+    expect(screen.getByTestId("route")).toHaveTextContent("0.91");
+    expect(screen.getByTestId("answer")).toHaveTextContent("£1,500");
+    expect(screen.getByTestId("citations")).toHaveTextContent("fee-schedule");
+    expect(screen.getByTestId("done")).toHaveTextContent("2814ms");
+  });
+
+  it("offers approve and reject for a HIGH-risk action, and says nothing has happened", async () => {
+    vi.stubGlobal("fetch", stubFetch(ACTION_TURN));
+    renderChat();
+
+    await ask("Rebalance AC-0042");
+
+    await waitFor(() => expect(screen.getByTestId("approval")).toBeInTheDocument());
+    expect(screen.getByTestId("approval")).toHaveTextContent("HIGH");
+    expect(screen.getByTestId("approval")).toHaveTextContent("propose_rebalance");
+    // The reassurance that matters on a HIGH action.
+    expect(screen.getByText(/Nothing has happened yet/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeEnabled();
+  });
+
+  it("replaces the approval with the outcome once decided", async () => {
+    vi.stubGlobal("fetch", stubFetch(ACTION_TURN));
+    renderChat();
+    await ask("Rebalance AC-0042");
+    await waitFor(() => expect(screen.getByTestId("approval")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() => expect(screen.getByTestId("decision")).toBeInTheDocument());
+    expect(screen.getByTestId("decision")).toHaveTextContent(/has run/i);
+    // The buttons must go: leaving them would invite a second decision, which
+    // the backend refuses with a 409.
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+  });
+
+  it("reports a rejection as nothing having run", async () => {
+    vi.stubGlobal("fetch", stubFetch(ACTION_TURN));
+    renderChat();
+    await ask("Rebalance AC-0042");
+    await waitFor(() => expect(screen.getByTestId("approval")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("button", { name: "Reject" }));
+
+    await waitFor(() => expect(screen.getByTestId("decision")).toHaveTextContent(/nothing ran/i));
+  });
+
+  it("shows an error event rather than an empty answer", async () => {
+    vi.stubGlobal("fetch", stubFetch([{ type: "error", message: "provider exploded" }]));
+    renderChat();
+
+    await ask("anything");
+
+    await waitFor(() => expect(screen.getByTestId("error")).toHaveTextContent("provider exploded"));
+  });
+
+  it("surfaces a rejected decision instead of pretending it worked", async () => {
+    vi.stubGlobal("fetch", stubFetch(ACTION_TURN, { decideOk: false }));
+    renderChat();
+    await ask("Rebalance AC-0042");
+    await waitFor(() => expect(screen.getByTestId("approval")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() => expect(screen.getByTestId("error")).toBeInTheDocument());
+    expect(screen.getByTestId("error")).toHaveTextContent("409");
+  });
+
+  it("does not submit an empty message", async () => {
+    renderChat();
+
+    expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled();
+  });
+
+  it("reuses one thread, so a follow-up continues the conversation", async () => {
+    const fetchMock = stubFetch(RESEARCH_TURN);
+    vi.stubGlobal("fetch", fetchMock);
+    renderChat();
+
+    await ask("first question");
+    await waitFor(() => expect(screen.getByTestId("answer")).toBeInTheDocument());
+    await ask("second question");
+    await waitFor(() => expect(screen.getByTestId("answer")).toBeInTheDocument());
+
+    // One POST /api/threads, two POSTs to the same thread's messages: a second
+    // thread would lose the checkpointer's history and any pending approval.
+    const calls = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(calls.filter((url) => url === "/api/threads")).toHaveLength(1);
+    expect(calls.filter((url) => url.includes("/messages"))).toHaveLength(2);
+  });
+});
