@@ -4,15 +4,16 @@ Work top to bottom, with one exception noted below. Each phase ends with
 something that runs and a number you can put in the README. Tick boxes as you
 go; Claude Code reads this file to know where you are.
 
-**Running order.** `0 → 1 → 2 → 3 → 4a → 4 → 8 → 5 → 6 → 7 → 9 → 10`.
+**Running order.** `0 → 1 → 2 → 3 → 4a → 5 → 8 → 4 → 6 → 7 → 9 → 10`.
 
-Phase 8, the CI eval gate, moves up to run straight after Phase 4 rather than
-last. The README's central claim is that every change is measured by an eval
-suite in CI, which is currently false; the gate is about two days' work and
-protects every phase after it, so running it late means the phases that most
-need protecting are the ones that go without. Numbers are unchanged, because
-`docs/EXPERIMENTS.md`, `docs/EVALS.md` and several commit messages already
-reference phases by number.
+Phase 5 comes straight after the slice: the app demos worse than it works, and
+every further backend phase widens that gap. Phase 8, the CI eval gate, follows
+it rather than running last — the README claims every change is measured in CI,
+and the gate protects every phase after it. It sits after Phase 5 because the
+thresholds should be set once the answer path, including streaming, is stable.
+
+Numbers are unchanged, because `docs/EXPERIMENTS.md`, `docs/EVALS.md` and
+several commit messages already reference phases by number.
 
 Each remaining phase is labelled **Core**, **Important** or **Optional**. Core
 phases are the ones without which the README is not true.
@@ -186,10 +187,10 @@ actual unknowns live. A spike settled those before any design was locked; see
       produces a `usage` row — `/usage` was built in Phase 2 and returns zeros
       until something records, so without this it stays at zero and looks like
       it works
-- [ ] **Minimal chat page**: ask → route badge → answer → citations →
+- [x] **Minimal chat page**: ask → route badge → answer → citations →
       approve or reject inline. No dashboards, no polish. Deliberately not
-      "stream tokens": the answer arrives as one event, and why is recorded in
-      Phase 7 rather than ticked here
+      "stream tokens": the answer arrives as one event, and streaming it is
+      Phase 5 rather than ticked here
 - [ ] `evals/datasets/routing_slice.jsonl` — ~18 cases across research / action
       / refuse, including 4 deliberately ambiguous
 - [ ] `evals/datasets/actions_slice.jsonl` — ~15 cases asserting correct tool,
@@ -201,7 +202,8 @@ resuming. Routing accuracy and interrupt compliance appear in the eval report.
 
 **Not in this phase:** restart safety (Phase 5), the portfolio/SQL agent and the
 full routing taxonomy (Phase 4), guardrails (Phase 6), the usage, documents and
-evals pages (Phase 7), and growing the slice datasets to full size (Phase 4).
+evals pages (Phase 7), the documents page (Phase 5), and growing the slice
+datasets to full size (Phase 4).
 The two `_slice` files stay separate rather than becoming `routing.jsonl` early,
 so an 18-case file never passes for the real thing.
 
@@ -223,6 +225,11 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       (≥60 cases) covering every destination, and retire the slice file
 - [ ] `evals/datasets/sql.jsonl` (≥40 cases, compared by **result rows**, not
       SQL text)
+- [ ] **More tools** — at least one further `HIGH` and one `LOW`, so the
+      registry is exercised rather than illustrated and tier handling is
+      tested on more than one row
+- [ ] **Grow** `actions_slice.jsonl` into `evals/datasets/actions.jsonl`
+      (≥30 cases), and retire the slice file
 - [ ] **Extend** the SSE contract with whatever events the portfolio agent needs,
       updating `shared/stream-events.ts` and `backend/app/api/events.py` together
       and keeping the contract test green
@@ -230,28 +237,38 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
 **Done when:** routing accuracy and SQL execution accuracy are in the eval
 report.
 
-## Phase 5 — Actions and human-in-the-loop, complete (1 week) · **Important**
+## Phase 5 — Usable chat and approvals (1 week) · **Core**
 
-*Phase 4a already built the tool registry with its three tiers, one HIGH tool,
-the `interrupt()` gate, the approve and reject endpoints, resume, and an
-`audit_log` entry for that one tool. This phase hardens all of it; those boxes
-are not repeated.*
+*The app demos worse than it works. Everything here is visible from the screen,
+and adds no new concepts.*
 
-- [ ] **Restart safety**, deferred from Phase 4a: a HIGH action interrupted
-      before a server restart resumes correctly after it. This is the
-      checkpointer's real test and the reason it exists
-- [ ] **More tools** — at least one further `HIGH` and one `LOW`, so the registry
-      is exercised rather than illustrated, and so tier handling is tested on
-      more than a single row
-- [ ] **Per-tool feature flags**, so a tool can be disabled without a deploy
-- [ ] **`audit_log` for every tool call and decision**, not only the Phase 4a
-      tool — with a test that asserts no tool can execute without a row
-- [ ] **Grow** `actions_slice.jsonl` into `evals/datasets/actions.jsonl`
-      (≥30 cases), and retire the slice file
+- [ ] Conversation history — the page keeps one turn and replaces it, so a
+      second question erases the first
+- [ ] Token streaming of the answer — approach chosen before building:
+      **(a)** parse the structured JSON as it streams, or **(c)** the model
+      writes prose and ends with verified citation tags. (a) leaves the
+      baseline untouched; (c) gives prose from the first token and keeps
+      verbatim quotes, but changes the prompt. A provider with native
+      citations would be a third option; this one runs OpenAI
+- [ ] Render the answer's markdown — `**£1,500**` currently shows literally
+- [ ] Approvals inbox
+- [ ] Show what an approved action actually did — today it says only
+      "the action has run"
+- [ ] Read-only documents page: `GET /documents` with name, chunk count and
+      last ingested
+- [ ] Restart safety: a HIGH action interrupted before a server restart
+      resumes after it
+- [ ] Re-run the full eval baseline before and after the streaming change, and
+      record the result in `docs/EXPERIMENTS.md`
 
-**Done when:** a HIGH-risk action pauses, appears in the approvals inbox, and
-resumes correctly after approve or reject, **including across a server
-restart** — the part Phase 4a deliberately leaves out.
+**Done when:** a 60-second recording shows a question answered with citations,
+a rebalance proposed, approved and confirmed — and the documents page shows
+what the answer was drawn from.
+
+**Where the old Phase 5 went.** `audit_log` for every tool call and decision was
+already done in Phase 4a — `execute()` is the single chokepoint and audits
+every attempt, including refusals. Per-tool feature flags are dropped as
+unnecessary here. More tools and growing `actions.jsonl` move to Phase 4.
 
 ## Phase 6 — Guardrails and safety evals (3–5 days) · **Core**
 
@@ -259,7 +276,8 @@ restart** — the part Phase 4a deliberately leaves out.
 owed from Phase 3 is fixed.*
 
 - [ ] Input guard: heuristic rules + LLM classifier
-- [ ] Output guard: citation verification, cross-client data check
+- [ ] Output guard: cross-client data check. Citation verification already
+      exists — `verify_citations` has been deterministic since Phase 1
 - [ ] Harden refusal against passage order. `refusal-poa-policy-01` refused
       correctly under one retrieval config and answered confidently and
       irrelevantly under another, **with the same six passages retrieved** and
@@ -274,25 +292,10 @@ owed from Phase 3 is fixed.*
 
 ## Phase 7 — Frontend polish (1 week) · **Important**
 
-*Someone will look at this. But Phase 4a's thin page already demos the flow,
-so this raises quality rather than enabling it.*
+*Phase 5 makes the app usable; this makes it good.*
 
-- [ ] Chat with streaming, route badge, agent timeline, citations drawer
-- [ ] **Stream the answer token by token.** Today it arrives as a single
-      `token` event. The research agent uses `with_structured_output`, so the
-      model streams JSON fragments — `{"`, `route`, `":"` — and the usable
-      prose only exists once the object closes; verified, not assumed. The fix
-      is to parse the streaming JSON incrementally and emit `token` deltas as
-      the `answer` field grows: one model call, same prompt, no change to
-      `shared/stream-events.ts`. It is here rather than in Phase 4a because it
-      needs four modules plus LangGraph's `get_stream_writer()` plumbing, and
-      it changes how `answer_question` is invoked — which is the path the
-      frozen baseline measures, so it needs its own before/after. The
-      alternative, two calls streaming prose then fetching citations, costs
-      double and risks citations that do not match the prose that was
-      streamed
-- [ ] Approvals inbox
-- [ ] Documents page
+- [ ] Agent timeline: tool calls as they run, each tagged with its risk tier
+- [ ] Citations drawer opening the source document at the cited page
 - [ ] Usage dashboard
 - [ ] Evals page (baseline vs latest, failing cases)
 - [ ] Dark mode, responsive, empty and error states
@@ -302,8 +305,9 @@ so this raises quality rather than enabling it.*
 
 ## Phase 8 — CI eval gate (2 days) · **Core**
 
-*Runs straight after Phase 4, not last. The README says every change is
-measured in CI; today that is false, and it is two days to make true.*
+*Runs after Phase 5, not last. The README says every change is measured in
+CI; today that is false, and it is two days to make true. It follows Phase 5 so
+the thresholds are set once the answer path, including streaming, is stable.*
 
 - [ ] `evals/thresholds.yaml`; fail CI if a metric drops below threshold or regresses more than X% vs baseline
 - [ ] Small smoke subset on every PR, full suite nightly
