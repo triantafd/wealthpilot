@@ -193,7 +193,7 @@ actual unknowns live. A spike settled those before any design was locked; see
       Phase 5 rather than ticked here
 - [x] `evals/datasets/routing_slice.jsonl` — ~18 cases across research / action
       / refuse, including 4 deliberately ambiguous
-- [ ] `evals/datasets/actions_slice.jsonl` — ~15 cases asserting correct tool,
+- [x] `evals/datasets/actions_slice.jsonl` — ~15 cases asserting correct tool,
       correct tier, and `must_interrupt` for every HIGH call
 
 **Done when:** a 60-second screen recording shows a question answered with

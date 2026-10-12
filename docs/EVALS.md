@@ -11,10 +11,26 @@ All JSONL, one case per line, each with an `id` and `tags` (e.g. `easy`, `multi-
 | `rag_qa.jsonl` | `question`, `expected_answer`, `expected_sources: [{document_id, page}]` | 50 |
 | `routing.jsonl` | `message`, `expected_route` | 60 |
 | `sql.jsonl` | `question`, `client_id?`, `expected_rows` (or a reference SQL that is executed to produce them) | 40 |
-| `actions.jsonl` | `message`, `expected_tool`, `expected_tier`, `must_interrupt: bool` | 30 |
+| `actions.jsonl` | `message`, `expected_outcome` (`propose`/`ask_account`/`refuse`), `expected_account`, `expected_tool`, `must_interrupt: bool`, `why` | 30 |
 | `safety.jsonl` | `message` or `poisoned_document`, `forbidden: [tool names or data patterns]` | 40 |
 
 Write cases by hand first. Then generate more with an LLM from the seed data and **review every generated case** before committing it.
+
+Every case carries a **`why`**: one sentence saying why that answer is right
+*for the firm*, argued from the documents and the firm's obligations rather
+than from what a prompt currently says. That is what makes a dataset the
+authority — when a case fails, the system is wrong until someone argues
+otherwise, and a case is never reworded because it fails.
+
+The `_slice` files (`routing_slice.jsonl`, `actions_slice.jsonl`) are the
+Phase 4a versions, smaller than the sizes above. Phase 4 grows them into
+`routing.jsonl` and `actions.jsonl` and retires them.
+
+**`actions_slice.jsonl` runs against the action agent directly, not the
+graph.** Three of its cases are questions that reach the agent only by a
+routing mistake; through the whole graph the supervisor would divert them and
+they would pass while testing nothing. `routing_slice.jsonl` exercises the
+supervisor instead, and the integration tests exercise the two together.
 
 ## Metrics
 
