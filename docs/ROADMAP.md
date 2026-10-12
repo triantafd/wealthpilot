@@ -195,15 +195,28 @@ actual unknowns live. A spike settled those before any design was locked; see
       / refuse, including 4 deliberately ambiguous
 - [x] `evals/datasets/actions_slice.jsonl` — ~15 cases asserting correct tool,
       correct tier, and `must_interrupt` for every HIGH call
+- [ ] **Eval runner scores both slice files** — routing accuracy, and for
+      actions the **three-way outcome** (`propose` / `ask_account` /
+      `refuse`) plus the correct account. Scoring only proposed-or-not would
+      collapse asking and refusing into one bucket and lose the distinction
+      the dataset exists to measure. `expected_tool` is not reported while one
+      tool exists, and `must_interrupt` is reported as an invariant rather
+      than a discriminator
+- [ ] **Action agent fix**, which `actions_slice.jsonl` lands red against:
+      distinguish asking which account from refusing, and validate the account
+      at proposal time. Today AC-99999 is proposed and only fails after a human
+      approves it, leaving an approved action that errored instead of a
+      proposal never made. **Phase 4a closes only when `actions_slice` is
+      green**
 
 **Done when:** a 60-second screen recording shows a question answered with
 citations, a rebalance proposed, the run pausing, a human approving, and the run
 resuming. Routing accuracy and interrupt compliance appear in the eval report.
 
 **Not in this phase:** restart safety (Phase 5), the portfolio/SQL agent and the
-full routing taxonomy (Phase 4), guardrails (Phase 6), the usage, documents and
-evals pages (Phase 7), the documents page (Phase 5), and growing the slice
-datasets to full size (Phase 4).
+full routing taxonomy (Phase 4), guardrails (Phase 6), the usage and evals pages
+(Phase 7), the documents page (Phase 5), and growing the slice datasets to full
+size (Phase 4).
 The two `_slice` files stay separate rather than becoming `routing.jsonl` early,
 so an 18-case file never passes for the real thing.
 
