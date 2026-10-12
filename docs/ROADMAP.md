@@ -191,7 +191,7 @@ actual unknowns live. A spike settled those before any design was locked; see
       approve or reject inline. No dashboards, no polish. Deliberately not
       "stream tokens": the answer arrives as one event, and streaming it is
       Phase 5 rather than ticked here
-- [ ] `evals/datasets/routing_slice.jsonl` — ~18 cases across research / action
+- [x] `evals/datasets/routing_slice.jsonl` — ~18 cases across research / action
       / refuse, including 4 deliberately ambiguous
 - [ ] `evals/datasets/actions_slice.jsonl` — ~15 cases asserting correct tool,
       correct tier, and `must_interrupt` for every HIGH call
@@ -222,7 +222,14 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       threshold, which is enough to make routing a real decision but not enough
       to need one
 - [ ] **Grow** `routing_slice.jsonl` into `evals/datasets/routing.jsonl`
-      (≥60 cases) covering every destination, and retire the slice file
+      (≥60 cases) covering every destination, and retire the slice file.
+      Two shapes the slice has none of: an instruction naming **no account id**,
+      and a message carrying **two requests at once**
+- [ ] **Revisit `route-vague-cash-01`.** "cash is piling up in AC-00005, is
+      that a problem" expects `research` today, because only the documents can
+      answer it. Once the portfolio agent can read the account's actual
+      allocation, the right destination may be `portfolio` — the question is
+      about this account's data, not about policy in the abstract
 - [ ] `evals/datasets/sql.jsonl` (≥40 cases, compared by **result rows**, not
       SQL text)
 - [ ] **More tools** — at least one further `HIGH` and one `LOW`, so the
