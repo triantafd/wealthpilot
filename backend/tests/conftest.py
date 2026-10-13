@@ -307,7 +307,8 @@ def fake_graph_model(
     citations: "tuple[Citation, ...]" = (),
     account_id: str = "AC-TEST01",
     reason: str = "drift",
-    problem: str = "",
+    outcome: str = "propose",
+    detail: str = "",
 ) -> Any:
     """A chat model for a whole graph run: routes, then answers.
 
@@ -316,18 +317,48 @@ def fake_graph_model(
     outlives each test's event loop — the symptom is "Event loop is closed"
     inside the supervisor node, in the full suite but not in isolation.
     """
-    from app.agents.nodes.action import RebalanceRequest
+    from app.agents.nodes.action import ActionDecision
     from app.agents.nodes.supervisor import Routing
 
     return FakeChatModel(
         {
             Routing: Routing(route=route, confidence=confidence, reason="test"),  # type: ignore[arg-type]
-            RebalanceRequest: RebalanceRequest(
-                account_id=account_id, reason=reason, problem=problem
+            ActionDecision: ActionDecision(
+                outcome=outcome,  # type: ignore[arg-type]
+                account_id=account_id,
+                reason=reason,
+                detail=detail,
             ),
             GeneratedAnswer: GeneratedAnswer(answer=answer, citations=list(citations)),
         }
     )
+
+
+@pytest.fixture
+async def an_account(db_session: AsyncSession) -> str:
+    """A client and account that exist. The test database is empty.
+
+    Needed by anything that proposes a rebalance, because the action agent
+    validates the account at proposal time: before it did, a proposal for an
+    account nobody had went all the way to a human for approval and only then
+    failed inside the tool.
+
+    `segment`, `account_type` and `mandate` are constrained to enumerations by
+    Phase 0's schema, so these are real values rather than placeholders.
+    """
+    from sqlalchemy import insert
+
+    from app.db.models.firm import Account, Client
+
+    await db_session.execute(
+        insert(Client).values(id="CL-TEST01", full_name="Test Client", segment="affluent")
+    )
+    await db_session.execute(
+        insert(Account).values(
+            id="AC-TEST01", client_id="CL-TEST01", account_type="GIA", mandate="discretionary"
+        )
+    )
+    return "AC-TEST01"
 
 
 @pytest.fixture

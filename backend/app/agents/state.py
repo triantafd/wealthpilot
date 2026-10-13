@@ -99,6 +99,11 @@ class AgentState(TypedDict, total=False):
     # working. A checkpoint only one build of the app can read is not a
     # checkpoint. Nodes convert at the boundary.
     pending_action: dict[str, Any] | None
+    # Which of the three things the action agent did: propose, ask_account or
+    # refuse. Its own field rather than something read out of the message,
+    # because asking and refusing look alike in prose and mean opposite things
+    # to the adviser. Replaced only, never accumulated: one turn, one outcome.
+    action_outcome: str | None
     guardrail_flags: Annotated[list[str], operator.add]
 
     # The approval the gate created, kept in the state because LangGraph re-runs
@@ -131,6 +136,7 @@ def initial_state(question: str, *, thread_id: str, user_id: str | None = None) 
         retrieved=[],
         sql_queries=[],
         pending_action=None,
+        action_outcome=None,
         guardrail_flags=[],
         approval_id=None,
         action_result=None,

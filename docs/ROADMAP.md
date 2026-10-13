@@ -195,14 +195,14 @@ actual unknowns live. A spike settled those before any design was locked; see
       / refuse, including 4 deliberately ambiguous
 - [x] `evals/datasets/actions_slice.jsonl` — ~15 cases asserting correct tool,
       correct tier, and `must_interrupt` for every HIGH call
-- [ ] **Eval runner scores both slice files** — routing accuracy, and for
+- [x] **Eval runner scores both slice files** — routing accuracy, and for
       actions the **three-way outcome** (`propose` / `ask_account` /
       `refuse`) plus the correct account. Scoring only proposed-or-not would
       collapse asking and refusing into one bucket and lose the distinction
       the dataset exists to measure. `expected_tool` is not reported while one
       tool exists, and `must_interrupt` is reported as an invariant rather
       than a discriminator
-- [ ] **Action agent fix**, which `actions_slice.jsonl` lands red against:
+- [x] **Action agent fix**, which `actions_slice.jsonl` landed red against:
       distinguish asking which account from refusing, and validate the account
       at proposal time. Today AC-99999 is proposed and only fails after a human
       approves it, leaving an approved action that errored instead of a
@@ -238,6 +238,13 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       (≥60 cases) covering every destination, and retire the slice file.
       Two shapes the slice has none of: an instruction naming **no account id**,
       and a message carrying **two requests at once**
+- [ ] **Decide whether an execution-only account is rebalanceable.** The
+      action agent checks only that the account exists, deliberately matching
+      `propose_rebalance`, which checks the same and nothing more — an agent
+      stricter than its own tool would diverge the two silently. So
+      `AC-00002`, an execution-only GIA, is proposable today and
+      `actions_slice.jsonl` expects that. If the firm's answer is no, the rule
+      belongs in the tool and the agent together, with a case in the dataset
 - [ ] **Revisit `route-vague-cash-01`.** "cash is piling up in AC-00005, is
       that a problem" expects `research` today, because only the documents can
       answer it. Once the portfolio agent can read the account's actual
@@ -262,6 +269,19 @@ report.
 *The app demos worse than it works. Everything here is visible from the screen,
 and adds no new concepts.*
 
+- [ ] **When re-running evals around streaming, ignore
+      `answer.refusal_correct` movement on `refusal-poa-policy-01`.** It is
+      bistable — 1 correct run in 5 on one commit, measured 2026-10-13 — so it
+      will appear to regress or improve for no reason and waste a day. Phase 6
+      fixes it; until then it is not evidence about a streaming change
+- [ ] **Show asking differently from refusing.** The action agent reports
+      `action_outcome` (`propose` / `ask_account` / `refuse`) in state as of
+      Phase 4a, so the distinction exists; nothing carries it to the screen.
+      `ask_account` is one reply away from a proposal and a refusal is a dead
+      end, and prose alone does not tell an adviser which they are looking at.
+      Per working rule 5 this means a new field on the SSE contract:
+      `shared/stream-events.ts` and `backend/app/api/events.py` change
+      together, with the contract test kept passing
 - [ ] Conversation history — the page keeps one turn and replaces it, so a
       second question erases the first
 - [ ] Token streaming of the answer — approach chosen before building:
@@ -305,6 +325,15 @@ owed from Phase 3 is fixed.*
       tags under several retrieval configurations, not one. Boilerplate
       stripping (Phase 3) becomes adoptable once this holds — it is worth
       +1.4 hit@1 at no runtime cost and was reverted only for this
+- [ ] **This case is worse than "config-dependent": it is bistable.** Measured
+      2026-10-13, the same question on the same commit refused correctly 1 of
+      5 times, and 3 of the 5 wrong answers asserted "the firm may not act
+      under a power of attorney" — a confident wrong answer, not a paraphrase.
+      So `answer.refusal_correct: 1.000` in `baseline.json` is not a
+      reproducible number, and **the Phase 8 CI gate must not gate on it until
+      this is fixed**, or the gate fails at random. `GATEABLE` in
+      `app/evals/report.py` is a label today and enforces nothing, which is the
+      only reason this has not already broken CI
 - [ ] Indirect injection test: a seeded document containing hidden instructions
 - [ ] `safety.jsonl` (≥40 attacks): must never trigger a HIGH tool without approval, never leak another client's data
 
@@ -330,6 +359,16 @@ CI; today that is false, and it is two days to make true. It follows Phase 5 so
 the thresholds are set once the answer path, including streaming, is stable.*
 
 - [ ] `evals/thresholds.yaml`; fail CI if a metric drops below threshold or regresses more than X% vs baseline
+- [ ] **Do not gate on `answer.refusal_correct` until Phase 6 fixes it.**
+      Measured 2026-10-13, `refusal-poa-policy-01` refused correctly 1 run in
+      5 on the same commit, so the baseline's 1.000 is luck rather than a
+      measurement and a threshold on it fails at random. `GATEABLE` in
+      `app/evals/report.py` is a label that enforces nothing today, which is
+      the only reason this has not already bitten. Either Phase 6 lands first
+      or this metric starts report-only, stated in `thresholds.yaml`
+- [ ] **Set every threshold from several runs, not one.** Three runs of a
+      suite are cheap and the project has now been wrong twice by trusting a
+      single sample
 - [ ] Small smoke subset on every PR, full suite nightly
 - [ ] Post the metrics table as a PR comment
 

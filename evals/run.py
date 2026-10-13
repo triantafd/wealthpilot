@@ -66,7 +66,12 @@ async def _run_slice_suites(args: argparse.Namespace) -> tuple[dict[str, Any], s
     if args.suite in {"actions", "all"}:
         cases = load_action_cases()
         print(f"Actions: {len(cases)} case(s)…", file=sys.stderr)
-        results = [await run_action_case(case, chat_model, args.model) for case in cases]
+        # A session, because the agent now validates the account at proposal
+        # time and the unknown-account case cannot be scored without it.
+        async with get_sessionmaker()() as session:
+            results = [
+                await run_action_case(case, session, chat_model, args.model) for case in cases
+            ]
         extra.update(aggregate_actions(results))
         extra["actions_cases"] = [asdict(r) for r in results]
         rendered.append(render_confusion("actions", actions_confusion(results)))
@@ -88,8 +93,9 @@ async def _run(args: argparse.Namespace) -> int:
             )
             return 2
 
-        # Neither touches retrieval or the database, so the RAG machinery below
-        # is skipped entirely rather than run over an empty case list.
+        # Neither touches retrieval, so the RAG machinery below is skipped
+        # entirely rather than run over an empty case list. The actions suite
+        # does open a session of its own, to look accounts up.
         extra, rendered = await _run_slice_suites(args)
         metrics = {k: v for k, v in extra.items() if not k.endswith("_cases")}
         report = build_report(args.suite, metrics, [])

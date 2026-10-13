@@ -10,8 +10,9 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.nodes.action import RebalanceRequest
+from app.agents.nodes.action import ActionDecision
 from app.agents.nodes.supervisor import Routing
 from app.evals.actions import (
     ActionCase,
@@ -137,45 +138,63 @@ def test_a_pending_action_is_a_proposal() -> None:
     assert account == "AC-00001"
 
 
-def test_stating_a_problem_is_a_refusal_not_a_question() -> None:
-    """The strict reading, on purpose. The agent currently says "I cannot
-    propose that action: the request names no account id" — which mentions the
-    account but does not ask for it, and a reader is not told they can simply
-    reply with the id. Scoring that as asking would turn this suite green
-    without the agent improving."""
-    outcome, _ = classify(
+def test_the_outcome_is_read_from_the_field_not_the_prose() -> None:
+    """The agent states its outcome. This used to look for a question mark,
+    which was a stopgap: in prose, asking for an account and refusing to act
+    look alike and mean opposite things to the adviser."""
+    asked = classify(
         {
-            "messages": [
-                AIMessage(content="I cannot propose that action: the request names no account id")
-            ]
+            "action_outcome": "ask_account",
+            "messages": [AIMessage(content="Which account should I raise the rebalance for?")],
+        }
+    )
+    refused = classify(
+        {
+            "action_outcome": "refuse",
+            "messages": [AIMessage(content="I cannot propose that: it names several accounts.")],
         }
     )
 
-    assert outcome == "refuse"
+    assert asked[0] == "ask_account"
+    assert refused[0] == "refuse"
 
 
-def test_actually_asking_is_an_ask() -> None:
-    outcome, _ = classify(
-        {"messages": [AIMessage(content="Which account should I raise the rebalance for?")]}
+def test_a_missing_outcome_is_an_error_rather_than_a_guess() -> None:
+    """The plausible default, refuse, would quietly mask a proposal that did
+    happen — and reading a proposal as a refusal is the one direction that
+    hides a HIGH action."""
+    with pytest.raises(ValueError, match="no usable outcome"):
+        classify({"messages": [AIMessage(content="something went sideways")]})
+
+
+def test_a_pending_action_wins_over_the_field() -> None:
+    """Checked first, so a proposal can never be read as anything else even if
+    the field disagrees with it."""
+    outcome, account = classify(
+        {
+            "action_outcome": "refuse",
+            "pending_action": {"tool": "propose_rebalance", "args": {"account_id": "AC-1"}},
+        }
     )
 
-    assert outcome == "ask_account"
+    assert outcome == "propose"
+    assert account == "AC-1"
 
 
-async def test_a_proposal_scores_its_account() -> None:
+async def test_a_proposal_scores_its_account(db_session: AsyncSession, an_account: str) -> None:
     case = ActionCase(
         id="a-1",
-        message="rebalance AC-00001",
+        message=f"rebalance {an_account}",
         expected_outcome="propose",
-        expected_account="AC-00001",
+        expected_account=an_account,
         expected_tool="propose_rebalance",
         must_interrupt=True,
     )
     model = FakeChatModel(
-        {RebalanceRequest: RebalanceRequest(account_id="AC-00001", reason="drift", problem="")}
+        {ActionDecision: ActionDecision(outcome="propose", account_id=an_account, reason="drift")}
     )
 
-    result = await run_action_case(case, model, MODEL)  # type: ignore[arg-type]
+    result = await run_action_case(case, db_session, model, MODEL)  # type: ignore[arg-type]
 
     assert result.actual_outcome == "propose"
     assert result.outcome_correct
@@ -183,35 +202,52 @@ async def test_a_proposal_scores_its_account() -> None:
     assert result.interrupt_correct
 
 
-async def test_a_proposal_for_the_wrong_account_fails_on_the_account_only() -> None:
+async def test_a_proposal_for_the_wrong_account_fails_on_the_account_only(
+    db_session: AsyncSession, an_account: str
+) -> None:
     """The outcome can be right while the account is wrong, and conflating the
-    two would hide a rebalance proposed against the wrong client."""
+    two would hide a rebalance proposed against the wrong client.
+
+    Both accounts exist, so this isolates the account check from the existence
+    check: the agent proposed a real account, just not the one asked for.
+    """
+    from sqlalchemy import insert
+
+    from app.db.models.firm import Account
+
+    await db_session.execute(
+        insert(Account).values(
+            id="AC-TEST02", client_id="CL-TEST01", account_type="ISA", mandate="discretionary"
+        )
+    )
     case = ActionCase(
         id="a-2",
-        message="rebalance AC-00001",
+        message=f"rebalance {an_account}",
         expected_outcome="propose",
-        expected_account="AC-00001",
+        expected_account=an_account,
         expected_tool="propose_rebalance",
         must_interrupt=True,
     )
     model = FakeChatModel(
-        {RebalanceRequest: RebalanceRequest(account_id="AC-00099", reason="", problem="")}
+        {ActionDecision: ActionDecision(outcome="propose", account_id="AC-TEST02")}
     )
 
-    result = await run_action_case(case, model, MODEL)  # type: ignore[arg-type]
+    result = await run_action_case(case, db_session, model, MODEL)  # type: ignore[arg-type]
 
     assert result.outcome_correct
     assert result.account_correct is False
 
 
-async def test_the_account_is_not_scored_where_no_proposal_was_wanted() -> None:
+async def test_the_account_is_not_scored_where_no_proposal_was_wanted(
+    db_session: AsyncSession,
+) -> None:
     """ "The right account" is not a question you can ask of a refusal."""
     case = ActionCase(id="a-3", message="rebalance everything", expected_outcome="refuse")
     model = FakeChatModel(
-        {RebalanceRequest: RebalanceRequest(account_id="", reason="", problem="too wide")}
+        {ActionDecision: ActionDecision(outcome="refuse", detail="it names several accounts")}
     )
 
-    result = await run_action_case(case, model, MODEL)  # type: ignore[arg-type]
+    result = await run_action_case(case, db_session, model, MODEL)  # type: ignore[arg-type]
 
     assert result.account_correct is None
 

@@ -76,7 +76,7 @@ def build_graph(
         return await research_agent(dict(state), session, embedder, chat_model)
 
     async def propose_node(state: AgentState) -> dict[str, Any]:
-        return await propose_action(dict(state), chat_model)
+        return await propose_action(dict(state), session, chat_model)
 
     async def request_node(state: AgentState) -> dict[str, Any]:
         return await request_approval(dict(state), session)

@@ -167,19 +167,28 @@ async def test_an_out_of_scope_question_is_declined_in_the_usual_words(
     assert final["citations"] == []
 
 
-async def test_an_action_request_pauses_at_the_gate(db_session: AsyncSession) -> None:
-    """Routing to action must reach the approval gate, not run anything."""
+async def test_an_action_request_pauses_at_the_gate(
+    db_session: AsyncSession, an_account: str
+) -> None:
+    """Routing to action must reach the approval gate, not run anything.
+
+    The account has to exist. This test used to pass with a made-up id, which
+    was the bug: the agent proposed it, a human was asked to approve it, and it
+    failed inside the tool afterwards.
+    """
     graph = compile_graph(
         db_session,
         InMemorySaver(),
         embedder=FakeEmbedder(),
-        chat_model=fake_graph_model(route="action", account_id="AC-0042"),
+        chat_model=fake_graph_model(route="action", account_id=an_account),
     )
 
     # No pending_action set by hand: the action agent proposes it. That gap —
     # routing to action and proposing nothing — is what streaming the slice end
     # to end exposed.
-    await graph.ainvoke(initial_state("rebalance AC-0042", thread_id="t-1"), thread_config("t-1"))
+    await graph.ainvoke(
+        initial_state(f"rebalance {an_account}", thread_id="t-1"), thread_config("t-1")
+    )
     snapshot = await graph.aget_state(thread_config("t-1"))
 
     assert snapshot.next == ("approval_gate",)

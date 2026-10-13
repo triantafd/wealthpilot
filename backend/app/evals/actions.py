@@ -24,6 +24,7 @@ from typing import Any, Literal
 
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.nodes.action import propose_action
 from app.agents.state import initial_state
@@ -34,19 +35,6 @@ DATASET = "actions_slice.jsonl"
 
 Outcome = Literal["propose", "ask_account", "refuse"]
 OUTCOMES: tuple[Outcome, ...] = ("propose", "ask_account", "refuse")
-
-# What counts as *asking* rather than refusing.
-#
-# A question mark is required, and this is the strict reading on purpose. The
-# agent currently says "I cannot propose that action: the request names no
-# account id", which mentions the account but states a problem rather than
-# asking one: a reader is not told they can simply reply with the id. Matching
-# on the mention alone would score that as asking and turn this suite green
-# without the agent improving, which is the opposite of what it is for.
-#
-# This is a heuristic because the agent has no structured signal for the
-# difference. When it gains one, `classify` reads that instead and this goes.
-ASK_MARKERS = ("account",)
 
 
 class ActionCase(BaseModel):
@@ -104,30 +92,39 @@ def load_action_cases(*, datasets_dir: Path | None = None) -> list[ActionCase]:
 def classify(update: dict[str, Any]) -> tuple[Outcome, str | None]:
     """Read the agent's update as one of the three outcomes.
 
-    A proposal is unambiguous: `pending_action` is set. Everything else is a
-    non-proposal, and asking is told from refusing by whether the message
-    actually poses a question about the account — see ASK_MARKERS for why the
-    reading is strict. There is no structured signal yet, which is precisely
-    the gap this suite exists to measure.
+    The agent states its outcome, so this reads a field rather than guessing
+    from prose. It used to look for a question mark, which was a stopgap: in
+    prose, asking for an account and refusing to act look alike and mean
+    opposite things to the adviser.
+
+    A missing field is an error rather than a default. The plausible default,
+    `refuse`, would quietly mask a proposal that did happen — and reading a
+    proposal as a refusal is the one direction that hides a HIGH action.
     """
     action = update.get("pending_action")
     if action:
+        # Structural and unambiguous, and checked first so a proposal can never
+        # be read as anything else.
         return "propose", (action.get("args") or {}).get("account_id")
 
-    text = " ".join(
-        str(getattr(message, "content", "")) for message in update.get("messages") or []
-    ).lower()
-    if "?" in text and any(marker in text for marker in ASK_MARKERS):
-        return "ask_account", None
-    return "refuse", None
+    outcome = update.get("action_outcome")
+    if outcome not in OUTCOMES:
+        raise ValueError(f"the action agent reported no usable outcome: {outcome!r}")
+    return outcome, None
 
 
-async def run_action_case(case: ActionCase, chat_model: BaseChatModel, model: str) -> ActionResult:
-    """Put one request to the action agent. A failure is recorded, not raised."""
+async def run_action_case(
+    case: ActionCase, session: AsyncSession, chat_model: BaseChatModel, model: str
+) -> ActionResult:
+    """Put one request to the action agent. A failure is recorded, not raised.
+
+    The session is needed because validating the account at proposal time is
+    the point: the unknown-account case cannot be scored without a lookup.
+    """
     started = time.perf_counter()
     try:
         state = dict(initial_state(case.message, thread_id=f"eval-{case.id}"))
-        update = await propose_action(state, chat_model)
+        update = await propose_action(state, session, chat_model)
     except Exception as exc:
         return ActionResult(
             case_id=case.id,
