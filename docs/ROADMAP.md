@@ -291,8 +291,17 @@ screen.*
 
 ### Chat
 
-- [ ] Conversation history — the page keeps one turn and replaces it, so a
+- [x] Conversation history — the page keeps one turn and replaces it, so a
       second question erases the first
+- [ ] **Make the conversation survive a refresh.** History lives in the
+      component, so reloading loses it even though the checkpointer has every
+      turn. `GET /threads/{id}` returns messages as role and content only — no
+      citations, no per-turn route, no cost — so restoring from it today would
+      redraw the questions and answers with the evidence missing, which is
+      worse than an honest empty page. Needs that endpoint to return the whole
+      turn, which overlaps with "show what an approved action actually did", so
+      it goes after the inbox. The thread id also has to outlive the page: it
+      is a `useRef` today
 - [ ] **Token streaming of the answer — decided: option (c).** The model
       writes plain markdown prose and ends with its citations as
       `<citation filename='…' page_number='N'>verbatim quote</citation>`,

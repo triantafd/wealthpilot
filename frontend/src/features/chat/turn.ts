@@ -9,6 +9,15 @@
 import type { Citation, ProposedAction, StreamEvent } from "@shared/stream-events";
 
 export interface Turn {
+  /**
+   * Stable identity for this turn.
+   *
+   * Updates match on it rather than on "the last turn in the list". With one
+   * turn on screen that distinction did not exist; with a conversation it
+   * does, and `decide()` needs it too — approving must target the turn whose
+   * approval it is, not whichever turn is newest.
+   */
+  id: string;
   question: string;
   route?: { route: string; confidence: number };
   retrievedCount?: number;
@@ -21,8 +30,18 @@ export interface Turn {
   ms?: number;
 }
 
+let counter = 0;
+
 export function newTurn(question: string): Turn {
-  return { question, citations: [] };
+  // A counter, not a timestamp: two turns submitted in the same millisecond
+  // would collide, and React keys that collide drop a turn from the screen.
+  counter += 1;
+  return { id: `turn-${counter}`, question, citations: [] };
+}
+
+/** Replace one turn in a conversation, leaving the others untouched. */
+export function updateTurn(turns: Turn[], id: string, change: (turn: Turn) => Turn): Turn[] {
+  return turns.map((turn) => (turn.id === id ? change(turn) : turn));
 }
 
 /**

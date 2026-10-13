@@ -1,11 +1,11 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { PageHeader } from "@/components/page-shell";
 import { TierBadge } from "@/components/tier-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ask, createThread, decideApproval } from "@/lib/stream";
-import { applyEvent, newTurn, type Turn } from "./turn";
+import { applyEvent, newTurn, type Turn, updateTurn } from "./turn";
 
 /**
  * The chat screen.
@@ -17,8 +17,16 @@ import { applyEvent, newTurn, type Turn } from "./turn";
  *
  * The answer arrives as one event rather than token by token. The research
  * agent uses structured output, so the model streams JSON fragments and the
- * usable prose only exists once the object closes — Phase 7 parses that
+ * usable prose only exists once the object closes — Phase 5 parses that
  * incrementally. Nothing here fakes a reveal from the finished string.
+ *
+ * The conversation is kept in this component and not reloaded from the server.
+ * The checkpointer does persist every turn, but `GET /threads/{id}` returns
+ * messages as role and content only — no citations, no per-turn route, no cost
+ * — so restoring from it would redraw the questions and answers with the
+ * evidence missing, which is worse than an honest empty page. Surviving a
+ * refresh is its own roadmap item, and needs that endpoint to return the whole
+ * turn first.
  */
 
 /** Until there is authentication, the decider is a placeholder. Phase 9. */
@@ -26,8 +34,9 @@ const DECIDED_BY = "adviser-7";
 
 export function ChatPage() {
   const [message, setMessage] = useState("");
-  const [turn, setTurn] = useState<Turn | null>(null);
+  const [turns, setTurns] = useState<Turn[]>([]);
   const [busy, setBusy] = useState(false);
+  const bottom = useRef<HTMLDivElement | null>(null);
   // One thread for the page's life, so a follow-up continues the conversation
   // rather than starting a new one the checkpointer knows nothing about.
   const threadId = useRef<string | null>(null);
@@ -40,16 +49,19 @@ export function ChatPage() {
 
       setBusy(true);
       setMessage("");
-      setTurn(newTurn(question));
+      const asked = newTurn(question);
+      setTurns((current) => [...current, asked]);
 
       try {
         threadId.current ??= await createThread();
         for await (const streamed of ask({ threadId: threadId.current, message: question })) {
-          setTurn((current) => (current ? applyEvent(current, streamed) : current));
+          setTurns((current) =>
+            updateTurn(current, asked.id, (turn) => applyEvent(turn, streamed)),
+          );
         }
       } catch (error) {
         const text = error instanceof Error ? error.message : "the request failed";
-        setTurn((current) => (current ? { ...current, error: text } : current));
+        setTurns((current) => updateTurn(current, asked.id, (turn) => ({ ...turn, error: text })));
       } finally {
         setBusy(false);
       }
@@ -57,20 +69,33 @@ export function ChatPage() {
     [busy, message],
   );
 
-  const decide = useCallback(async (decision: "approve" | "reject") => {
-    setBusy(true);
-    try {
-      const approvalId = turn?.approval?.approvalId;
-      if (!approvalId) return;
-      await decideApproval(approvalId, decision, { decidedBy: DECIDED_BY });
-      setTurn((current) => (current ? { ...current, decision, approval: undefined } : current));
-    } catch (error) {
-      const text = error instanceof Error ? error.message : "the decision failed";
-      setTurn((current) => (current ? { ...current, error: text } : current));
-    } finally {
-      setBusy(false);
-    }
-  }, [turn]);
+  const decide = useCallback(
+    async (turnId: string, approvalId: string, decision: "approve" | "reject") => {
+      // The turn is named by the caller rather than looked up as "the latest":
+      // an approval belongs to the turn that raised it, and an adviser can
+      // have asked something else since.
+      setBusy(true);
+      try {
+        await decideApproval(approvalId, decision, { decidedBy: DECIDED_BY });
+        setTurns((current) =>
+          updateTurn(current, turnId, (turn) => ({ ...turn, decision, approval: undefined })),
+        );
+      } catch (error) {
+        const text = error instanceof Error ? error.message : "the decision failed";
+        setTurns((current) => updateTurn(current, turnId, (turn) => ({ ...turn, error: text })));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [],
+  );
+
+  // Follow the newest turn. A chat that leaves the answer below the fold reads
+  // as broken; `turns.length` rather than `turns` so this fires when a turn is
+  // added, not on every streamed event.
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [turns.length]);
 
   return (
     <>
@@ -81,7 +106,14 @@ export function ChatPage() {
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-2xl space-y-4 px-4 pb-12">
-          {turn ? <TurnView turn={turn} busy={busy} onDecide={decide} /> : <Empty />}
+          {turns.length > 0 ? (
+            turns.map((item) => (
+              <TurnView key={item.id} turn={item} busy={busy} onDecide={decide} />
+            ))
+          ) : (
+            <Empty />
+          )}
+          <div ref={bottom} />
         </div>
       </div>
 
@@ -121,10 +153,11 @@ function TurnView({
 }: {
   turn: Turn;
   busy: boolean;
-  onDecide: (decision: "approve" | "reject") => void;
+  onDecide: (turnId: string, approvalId: string, decision: "approve" | "reject") => void;
 }) {
+  const approvalId = turn.approval?.approvalId;
   return (
-    <div className="space-y-3 pt-4">
+    <div className="space-y-3 border-t pt-4 first:border-t-0" data-testid="turn">
       <p className="text-sm font-medium">{turn.question}</p>
 
       {turn.route ? (
@@ -170,10 +203,19 @@ function TurnView({
             Nothing has happened yet. This runs only if you approve it.
           </p>
           <div className="mt-3 flex gap-2">
-            <Button size="sm" disabled={busy} onClick={() => onDecide("approve")}>
+            <Button
+              size="sm"
+              disabled={busy}
+              onClick={() => approvalId && onDecide(turn.id, approvalId, "approve")}
+            >
               Approve
             </Button>
-            <Button size="sm" variant="outline" disabled={busy} onClick={() => onDecide("reject")}>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => approvalId && onDecide(turn.id, approvalId, "reject")}
+            >
               Reject
             </Button>
           </div>

@@ -201,14 +201,52 @@ describe("ChatPage", () => {
     renderChat();
 
     await ask("first question");
-    await waitFor(() => expect(screen.getByTestId("answer")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByTestId("answer")).toHaveLength(1));
     await ask("second question");
-    await waitFor(() => expect(screen.getByTestId("answer")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByTestId("answer")).toHaveLength(2));
 
     // One POST /api/threads, two POSTs to the same thread's messages: a second
     // thread would lose the checkpointer's history and any pending approval.
     const calls = fetchMock.mock.calls.map(([url]) => String(url));
     expect(calls.filter((url) => url === "/api/threads")).toHaveLength(1);
     expect(calls.filter((url) => url.includes("/messages"))).toHaveLength(2);
+  });
+
+  it("keeps the earlier turn on screen when a second question is asked", async () => {
+    // The defect this replaces: the page held one turn and replaced it, so a
+    // second question erased the first — including an answer an adviser was
+    // still reading, and any approval that turn was waiting on.
+    vi.stubGlobal("fetch", stubFetch(RESEARCH_TURN));
+    renderChat();
+
+    await ask("what is the fee floor?");
+    await waitFor(() => expect(screen.getAllByTestId("answer")).toHaveLength(1));
+    await ask("and for a junior account?");
+
+    await waitFor(() => expect(screen.getAllByTestId("turn")).toHaveLength(2));
+    expect(screen.getByText("what is the fee floor?")).toBeInTheDocument();
+    expect(screen.getByText("and for a junior account?")).toBeInTheDocument();
+  });
+
+  it("decides the approval belonging to its own turn, not the newest one", async () => {
+    // An adviser can ask something else while an approval waits. Looking up
+    // "the latest turn" would then decide against the wrong one, or crash.
+    const fetchMock = stubFetch(ACTION_TURN);
+    vi.stubGlobal("fetch", fetchMock);
+    renderChat();
+
+    await ask("rebalance AC-00042");
+    await waitFor(() => expect(screen.getByTestId("approval")).toBeInTheDocument());
+
+    const turns = screen.getAllByTestId("turn");
+    expect(turns).toHaveLength(1);
+
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() => expect(screen.getByTestId("decision")).toBeInTheDocument());
+    const decided = fetchMock.mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => url.includes("/approvals/"));
+    expect(decided).toHaveLength(1);
   });
 });
