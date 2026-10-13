@@ -11,9 +11,19 @@ system that confuses them can be talked into widening its own scope one answer
 at a time; a two-way metric would score that confusion as correct.
 
 `expected_tool` is read but not reported while one tool exists, where it is
-100% by construction. `must_interrupt` is reported as an **invariant**: it is
-expected to be 1.000 and is worth watching only because the cost of it quietly
-becoming false is a HIGH action running without a human.
+100% by construction.
+
+`must_interrupt` is reported as a **dataset-consistency check**, which is all
+it can be here. It asserts that the agent proposed exactly where a proposal was
+wanted, derived from the same classification as the outcome — it is not an
+observation that a proposal reaches `interrupt()`, because this suite never
+runs the graph. An earlier version of this docstring claimed it guarded against
+a HIGH action running without a human; it cannot see that. The integration
+tests do, by asserting the compiled graph stops at the gate.
+
+It is not merely a restatement of outcome accuracy: on the classification this
+suite first produced, outcome accuracy was 0.750 and this 0.938, because the
+two diverge wherever neither the expected nor the actual outcome is `propose`.
 """
 
 import time
@@ -179,8 +189,10 @@ def aggregate_actions(results: list[ActionResult]) -> dict[str, Any]:
     metrics: dict[str, Any] = {
         "actions.outcome_correct": mean([float(r.outcome_correct) for r in scored]),
         "actions.account_correct": mean([float(bool(r.account_correct)) for r in proposals]),
-        # An invariant, not a discriminator: expected 1.000, and worth watching
-        # only because its failure means a HIGH action ran without a human.
+        # A dataset-consistency check, not a safety observation: it says the
+        # agent proposed exactly where a proposal was wanted. Whether a
+        # proposal actually reaches interrupt() is the integration tests' job,
+        # since this suite never runs the graph.
         "actions.interrupt_invariant": mean([float(r.interrupt_correct) for r in scored]),
         "actions.cases": float(len(results)),
         "actions.errors": float(sum(1 for r in results if r.error)),

@@ -264,31 +264,18 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
 **Done when:** routing accuracy and SQL execution accuracy are in the eval
 report.
 
-## Phase 5 — Usable chat and approvals (1 week) · **Core**
+## Phase 5 — Usable chat and approvals (1.5–2 weeks) · **Core**
 
-*The app demos worse than it works. Everything here is visible from the screen,
-and adds no new concepts.*
+*Two jobs. It makes the app usable — today it demos worse than it works — and
+it closes the integrity gaps the Phase 4a security review found. That review's
+verdict was that the approval gate holds: no path executes a HIGH tool without
+a matching, approved, unconsumed approval, and the argument binding and
+single-use claim are both correct. What it found instead was that the record of
+who authorised what is incomplete, and that one decision path reports the wrong
+answer. Those are not visible work, which is why this phase is no longer all
+screen.*
 
-- [ ] **When re-running evals around streaming, ignore
-      `answer.refusal_correct` movement on `refusal-poa-policy-01`.** It is
-      bistable — 1 correct run in 5 on one commit, measured 2026-10-13 — so it
-      will appear to regress or improve for no reason and waste a day. Phase 6
-      fixes it; until then it is not evidence about a streaming change
-- [ ] **Show asking differently from refusing.** The action agent reports
-      `action_outcome` (`propose` / `ask_account` / `refuse`) in state as of
-      Phase 4a, so the distinction exists; nothing carries it to the screen.
-      `ask_account` is one reply away from a proposal and a refusal is a dead
-      end, and prose alone does not tell an adviser which they are looking at.
-      Per working rule 5 this means a new field on the SSE contract:
-      `shared/stream-events.ts` and `backend/app/api/events.py` change
-      together, with the contract test kept passing
-### From the Phase 4a security review
-
-*A read-only review ran before merging Phase 4a, per CLAUDE.md. Its verdict was
-that the gate holds: no path executes a HIGH tool without a matching, approved,
-unconsumed approval, and the argument binding and single-use claim are both
-correct. These are the integrity gaps it found. The first two were verified
-against the code rather than taken on trust.*
+### First, because a reviewer currently gets the opposite of what they clicked
 
 - [ ] **A concurrent approve and reject reports the loser as success.**
       `decide()` guards its UPDATE with `.where(status == "pending")` and a
@@ -301,6 +288,38 @@ against the code rather than taken on trust.*
       uses: `.returning(...)`, and raise `AlreadyDecidedError` on `None`,
       before the audit insert. Needs a concurrency test, which no existing
       test covers — `test_deciding_twice_is_a_conflict` is the sequential case
+
+### Chat
+
+- [ ] Conversation history — the page keeps one turn and replaces it, so a
+      second question erases the first
+- [ ] **Token streaming of the answer — decided: option (c).** The model
+      writes plain markdown prose and ends with its citations as
+      `<citation filename='…' page_number='N'>verbatim quote</citation>`,
+      which are verified after the prose has streamed. Chosen over (a),
+      parsing the structured JSON as it arrives, because prose arrives from
+      the first token and the verbatim quote is preserved for verification;
+      the cost is that the answer prompt changes, so the baseline must be
+      re-measured either side. A provider with native citations would be a
+      third option; this one runs OpenAI
+- [ ] Render the answer's markdown — `**£1,500**` currently shows literally
+- [ ] **Show asking differently from refusing.** The action agent reports
+      `action_outcome` (`propose` / `ask_account` / `refuse`) in state as of
+      Phase 4a, so the distinction exists; nothing carries it to the screen.
+      `ask_account` is one reply away from a proposal and a refusal is a dead
+      end, and prose alone does not tell an adviser which they are looking at.
+      Per working rule 5 this means a new field on the SSE contract:
+      `shared/stream-events.ts` and `backend/app/api/events.py` change
+      together, with the contract test kept passing
+
+### Approvals
+
+*The inbox and the audit gaps are one piece of work: the inbox is where "who
+authorised what" becomes visible, so there is no point building it over a
+record that cannot answer the question.*
+
+- [ ] Approvals inbox, showing for each decided approval **who approved it and
+      which execution it authorised** — which requires the three items below
 - [ ] **The audit log cannot say who authorised an execution.**
       `audit_log.approval_id` and `audit_log.approver` exist, and the model's
       own docstring says to write "every call (args, result, approver)" there
@@ -312,17 +331,6 @@ against the code rather than taken on trust.*
       `_claim_approval` return the claimed row's `decided_by`, pass
       `approval_id` and `approver` into `_audit` including on the denied path,
       and set the column in `decide()` rather than only the `result` blob
-- [ ] **`actions.interrupt_invariant` overclaims in its own docstring.** It
-      says the metric is worth watching "because the cost of it quietly
-      becoming false is a HIGH action running without a human" — which it
-      cannot detect, because it is derived from the same classification and
-      the graph never runs. It is *not* a restatement of outcome accuracy, as
-      the review suggested: measured on the pre-fix classification, outcome
-      accuracy is 0.750 and the invariant 0.938, and they diverge wherever
-      neither value is `propose`. So either relabel it as the
-      dataset-consistency check it is, or make it real by compiling the graph
-      for the `must_interrupt` cases and asserting `state.next ==
-      ("approval_gate",)` with no `tasks` row
 - [ ] **Bind the approval to its thread.** `execute(..., thread_id=X,
       approval_id=A)` never checks `A.thread_id == X`. Not an escalation —
       tool and args must still match exactly and the claim is single-use, so
@@ -334,29 +342,25 @@ against the code rather than taken on trust.*
       `guardrail_flags` string inside the checkpoint; and `execute` resolves
       the tool name first, so an unknown name raises with nothing audited.
       Harmless with one hard-coded tool, a trap once a model picks the name
-
-- [ ] Conversation history — the page keeps one turn and replaces it, so a
-      second question erases the first
-- [ ] Token streaming of the answer — approach chosen before building:
-      **(a)** parse the structured JSON as it streams, or **(c)** the model
-      writes prose and ends with verified citation tags. (a) leaves the
-      baseline untouched; (c) gives prose from the first token and keeps
-      verbatim quotes, but changes the prompt. A provider with native
-      citations would be a third option; this one runs OpenAI
-- [ ] Render the answer's markdown — `**£1,500**` currently shows literally
-- [ ] Approvals inbox
 - [ ] Show what an approved action actually did — today it says only
       "the action has run"
-- [ ] Read-only documents page: `GET /documents` with name, chunk count and
-      last ingested
 - [ ] Restart safety: a HIGH action interrupted before a server restart
       resumes after it
+
+### Last
+
+- [ ] Read-only documents page: `GET /documents` with name, chunk count and
+      last ingested
 - [ ] Re-run the full eval baseline before and after the streaming change, and
-      record the result in `docs/EXPERIMENTS.md`
+      record the result in `docs/EXPERIMENTS.md`.
+      **Ignore `answer.refusal_correct` movement on `refusal-poa-policy-01`:**
+      it is bistable — 1 correct run in 5 on one commit, measured 2026-10-13 —
+      so it will appear to regress or improve for no reason and waste a day.
+      Phase 6 fixes it; until then it is not evidence about a streaming change
 
 **Done when:** a 60-second recording shows a question answered with citations,
-a rebalance proposed, approved and confirmed — and the documents page shows
-what the answer was drawn from.
+streamed token by token, a rebalance proposed, a human approving it in the
+inbox, and the inbox showing afterwards who approved it and what it did.
 
 **Where the old Phase 5 went.** `audit_log` for every tool call and decision was
 already done in Phase 4a — `execute()` is the single chokepoint and audits
