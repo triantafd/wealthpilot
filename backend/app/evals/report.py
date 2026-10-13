@@ -21,11 +21,20 @@ _FRACTIONS = (
     "retrieval.",
     "citations.",
     "answer.",
+    "routing.",
+    "actions.",
 )
 
 # Counts that happen to share a prefix with the fractions above. Without this,
 # "16.3 references written" printed as "1633.3%".
-_COUNTS = ("answer.prose_refs_written",)
+_COUNTS = (
+    "answer.prose_refs_written",
+    # Counts that share the routing./actions. prefixes above.
+    "routing.cases",
+    "routing.errors",
+    "actions.cases",
+    "actions.errors",
+)
 
 
 def git_dirty() -> bool:
@@ -146,14 +155,17 @@ def build_report(
 
 
 def _format(name: str, value: float) -> str:
-    if name in _COUNTS:
-        return f"{value:>8.1f}"
-    if name.startswith(_FRACTIONS):
-        return f"{value:>8.1%}"
+    # Cost and latency are tested before the fraction prefixes, because
+    # routing.cost_usd and actions.cost_usd carry a prefix that is otherwise a
+    # percentage and would print 0.0002 as 0.0%.
     if "cost" in name:
         return f"{value:>8.5f}"
     if "latency" in name:
         return f"{value:>8.0f}"
+    if name in _COUNTS:
+        return f"{value:>8.1f}"
+    if name.startswith(_FRACTIONS):
+        return f"{value:>8.1%}"
     return f"{value:>8.0f}"
 
 
@@ -185,7 +197,12 @@ def render_table(report: dict[str, Any], baseline: dict[str, Any] | None = None)
         row = f"  {name:<{width}}  {_format(name, value)}"
         delta = deltas.get(name)
         if delta is not None and abs(delta.change) > 1e-9:
-            pct = name.startswith(_FRACTIONS) and name not in _COUNTS
+            pct = (
+                name.startswith(_FRACTIONS)
+                and name not in _COUNTS
+                and "cost" not in name
+                and "latency" not in name
+            )
             change = f"{delta.change:+.1%}" if pct else f"{delta.change:+.3f}"
             marker = "  REGRESSED" if delta.regressed and pct else ""
             row += f"   vs baseline {change}{marker}"
@@ -324,4 +341,38 @@ def render_case_diff(results: list[CaseResult], baseline: dict[str, Any] | None)
         if cases:
             lines.append(f"    {label} ({len(cases)})")
             lines += [f"      {case}" for case in sorted(cases)]
+    return "\n".join(lines)
+
+
+def render_confusion(name: str, matrix: dict[str, dict[str, int]]) -> str:
+    """What each expected answer was mistaken for.
+
+    More useful than the headline it accompanies, because it says what to fix.
+    "Outcome correct 75%" does not distinguish three asks read as refusals —
+    a prompt change — from one refusal read as a proposal, which needs a
+    database lookup at proposal time. The same applies to routing: an action
+    read as research is a safety-relevant confusion, where out-of-scope read
+    as research only wastes a search.
+    """
+    if not matrix:
+        return ""
+
+    # Columns follow the rows' order, so the correct answers lie on the
+    # diagonal and the eye can find them. Anything the rows do not name — an
+    # "error" outcome, say — is appended.
+    seen = {column for row in matrix.values() for column in row}
+    columns = list(matrix) + sorted(seen - set(matrix))
+    width = max((len(label) for label in [*matrix, *columns]), default=8) + 2
+
+    lines = [f"\n  {name}: expected (down) against actual (across)", ""]
+    lines.append("    " + "".ljust(width) + "".join(c.ljust(width) for c in columns))
+    for expected, row in matrix.items():
+        cells = ""
+        for column in columns:
+            count = row.get(column, 0)
+            # Only a non-zero cell off the diagonal is a mistake worth marking;
+            # marking the zeros too turns the table into noise.
+            mark = "  <" if count and column != expected else ""
+            cells += (f"{count}{mark}").ljust(width)
+        lines.append("    " + expected.ljust(width) + cells)
     return "\n".join(lines)
