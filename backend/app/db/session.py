@@ -30,6 +30,26 @@ def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
-    """FastAPI dependency yielding a session that always closes."""
+    """FastAPI dependency yielding a session, committed on success.
+
+    One transaction per request: a handler's writes land together, and a
+    handler that raised writes nothing.
+
+    The commit is the part that was missing, and it was missing for two
+    phases. `/usage` only reads, so nothing noticed until the approvals
+    endpoint became the first handler that writes — a decision was recorded,
+    the response said "approved", and the row rolled back when the session
+    closed. The response was reporting its own uncommitted read.
+
+    No test could have caught it: the endpoint tests override this dependency
+    with the `db_session` fixture, which deliberately rolls back, so they see
+    their own writes and pass either way. It took running the slice against a
+    real server. `tests/test_db_session.py` now exercises this function itself.
+    """
     async with get_sessionmaker()() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise

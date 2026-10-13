@@ -27,7 +27,10 @@
 
     /* shadcn/ui generates "@/..." imports; this must stay in step with the
        alias in vite.config.ts. */
-    "paths": { "@/*": ["./src/*"] }
+    "paths": { "@/*": ["./src/*"], "@shared/*": ["../shared/*"] }
   },
-  "include": ["src"]
+  /* ../shared too: the SSE contract lives outside src and is imported through
+     the "@shared" alias, so tsc has to see it or every import is an error the
+     bundler happily resolves anyway. */
+  "include": ["src", "../shared"]
 }

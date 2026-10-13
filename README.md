@@ -6,10 +6,11 @@ The point of the project is not the chatbot. It is the engineering around it: ev
 
 ## Status
 
-**Phases 0–3 complete. Phase 4a — a thin end-to-end slice — is next.** Working
-today: document ingestion, retrieval, and answers with mechanically verified
-citations; a 75-case eval suite with a frozen baseline and variant comparison;
-Langfuse tracing; and per-request token, cost and latency accounting.
+**Phases 0–4a complete. Phase 5 — making the chat usable — is next.** A
+question goes through a LangGraph supervisor to a research or action agent,
+streams back over SSE, and a HIGH-risk action pauses for a human before
+anything happens. Around it: a 75-case eval suite with a frozen baseline,
+Langfuse tracing, and per-request token, cost and latency accounting.
 
 | Area | State |
 |---|---|
@@ -17,9 +18,10 @@ Langfuse tracing; and per-request token, cost and latency accounting.
 | Eval suite, frozen baseline, variant comparison | **working** (75 cases, `evals/`) |
 | Tracing, `usage` table, `/usage`, per-model pricing | **working** |
 | Retrieval variants: full-text, hybrid RRF, cross-encoder | **measured, off by default** (`docs/EXPERIMENTS.md`) |
-| LangGraph supervisor and agents | not built — Phase 4a |
-| SSE streaming, chat page | not built — Phase 4a |
-| Risk-tiered tools, approval gate, audit log | not built — Phase 4a |
+| LangGraph supervisor, research and action agents | **working** (`backend/app/agents/`) |
+| SSE streaming, chat page | **working, thin** — one turn at a time, no token streaming; Phase 5 |
+| Risk-tiered tools, approval gate, audit log | **working** (`backend/app/tools/registry.py`) |
+| Conversation history, markdown, documents page | not built — Phase 5 |
 | Text-to-SQL portfolio agent | not built — Phase 4 |
 | Guardrails, prompt-injection defence, safety evals | not built — Phase 6 |
 | CI eval gate | not built — Phase 8 |
@@ -89,6 +91,7 @@ research prompt explicitly requires, so a drop there can mean the answer got
 cp .env.example .env            # add your LLM API key
 docker compose up -d db         # Postgres + pgvector
 cd backend && uv sync && uv run alembic upgrade head
+uv run python -m app.scripts.setup_checkpointer   # LangGraph's tables
 uv run python -m app.scripts.seed        # synthetic clients, portfolios, docs
 uv run python -m app.scripts.ingest      # embed documents
 uv run uvicorn app.main:app --reload     # http://localhost:8000

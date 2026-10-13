@@ -17,27 +17,105 @@ import argparse
 import asyncio
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 from app.db.session import get_sessionmaker
+from app.evals.actions import aggregate_actions, load_action_cases, run_action_case
+from app.evals.actions import confusion as actions_confusion
 from app.evals.dataset import DatasetError, load_cases
 from app.evals.report import (
     build_report,
     load_baseline,
     render_breakdowns,
     render_case_diff,
+    render_confusion,
     render_spread,
     render_table,
     save_report,
     summarise_runs,
 )
+from app.evals.routing import aggregate_routing, load_routing_cases, run_routing_case
+from app.evals.routing import confusion as routing_confusion
 from app.evals.runner import aggregate, run_case, run_retrieval_only, score_with_ragas
 from app.llm import get_chat_model
 from app.observability import configure_tracing, flush
 from app.rag.embeddings import OpenAIEmbedder
 
 
+async def _run_slice_suites(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
+    """Score the routing and action slices.
+
+    Each exercises one node directly rather than the graph: a routing case
+    would otherwise also run an agent, and three action cases are questions
+    the supervisor would divert before the agent ever saw them.
+    """
+    extra: dict[str, Any] = {}
+    rendered: list[str] = []
+    chat_model = get_chat_model(args.model)
+
+    if args.suite in {"routing", "all"}:
+        cases = load_routing_cases()
+        print(f"Routing: {len(cases)} case(s)…", file=sys.stderr)
+        results = [await run_routing_case(case, chat_model, args.model) for case in cases]
+        extra.update(aggregate_routing(results))
+        extra["routing_cases"] = [asdict(r) for r in results]
+        rendered.append(render_confusion("routing", routing_confusion(results)))
+
+    if args.suite in {"actions", "all"}:
+        cases = load_action_cases()
+        print(f"Actions: {len(cases)} case(s)…", file=sys.stderr)
+        # A session, because the agent now validates the account at proposal
+        # time and the unknown-account case cannot be scored without it.
+        async with get_sessionmaker()() as session:
+            results = [
+                await run_action_case(case, session, chat_model, args.model) for case in cases
+            ]
+        extra.update(aggregate_actions(results))
+        extra["actions_cases"] = [asdict(r) for r in results]
+        rendered.append(render_confusion("actions", actions_confusion(results)))
+
+    return extra, "\n".join(rendered)
+
+
 async def _run(args: argparse.Namespace) -> int:
+    if args.suite in {"routing", "actions"}:
+        if args.save_baseline:
+            # baseline.json is the RAG baseline. Saving a 16-case actions
+            # report over it would destroy the thing every retrieval change is
+            # measured against. Checked before the run, so being told no does
+            # not cost a suite's worth of model calls.
+            print(
+                f"--save-baseline is not supported for the {args.suite} suite: "
+                "baseline.json holds the RAG suite and would be overwritten",
+                file=sys.stderr,
+            )
+            return 2
+
+        # Neither touches retrieval, so the RAG machinery below is skipped
+        # entirely rather than run over an empty case list. The actions suite
+        # does open a session of its own, to look accounts up.
+        extra, rendered = await _run_slice_suites(args)
+        metrics = {k: v for k, v in extra.items() if not k.endswith("_cases")}
+        report = build_report(args.suite, metrics, [])
+        report.update({k: v for k, v in extra.items() if k.endswith("_cases")})
+        # build_report counts RAG cases, of which these suites have none.
+        report["case_count"] = sum(
+            len(v) for k, v in extra.items() if k.endswith("_cases") and isinstance(v, list)
+        )
+        baseline = load_baseline(args.compare) if args.compare else None
+        print()
+        print(render_table(report, baseline))
+        print(rendered)
+        flush()
+        path = save_report(report, as_baseline=False)
+        print(f"\n  report: {path.name}")
+        errors = int(metrics.get(f"{args.suite}.errors", 0))
+        if errors:
+            print(f"\n  {errors} case(s) errored", file=sys.stderr)
+        return 1 if errors else 0
+
     cases = load_cases(args.suite)
     embedder = OpenAIEmbedder()
     use_ragas = args.ragas if args.ragas is not None else args.suite != "smoke"
@@ -67,9 +145,16 @@ async def _run(args: argparse.Namespace) -> int:
 
     # The last run's per-case detail is kept; the headline metrics are the mean
     # across runs, so a baseline is not a single sample of a noisy process.
+    # The slice suites run once, after the repeats: they are small, cheap and
+    # not part of the baseline, so repeating them would spend money for a
+    # spread nobody compares against.
+    extra, rendered_slices = await _run_slice_suites(args)
+
     spreads = summarise_runs(runs) if args.repeat > 1 else {}
     metrics = {name: spread.mean for name, spread in spreads.items()} if spreads else runs[-1]
+    metrics.update({k: v for k, v in extra.items() if not k.endswith("_cases")})
     report = build_report(args.suite, metrics, results, spreads=spreads or None)
+    report.update({k: v for k, v in extra.items() if k.endswith("_cases")})
     baseline = load_baseline(args.compare) if args.compare else None
     if args.compare and baseline is None:
         print(f"no baseline at {args.compare}; reporting without it", file=sys.stderr)
@@ -78,6 +163,7 @@ async def _run(args: argparse.Namespace) -> int:
     print(render_table(report, baseline))
     print(render_breakdowns(results))
     print(render_case_diff(results, baseline))
+    print(rendered_slices)
     if spreads:
         print(render_spread(spreads))
 
@@ -101,7 +187,11 @@ async def _run(args: argparse.Namespace) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the WealthPilot eval suite.")
-    parser.add_argument("--suite", default="smoke", choices=["smoke", "rag", "all"])
+    parser.add_argument(
+        "--suite",
+        default="smoke",
+        choices=["smoke", "rag", "routing", "actions", "all"],
+    )
     parser.add_argument("--compare", type=Path, help="baseline report to compare against")
     parser.add_argument("--save-baseline", action="store_true", help="overwrite baseline.json")
     parser.add_argument(

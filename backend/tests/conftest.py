@@ -18,23 +18,34 @@ The result is that a test behaves identically whether your development database
 is empty or holds the full corpus — and nothing a test does can damage it.
 """
 
+import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from typing import Any
 
 import psycopg
 import pytest
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from app import observability
+from app.agents.checkpointer import setup_checkpointer
 from app.config import get_settings
 from app.db.session import get_session
 from app.main import app
 from app.observability import get_langfuse
+from app.rag.embeddings import FakeEmbedder
+from app.rag.generate import Citation, GeneratedAnswer
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
@@ -53,6 +64,11 @@ def _unavailable(reason: str) -> None:
 
 def _test_database_name() -> str:
     return f"{get_settings().postgres_db}_test"
+
+
+def _checkpointer_dsn(database: str) -> str:
+    """The same database, spelled for psycopg rather than SQLAlchemy."""
+    return _url(database, driver="psycopg").replace("postgresql+psycopg://", "postgresql://", 1)
 
 
 def _url(database: str, *, driver: str) -> str:
@@ -105,6 +121,13 @@ def test_database() -> Iterator[str]:
     config.set_main_option("script_location", str(BACKEND_DIR / "app" / "db" / "migrations"))
     config.set_main_option("sqlalchemy.url", _url(name, driver="psycopg"))
     command.upgrade(config, "head")
+
+    # LangGraph's checkpoint tables, created here rather than in a per-test
+    # fixture. `AsyncPostgresSaver.setup()` issues CREATE INDEX CONCURRENTLY,
+    # which by definition waits for every concurrent transaction to finish —
+    # and `db_session` holds one open for the whole test, so a test that set up
+    # the checkpointer itself hung forever, blocked on its own fixture.
+    asyncio.run(setup_checkpointer(_checkpointer_dsn(name)))
 
     yield _url(name, driver="asyncpg")
 
@@ -220,3 +243,179 @@ async def client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
         # In a finally: a failing test must not leave the override in place for
         # whatever runs next.
         app.dependency_overrides.pop(get_session, None)
+
+
+@pytest.fixture
+def checkpointer_dsn(test_database: str) -> str:
+    """A DSN for the checkpointer against the test database.
+
+    The tables already exist: `test_database` creates them, because
+    `setup()` runs CREATE INDEX CONCURRENTLY and cannot complete while any
+    transaction is open — including this test's own.
+    """
+    return _checkpointer_dsn(_test_database_name())
+
+
+# --- A fake chat model -------------------------------------------------------
+# Shared rather than defined per module: the research-agent tests need the same
+# fake the Phase 1 generation tests use, and importing across test modules to
+# get it would make one module's refactor break another's collection.
+
+
+class FakeChatModel:
+    """Returns a prepared structured output, chosen by the schema requested.
+
+    Keyed by schema because one graph run asks for two different ones: the
+    supervisor wants a `Routing` and the research agent wants a
+    `GeneratedAnswer`. A fake that returned a single object would satisfy
+    whichever node ran first and break the other.
+
+    Implements only `with_structured_output`, which is all either node uses.
+    """
+
+    def __init__(self, by_schema: dict[type, Any]) -> None:
+        self._by_schema = by_schema
+        self.schema: type | None = None
+        self.messages: list[Any] = []
+
+    def with_structured_output(self, schema: type, **_: object) -> "FakeChatModel":
+        self.schema = schema
+        return self
+
+    async def ainvoke(self, messages: Any, **_: object) -> Any:
+        self.messages = messages
+        if self.schema not in self._by_schema:
+            raise AssertionError(
+                f"FakeChatModel was not given a response for {self.schema!r}; "
+                f"it has {list(self._by_schema)}"
+            )
+        return self._by_schema[self.schema]
+
+
+def fake_model(answer: str, *citations: "Citation") -> Any:
+    """A chat model that will answer `answer` citing `citations`."""
+    return FakeChatModel(
+        {GeneratedAnswer: GeneratedAnswer(answer=answer, citations=list(citations))}
+    )
+
+
+def fake_graph_model(
+    *,
+    route: str = "research",
+    confidence: float = 0.9,
+    answer: str = "An answer.",
+    citations: "tuple[Citation, ...]" = (),
+    account_id: str = "AC-TEST01",
+    reason: str = "drift",
+    outcome: str = "propose",
+    detail: str = "",
+) -> Any:
+    """A chat model for a whole graph run: routes, then answers.
+
+    Any test that compiles the real graph needs one of these. Without it
+    `compile_graph` builds a real ChatOpenAI, whose cached async client
+    outlives each test's event loop — the symptom is "Event loop is closed"
+    inside the supervisor node, in the full suite but not in isolation.
+    """
+    from app.agents.nodes.action import ActionDecision
+    from app.agents.nodes.supervisor import Routing
+
+    return FakeChatModel(
+        {
+            Routing: Routing(route=route, confidence=confidence, reason="test"),  # type: ignore[arg-type]
+            ActionDecision: ActionDecision(
+                outcome=outcome,  # type: ignore[arg-type]
+                account_id=account_id,
+                reason=reason,
+                detail=detail,
+            ),
+            GeneratedAnswer: GeneratedAnswer(answer=answer, citations=list(citations)),
+        }
+    )
+
+
+@pytest.fixture
+async def an_account(db_session: AsyncSession) -> str:
+    """A client and account that exist. The test database is empty.
+
+    Needed by anything that proposes a rebalance, because the action agent
+    validates the account at proposal time: before it did, a proposal for an
+    account nobody had went all the way to a human for approval and only then
+    failed inside the tool.
+
+    `segment`, `account_type` and `mandate` are constrained to enumerations by
+    Phase 0's schema, so these are real values rather than placeholders.
+    """
+    from sqlalchemy import insert
+
+    from app.db.models.firm import Account, Client
+
+    await db_session.execute(
+        insert(Client).values(id="CL-TEST01", full_name="Test Client", segment="affluent")
+    )
+    await db_session.execute(
+        insert(Account).values(
+            id="AC-TEST01", client_id="CL-TEST01", account_type="GIA", mandate="discretionary"
+        )
+    )
+    return "AC-TEST01"
+
+
+@pytest.fixture
+async def saver(checkpointer_dsn: str) -> AsyncIterator[AsyncPostgresSaver]:
+    """A checkpointer on the test database, installed on the app.
+
+    The lifespan's own checkpointer points at development data, so leaving it
+    in place would have these tests resume real threads.
+    """
+    async with AsyncPostgresSaver.from_conn_string(checkpointer_dsn) as test_saver:
+        previous = getattr(app.state, "checkpointer", None)
+        previous_maker = getattr(app.state, "sessionmaker", None)
+        app.state.checkpointer = test_saver
+        # The streaming handler opens its own session from here. Without this
+        # it would reach for the global sessionmaker and write to development
+        # data — which is exactly what happened, and /usage read zero because
+        # the row was in the wrong database.
+        app.state.sessionmaker = async_sessionmaker(
+            create_async_engine(_url(_test_database_name(), driver="asyncpg")),
+            expire_on_commit=False,
+        )
+        # A fake model and embedder, for the same reason. Without this seam the
+        # streaming tests called a real provider: it costs money, and
+        # langchain_openai caches its httpx client globally, so the second such
+        # test in a fresh event loop failed on a client the first had created.
+        previous_model = getattr(app.state, "chat_model", None)
+        previous_embedder = getattr(app.state, "embedder", None)
+        app.state.chat_model = fake_graph_model(route="research", answer="A trade costs £9.95.")
+        app.state.embedder = FakeEmbedder()
+        try:
+            yield test_saver
+        finally:
+            app.state.checkpointer = previous
+            app.state.sessionmaker = previous_maker
+            app.state.chat_model = previous_model
+            app.state.embedder = previous_embedder
+
+
+@pytest.fixture(autouse=True)
+async def _no_committed_leftovers(test_database: str) -> AsyncIterator[None]:
+    """Clear the tables an HTTP test can commit to, before every test.
+
+    Most tests run inside `db_session`'s rolled-back transaction and leave
+    nothing behind. The streaming endpoint cannot: it opens its own session and
+    commits, which is the right behaviour for a `StreamingResponse` and means
+    its rows outlive the test. The Phase 2 usage tests count rows over the
+    whole table, so a committed row from an earlier test made them fail with
+    off-by-one counts that looked like bugs in aggregation.
+
+    Done before the test rather than after, so teardown ordering cannot leave a
+    DELETE waiting on a transaction another fixture still holds open.
+    """
+    engine = create_async_engine(_url(_test_database_name(), driver="asyncpg"))
+    try:
+        async with engine.begin() as connection:
+            for table in ("usage", "audit_log", "approvals", "tasks"):
+                await connection.execute(text(f"DELETE FROM {table}"))  # noqa: S608
+    finally:
+        await engine.dispose()
+    yield

@@ -4,15 +4,16 @@ Work top to bottom, with one exception noted below. Each phase ends with
 something that runs and a number you can put in the README. Tick boxes as you
 go; Claude Code reads this file to know where you are.
 
-**Running order.** `0 → 1 → 2 → 3 → 4a → 4 → 8 → 5 → 6 → 7 → 9 → 10`.
+**Running order.** `0 → 1 → 2 → 3 → 4a → 5 → 8 → 4 → 6 → 7 → 9 → 10`.
 
-Phase 8, the CI eval gate, moves up to run straight after Phase 4 rather than
-last. The README's central claim is that every change is measured by an eval
-suite in CI, which is currently false; the gate is about two days' work and
-protects every phase after it, so running it late means the phases that most
-need protecting are the ones that go without. Numbers are unchanged, because
-`docs/EXPERIMENTS.md`, `docs/EVALS.md` and several commit messages already
-reference phases by number.
+Phase 5 comes straight after the slice: the app demos worse than it works, and
+every further backend phase widens that gap. Phase 8, the CI eval gate, follows
+it rather than running last — the README claims every change is measured in CI,
+and the gate protects every phase after it. It sits after Phase 5 because the
+thresholds should be set once the answer path, including streaming, is stable.
+
+Numbers are unchanged, because `docs/EXPERIMENTS.md`, `docs/EVALS.md` and
+several commit messages already reference phases by number.
 
 Each remaining phase is labelled **Core**, **Important** or **Optional**. Core
 phases are the ones without which the README is not true.
@@ -143,34 +144,79 @@ One question, through a real graph, streamed to a real page, with one action a
 human must approve. The point is to make the whole path exist before deepening
 any layer, so every item here is deliberately the smallest version that works.
 
-- [ ] `AgentState` and the Postgres checkpointer — enough to resume one interrupted run
-- [ ] Supervisor routing between exactly **two** destinations, `research` and
-      `action`, plus refuse. Two is the minimum that makes routing a real
+**Tasks are listed in the order they are done, and the order is deliberate:
+riskiest first.** Sequencing by what is easiest to test would have put the tool
+registry — a dict with an enum — before the checkpointer, which is where the
+actual unknowns live. A spike settled those before any design was locked; see
+`docs/EXPERIMENTS.md`.
+
+- [x] **The SSE contract.** `shared/stream-events.ts` from ARCHITECTURE §6,
+      Pydantic mirrors in `backend/app/api/events.py`, and the contract test on
+      each side. Neither existed — Phase 0 left `shared/` holding only a
+      `.gitkeep`, so CLAUDE.md rule 5 had nothing to keep green
+- [x] **`AgentState` and the Postgres checkpointer**, with a committed test
+      proving interrupt → resume. Everything downstream depends on the state
+      shape, so it is settled early
+- [x] **Tool registry** with `READ`/`LOW`/`HIGH` tiers and **one** HIGH tool,
+      `propose_rebalance(account_id)`, writing a `ProposedAction` row. Cheap,
+      and the gate needs something to approve
+- [x] **The approval gate**: `interrupt()`, `GET /approvals?status=pending`
+      and `POST /approvals/{id}` taking `{decision, note}` as ARCHITECTURE §6
+      specifies — not the `/approve|reject` paths this line used to claim —
+      resume with `Command(resume=...)`, **and** the `audit_log` row for the
+      tool call and the decision. Done as one task rather than two: an approval
+      flow that does not write an audit row is one you have to go back and
+      thread logging through, and together the invariant can be a test from the
+      start — no tool executes without a row
+- [x] **Research agent** wrapping the existing Phase 1 retrieval — no new
+      retrieval work
+- [x] **Action agent** turning a request into a `ProposedAction`, never
+      executing it. ARCHITECTURE §3 names this node; this checklist went
+      straight from the tool registry to the gate and left it out, so routing
+      to `action` proposed nothing and the thread finished without pausing.
+      Found by streaming the slice end to end, not by a test — every test set
+      `pending_action` itself
+- [x] **Supervisor** routing between exactly **two** destinations, `research`
+      and `action`, plus refuse. Two is the minimum that makes routing a real
       decision rather than a pass-through
-- [ ] Research agent wrapping the existing Phase 1 retrieval — no new retrieval work
-- [ ] Tool registry with `READ`/`LOW`/`HIGH` tiers and **one** HIGH tool:
-      `propose_rebalance(account_id)`, writing a `ProposedAction` row
-- [ ] `interrupt()` approval gate; `POST /approvals/{id}/approve|reject`;
-      resume with `Command(resume=...)`
-- [ ] `audit_log` entry for the tool call and the decision
-- [ ] SSE streaming over the existing `shared/stream-events.ts` contract,
-      keeping the contract test green
-- [ ] Request path calls `record_usage`, with a test that a real request
-      produces a `usage` row
-- [ ] Minimal chat page: ask → stream tokens → route badge → citations →
-      approve or reject inline. No dashboards, no polish
-- [ ] `evals/datasets/routing_slice.jsonl` — ~18 cases across research / action
+- [x] **Stream graph events** over the contract from
+      `POST /threads/{id}/messages`. Mapping LangGraph's event stream onto our
+      ten event types is the remaining unknown, and its shape is
+      version-sensitive
+- [x] **Request path calls `record_usage`**, with a test that a real request
+      produces a `usage` row — `/usage` was built in Phase 2 and returns zeros
+      until something records, so without this it stays at zero and looks like
+      it works
+- [x] **Minimal chat page**: ask → route badge → answer → citations →
+      approve or reject inline. No dashboards, no polish. Deliberately not
+      "stream tokens": the answer arrives as one event, and streaming it is
+      Phase 5 rather than ticked here
+- [x] `evals/datasets/routing_slice.jsonl` — ~18 cases across research / action
       / refuse, including 4 deliberately ambiguous
-- [ ] `evals/datasets/actions_slice.jsonl` — ~15 cases asserting correct tool,
+- [x] `evals/datasets/actions_slice.jsonl` — ~15 cases asserting correct tool,
       correct tier, and `must_interrupt` for every HIGH call
+- [x] **Eval runner scores both slice files** — routing accuracy, and for
+      actions the **three-way outcome** (`propose` / `ask_account` /
+      `refuse`) plus the correct account. Scoring only proposed-or-not would
+      collapse asking and refusing into one bucket and lose the distinction
+      the dataset exists to measure. `expected_tool` is not reported while one
+      tool exists, and `must_interrupt` is reported as an invariant rather
+      than a discriminator
+- [x] **Action agent fix**, which `actions_slice.jsonl` landed red against:
+      distinguish asking which account from refusing, and validate the account
+      at proposal time. Today AC-99999 is proposed and only fails after a human
+      approves it, leaving an approved action that errored instead of a
+      proposal never made. **Phase 4a closes only when `actions_slice` is
+      green**
 
 **Done when:** a 60-second screen recording shows a question answered with
 citations, a rebalance proposed, the run pausing, a human approving, and the run
 resuming. Routing accuracy and interrupt compliance appear in the eval report.
 
 **Not in this phase:** restart safety (Phase 5), the portfolio/SQL agent and the
-full routing taxonomy (Phase 4), guardrails (Phase 6), the usage, documents and
-evals pages (Phase 7), and growing the slice datasets to full size (Phase 4).
+full routing taxonomy (Phase 4), guardrails (Phase 6), the usage and evals pages
+(Phase 7), the documents page (Phase 5), and growing the slice datasets to full
+size (Phase 4).
 The two `_slice` files stay separate rather than becoming `routing.jsonl` early,
 so an 18-case file never passes for the real thing.
 
@@ -189,9 +235,28 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       threshold, which is enough to make routing a real decision but not enough
       to need one
 - [ ] **Grow** `routing_slice.jsonl` into `evals/datasets/routing.jsonl`
-      (≥60 cases) covering every destination, and retire the slice file
+      (≥60 cases) covering every destination, and retire the slice file.
+      Two shapes the slice has none of: an instruction naming **no account id**,
+      and a message carrying **two requests at once**
+- [ ] **Decide whether an execution-only account is rebalanceable.** The
+      action agent checks only that the account exists, deliberately matching
+      `propose_rebalance`, which checks the same and nothing more — an agent
+      stricter than its own tool would diverge the two silently. So
+      `AC-00002`, an execution-only GIA, is proposable today and
+      `actions_slice.jsonl` expects that. If the firm's answer is no, the rule
+      belongs in the tool and the agent together, with a case in the dataset
+- [ ] **Revisit `route-vague-cash-01`.** "cash is piling up in AC-00005, is
+      that a problem" expects `research` today, because only the documents can
+      answer it. Once the portfolio agent can read the account's actual
+      allocation, the right destination may be `portfolio` — the question is
+      about this account's data, not about policy in the abstract
 - [ ] `evals/datasets/sql.jsonl` (≥40 cases, compared by **result rows**, not
       SQL text)
+- [ ] **More tools** — at least one further `HIGH` and one `LOW`, so the
+      registry is exercised rather than illustrated and tier handling is
+      tested on more than one row
+- [ ] **Grow** `actions_slice.jsonl` into `evals/datasets/actions.jsonl`
+      (≥30 cases), and retire the slice file
 - [ ] **Extend** the SSE contract with whatever events the portfolio agent needs,
       updating `shared/stream-events.ts` and `backend/app/api/events.py` together
       and keeping the contract test green
@@ -199,28 +264,51 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
 **Done when:** routing accuracy and SQL execution accuracy are in the eval
 report.
 
-## Phase 5 — Actions and human-in-the-loop, complete (1 week) · **Important**
+## Phase 5 — Usable chat and approvals (1 week) · **Core**
 
-*Phase 4a already built the tool registry with its three tiers, one HIGH tool,
-the `interrupt()` gate, the approve and reject endpoints, resume, and an
-`audit_log` entry for that one tool. This phase hardens all of it; those boxes
-are not repeated.*
+*The app demos worse than it works. Everything here is visible from the screen,
+and adds no new concepts.*
 
-- [ ] **Restart safety**, deferred from Phase 4a: a HIGH action interrupted
-      before a server restart resumes correctly after it. This is the
-      checkpointer's real test and the reason it exists
-- [ ] **More tools** — at least one further `HIGH` and one `LOW`, so the registry
-      is exercised rather than illustrated, and so tier handling is tested on
-      more than a single row
-- [ ] **Per-tool feature flags**, so a tool can be disabled without a deploy
-- [ ] **`audit_log` for every tool call and decision**, not only the Phase 4a
-      tool — with a test that asserts no tool can execute without a row
-- [ ] **Grow** `actions_slice.jsonl` into `evals/datasets/actions.jsonl`
-      (≥30 cases), and retire the slice file
+- [ ] **When re-running evals around streaming, ignore
+      `answer.refusal_correct` movement on `refusal-poa-policy-01`.** It is
+      bistable — 1 correct run in 5 on one commit, measured 2026-10-13 — so it
+      will appear to regress or improve for no reason and waste a day. Phase 6
+      fixes it; until then it is not evidence about a streaming change
+- [ ] **Show asking differently from refusing.** The action agent reports
+      `action_outcome` (`propose` / `ask_account` / `refuse`) in state as of
+      Phase 4a, so the distinction exists; nothing carries it to the screen.
+      `ask_account` is one reply away from a proposal and a refusal is a dead
+      end, and prose alone does not tell an adviser which they are looking at.
+      Per working rule 5 this means a new field on the SSE contract:
+      `shared/stream-events.ts` and `backend/app/api/events.py` change
+      together, with the contract test kept passing
+- [ ] Conversation history — the page keeps one turn and replaces it, so a
+      second question erases the first
+- [ ] Token streaming of the answer — approach chosen before building:
+      **(a)** parse the structured JSON as it streams, or **(c)** the model
+      writes prose and ends with verified citation tags. (a) leaves the
+      baseline untouched; (c) gives prose from the first token and keeps
+      verbatim quotes, but changes the prompt. A provider with native
+      citations would be a third option; this one runs OpenAI
+- [ ] Render the answer's markdown — `**£1,500**` currently shows literally
+- [ ] Approvals inbox
+- [ ] Show what an approved action actually did — today it says only
+      "the action has run"
+- [ ] Read-only documents page: `GET /documents` with name, chunk count and
+      last ingested
+- [ ] Restart safety: a HIGH action interrupted before a server restart
+      resumes after it
+- [ ] Re-run the full eval baseline before and after the streaming change, and
+      record the result in `docs/EXPERIMENTS.md`
 
-**Done when:** a HIGH-risk action pauses, appears in the approvals inbox, and
-resumes correctly after approve or reject, **including across a server
-restart** — the part Phase 4a deliberately leaves out.
+**Done when:** a 60-second recording shows a question answered with citations,
+a rebalance proposed, approved and confirmed — and the documents page shows
+what the answer was drawn from.
+
+**Where the old Phase 5 went.** `audit_log` for every tool call and decision was
+already done in Phase 4a — `execute()` is the single chokepoint and audits
+every attempt, including refusals. Per-tool feature flags are dropped as
+unnecessary here. More tools and growing `actions.jsonl` move to Phase 4.
 
 ## Phase 6 — Guardrails and safety evals (3–5 days) · **Core**
 
@@ -228,7 +316,8 @@ restart** — the part Phase 4a deliberately leaves out.
 owed from Phase 3 is fixed.*
 
 - [ ] Input guard: heuristic rules + LLM classifier
-- [ ] Output guard: citation verification, cross-client data check
+- [ ] Output guard: cross-client data check. Citation verification already
+      exists — `verify_citations` has been deterministic since Phase 1
 - [ ] Harden refusal against passage order. `refusal-poa-policy-01` refused
       correctly under one retrieval config and answered confidently and
       irrelevantly under another, **with the same six passages retrieved** and
@@ -236,6 +325,15 @@ owed from Phase 3 is fixed.*
       tags under several retrieval configurations, not one. Boilerplate
       stripping (Phase 3) becomes adoptable once this holds — it is worth
       +1.4 hit@1 at no runtime cost and was reverted only for this
+- [ ] **This case is worse than "config-dependent": it is bistable.** Measured
+      2026-10-13, the same question on the same commit refused correctly 1 of
+      5 times, and 3 of the 5 wrong answers asserted "the firm may not act
+      under a power of attorney" — a confident wrong answer, not a paraphrase.
+      So `answer.refusal_correct: 1.000` in `baseline.json` is not a
+      reproducible number, and **the Phase 8 CI gate must not gate on it until
+      this is fixed**, or the gate fails at random. `GATEABLE` in
+      `app/evals/report.py` is a label today and enforces nothing, which is the
+      only reason this has not already broken CI
 - [ ] Indirect injection test: a seeded document containing hidden instructions
 - [ ] `safety.jsonl` (≥40 attacks): must never trigger a HIGH tool without approval, never leak another client's data
 
@@ -243,12 +341,10 @@ owed from Phase 3 is fixed.*
 
 ## Phase 7 — Frontend polish (1 week) · **Important**
 
-*Someone will look at this. But Phase 4a's thin page already demos the flow,
-so this raises quality rather than enabling it.*
+*Phase 5 makes the app usable; this makes it good.*
 
-- [ ] Chat with streaming, route badge, agent timeline, citations drawer
-- [ ] Approvals inbox
-- [ ] Documents page
+- [ ] Agent timeline: tool calls as they run, each tagged with its risk tier
+- [ ] Citations drawer opening the source document at the cited page
 - [ ] Usage dashboard
 - [ ] Evals page (baseline vs latest, failing cases)
 - [ ] Dark mode, responsive, empty and error states
@@ -258,10 +354,21 @@ so this raises quality rather than enabling it.*
 
 ## Phase 8 — CI eval gate (2 days) · **Core**
 
-*Runs straight after Phase 4, not last. The README says every change is
-measured in CI; today that is false, and it is two days to make true.*
+*Runs after Phase 5, not last. The README says every change is measured in
+CI; today that is false, and it is two days to make true. It follows Phase 5 so
+the thresholds are set once the answer path, including streaming, is stable.*
 
 - [ ] `evals/thresholds.yaml`; fail CI if a metric drops below threshold or regresses more than X% vs baseline
+- [ ] **Do not gate on `answer.refusal_correct` until Phase 6 fixes it.**
+      Measured 2026-10-13, `refusal-poa-policy-01` refused correctly 1 run in
+      5 on the same commit, so the baseline's 1.000 is luck rather than a
+      measurement and a threshold on it fails at random. `GATEABLE` in
+      `app/evals/report.py` is a label that enforces nothing today, which is
+      the only reason this has not already bitten. Either Phase 6 lands first
+      or this metric starts report-only, stated in `thresholds.yaml`
+- [ ] **Set every threshold from several runs, not one.** Three runs of a
+      suite are cheap and the project has now been wrong twice by trusting a
+      single sample
 - [ ] Small smoke subset on every PR, full suite nightly
 - [ ] Post the metrics table as a PR comment
 
@@ -281,6 +388,13 @@ of the credit.*
       sensitive on its own, and a free read on how the system is used.
       It is unauthenticated today because nothing is deployed; shipping it
       as-is would publish that data
+- [ ] Authenticate `/approvals` before deployment, and **take `decided_by`
+      from the authenticated user rather than the request body**. Unauthenticated
+      it is worse than `/usage`: `/usage` leaks, `/approvals` *acts* — anyone
+      could approve a HIGH-risk action. And while the decider is a body field,
+      a real caller can attribute their own decision to someone else, which
+      makes the audit log worse than useless: it would name an approver who
+      never approved. Both are marked in `app/api/approvals.py`
 
 ## Phase 10 — Stretch modules · **Optional**
 

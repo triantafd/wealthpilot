@@ -207,6 +207,20 @@ class Settings(BaseSettings):
         return self._dsn("psycopg", self.postgres_user, self.postgres_password)
 
     @property
+    def database_url_checkpointer(self) -> str:
+        """DSN for LangGraph's checkpointer, which speaks plain psycopg.
+
+        A separate property because the prefix differs: SQLAlchemy wants
+        `postgresql+psycopg://` to pick a driver, psycopg itself rejects it.
+        The checkpointer therefore opens its own pool alongside the
+        application's asyncpg one — two pools against one database, which is
+        how the library is built rather than a mistake.
+        """
+        return self._dsn("psycopg", self.postgres_user, self.postgres_password).replace(
+            "postgresql+psycopg://", "postgresql://", 1
+        )
+
+    @property
     def database_url_ro(self) -> str:
         """Async DSN for the read-only role that executes generated SQL.
 

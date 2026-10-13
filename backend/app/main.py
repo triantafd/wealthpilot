@@ -11,20 +11,42 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from app import __version__
+from app.agents.checkpointer import checkpointer
+from app.api.approvals import router as approvals_router
+from app.api.threads import router as threads_router
 from app.api.usage import router as usage_router
 from app.config import get_settings
+from app.db.session import get_sessionmaker
 from app.observability import flush
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Flush buffered spans on shutdown.
+    """Open the graph's checkpointer for the process, and flush traces on exit.
 
-    Spans are batched on a background thread, so without this a trace from the
-    last request before a deploy is lost — which is the trace most worth
-    having. A no-op when tracing is disabled.
+    The checkpointer holds a connection pool, so it is opened once here rather
+    than per request: a pool per request would exhaust Postgres, and a pool
+    outliving its event loop raises "attached to a different loop" on the next
+    call. Handlers reach it through `app.state.checkpointer`.
+
+    Its tables are *not* created here. `setup()` issues CREATE INDEX
+    CONCURRENTLY, which cannot run inside a transaction and waits for every
+    concurrent one to finish, and two replicas booting together would race.
+    Run `python -m app.scripts.setup_checkpointer` alongside the migrations.
+
+    Spans are batched on a background thread, so without the flush a trace from
+    the last request before a deploy is lost — the trace most worth having. A
+    no-op when tracing is disabled.
     """
-    yield
+    async with checkpointer() as saver:
+        app.state.checkpointer = saver
+        # Published for the same reason: the streaming handler needs a session
+        # of its own — a dependency with `yield` is closed before a
+        # StreamingResponse finishes — and a handler reaching straight for
+        # `get_sessionmaker()` writes to whatever settings point at, which in a
+        # test is the development database.
+        app.state.sessionmaker = get_sessionmaker()
+        yield
     flush()
 
 
@@ -35,6 +57,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.include_router(approvals_router)
+app.include_router(threads_router)
 app.include_router(usage_router)
 
 
