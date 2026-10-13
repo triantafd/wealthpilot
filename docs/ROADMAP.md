@@ -300,7 +300,7 @@ screen.*
       eval case was a single message. A six-message window, plus
       `awaiting_account` and a code-enforced rule that an id from the history
       is only usable when a question was actually outstanding
-- [ ] **Contextualised retrieval, with (d).** History in the answer prompt is
+- [x] **Contextualised retrieval, with (d).** History in the answer prompt is
       not enough: the research agent searches with the latest message, so
       "and for a junior account?" retrieves against a meaningless query. The
       supervisor gains a `standalone_question` field — it already makes one
