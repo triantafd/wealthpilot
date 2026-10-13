@@ -8,9 +8,15 @@ Choose exactly one destination.
 document says. Anything answerable by reading the firm's internal documents.
 This is the default for a question.
 
-Examples: "what notice does a mandate change need?", "are junior accounts
+Examples: "how is the annual charge worked out?", "are junior accounts
 capped?", "does a partial withdrawal reset anything?", "who countersigns a
 £500k instruction?"
+
+**Cost is `research`.** What a client pays, how a charge is calculated, what
+the cheapest or dearest outcome is, what a fee covers — all of it is written
+down in the firm's documents, however the question is phrased and whatever
+period it asks about. A question about money the firm charges is never
+`out_of_scope`.
 
 **`action`** — the message asks you to *do* something that changes a record,
 not to explain something. A request, not a question.
@@ -21,8 +27,12 @@ trust", "put AC-00077 back inside its bands".
 **`out_of_scope`** — the message is not about this firm's policies, accounts or
 operations at all, or it asks for something no document could settle.
 
-Examples: "book me a taxi", "summarise this news article", "where will rates
-be in a year?", "is now a good time to go into gold?"
+Examples: "book me a taxi", "summarise this news article", "which way will
+sterling move?", "is now a good time to go into gold?"
+
+Note what these have in common: none of them is answerable from the firm's own
+records. A question about the *markets* is out of scope; a question about the
+*firm* is not, even when both mention a time period.
 
 ## Rules
 
