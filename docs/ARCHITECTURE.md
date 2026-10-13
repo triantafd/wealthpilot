@@ -128,7 +128,7 @@ type StreamEvent =
   | { type: "tool_start"; tool: string; tier: "READ" | "LOW" | "HIGH"; args: unknown }
   | { type: "tool_end"; tool: string; ms: number }
   | { type: "retrieval"; chunks: { id: number; documentId: string; page: number; score: number }[] }
-  | { type: "token"; text: string }
+  | { type: "token"; text: string; replace: boolean }
   | { type: "approval_required"; approvalId: string; action: ProposedAction }
   | { type: "citations"; items: { documentId: string; page: number; quote: string }[] }
   | { type: "guardrail"; flag: string }
@@ -137,6 +137,12 @@ type StreamEvent =
 ```
 
 Keep this in `shared/stream-events.ts` with a matching Pydantic model in `backend/app/api/events.py`. A contract test checks that both stay in sync.
+
+`token` arrives many times per turn. The research agent streams the answer as
+it is written, so most of these carry a delta to append; the last one of a turn
+sets `replace` and carries the finished text, which is the answer after its
+prose page references have been stripped. A client appends unless `replace` is
+set. `backend/app/api/stream.py` documents where each form comes from.
 
 ## 7. Frontend
 

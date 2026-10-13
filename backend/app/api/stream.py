@@ -12,13 +12,22 @@ emitting them needs a channel from `tools/registry.py` out to the stream. That
 is Phase 5 work, alongside the second and third tools. A client must therefore
 tolerate their absence, which a discriminated union already forces it to.
 
-**`token` carries the whole answer in one event, not a token at a time.** The
-research agent uses `with_structured_output`, so the answer is parsed from a
-complete JSON object — the individual tokens that stream are the JSON's, not
-prose a reader would want. Faking a token-by-token reveal from the finished
-string would be theatre. Real token streaming means generating prose and
-citations in two calls, which would change what the frozen baseline measures,
-so it is a deliberate later decision rather than an oversight.
+**`token` arrives in two forms, from two streams.** The research agent streams
+its answer, so most `token` events are deltas carried on LangGraph's `custom`
+stream: the node writes each piece of prose through
+`app/agents/nodes/research.py:prose_writer` while it is still running, because
+the `updates` stream reports a node only once it has returned. The last
+`token` event comes from the node's update instead and sets `replace`, handing
+the client the finished text — the streamed prose is the model's, and the
+finished text is the one with page references stripped out of it.
+
+That is also why the `messages` stream mode is not used: structured output
+means the model emits JSON, so those chunks are `{"ans`, `wer":"`, not prose.
+`app/rag/generate.py:ProseAccumulator` is what turns them back into text.
+
+A node that writes no prose — the clarifying turn, the action agent — produces
+exactly one `token` event, with `replace` set, which is the same thing it sent
+before any of this existed.
 """
 
 import time
@@ -85,12 +94,34 @@ def _citations_event(update: dict[str, Any]) -> CitationsEvent | None:
 
 
 def _token_event(update: dict[str, Any]) -> TokenEvent | None:
-    """The answer, as one event. See the module docstring."""
+    """The finished answer, replacing whatever was streamed.
+
+    `replace` rather than one more delta: this text has been through
+    `strip_prose_references`, and the streamed deltas have not. See the module
+    docstring.
+    """
     for message in reversed(update.get("messages") or []):
         text = getattr(message, "content", None)
         if isinstance(text, str) and text.strip():
-            return TokenEvent(text=text)
+            return TokenEvent(text=text, replace=True)
     return None
+
+
+def _custom_event(payload: Any) -> TokenEvent | None:
+    """A node's mid-run write, as a contract event.
+
+    The only producer today is the research agent's prose callback. An
+    unrecognised payload is ignored rather than raised on: a node writing
+    something this layer does not know about should not end a turn that is
+    already streaming to a reader.
+
+    Whitespace is not stripped, and emptiness is the only thing rejected: a
+    delta of " " is a word boundary in the answer.
+    """
+    if not isinstance(payload, dict):
+        return None
+    text = payload.get("token")
+    return TokenEvent(text=text) if isinstance(text, str) and text else None
 
 
 def _approval_event(chunk: Any) -> ApprovalRequiredEvent | None:
@@ -170,8 +201,18 @@ async def stream_turn(
         async for mode, chunk in graph.astream(
             initial_state(question, thread_id=thread_id, user_id=user_id),
             thread_config(thread_id),
-            stream_mode=["updates"],
+            # `custom` carries the answer as it is written; `updates` carries
+            # everything a node reports once it has finished.
+            stream_mode=["updates", "custom"],
         ):
+            if mode == "custom":
+                # Checked before the dict test below: a custom payload is a
+                # dict too, and reading it as a map of node names to updates
+                # would look for a node called "token".
+                streamed = _custom_event(chunk)
+                if streamed is not None:
+                    yield streamed
+                continue
             if mode != "updates" or not isinstance(chunk, dict):
                 continue
             for node, update in chunk.items():

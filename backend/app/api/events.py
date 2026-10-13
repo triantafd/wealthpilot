@@ -105,8 +105,20 @@ class RetrievalEvent(ContractModel):
 
 
 class TokenEvent(ContractModel):
+    """A piece of the answer, or the whole of it.
+
+    `replace` is how one event type does both jobs. The research agent streams
+    its answer as it is written, so most of these are deltas a client appends.
+    The last one carries the finished text with `replace=True`, because the
+    streamed prose is what the model produced and the finished text is what an
+    adviser should read: page references are stripped out of it afterwards
+    (`strip_prose_references`), and a client that only appended would show the
+    answer with the references still in.
+    """
+
     type: Literal["token"] = "token"
     text: str
+    replace: bool = False
 
 
 class ApprovalRequiredEvent(ContractModel):

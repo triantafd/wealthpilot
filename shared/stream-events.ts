@@ -65,7 +65,9 @@ export type StreamEvent =
   | { type: "tool_start"; tool: string; tier: Tier; args: Record<string, unknown> }
   | { type: "tool_end"; tool: string; ms: number }
   | { type: "retrieval"; chunks: RetrievedChunkRef[] }
-  | { type: "token"; text: string }
+  /** A piece of the answer to append — or, with `replace`, the finished text
+   *  to show instead of what was streamed. See `TokenEvent` in events.py. */
+  | { type: "token"; text: string; replace: boolean }
   | { type: "approval_required"; approvalId: string; action: ProposedAction }
   | { type: "citations"; items: Citation[] }
   | { type: "guardrail"; flag: string }

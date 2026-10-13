@@ -15,10 +15,12 @@ import { applyEvent, newTurn, type Turn, updateTurn } from "./turn";
  * verified citations, and an inline approve/reject when the graph pauses on a
  * HIGH-risk action.
  *
- * The answer arrives as one event rather than token by token. The research
- * agent uses structured output, so the model streams JSON fragments and the
- * usable prose only exists once the object closes — Phase 5 parses that
- * incrementally. Nothing here fakes a reveal from the finished string.
+ * The answer arrives in pieces, and nothing here fakes a reveal from a
+ * finished string. The research agent uses structured output, so the model
+ * streams JSON fragments; the backend grows the answer out of them with a
+ * partial parser and sends each piece as a `token` event. `applyEvent` appends
+ * them, and replaces the lot with the finished text when the turn ends — see
+ * `turn.ts`.
  *
  * The conversation is kept in this component and not reloaded from the server.
  * The checkpointer does persist every turn, but `GET /threads/{id}` returns

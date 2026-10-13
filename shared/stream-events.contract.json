@@ -45,6 +45,10 @@
       "text": {
         "kind": "string",
         "required": true
+      },
+      "replace": {
+        "kind": "boolean",
+        "required": true
       }
     },
     "approval_required": {

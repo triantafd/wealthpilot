@@ -16,11 +16,12 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.config import get_stream_writer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.conversation import has_prior_turn
 from app.rag.embeddings import Embedder
-from app.rag.generate import AnswerResult, answer_question
+from app.rag.generate import AnswerResult, ProseCallback, answer_question
 
 
 class NoQuestionError(ValueError):
@@ -104,6 +105,25 @@ def _citations(result: AnswerResult) -> list[dict[str, Any]]:
     ]
 
 
+def prose_writer() -> ProseCallback | None:
+    """LangGraph's custom-stream writer, as a prose callback.
+
+    This is how a node reaches the SSE layer while it is still running. The
+    `updates` stream reports a node only once it has returned, and the
+    `messages` stream would carry the raw JSON fragments of structured output
+    rather than prose, so neither can show an answer being written.
+    `app/api/stream.py` turns each payload back into a `token` event.
+
+    None outside a graph run: the node's unit tests call it directly, and a
+    test should not have to stand up a stream to check what the node returns.
+    """
+    try:
+        writer = get_stream_writer()
+    except RuntimeError:
+        return None
+    return lambda delta: writer({"token": delta})
+
+
 async def research_agent(
     state: dict[str, Any],
     session: AsyncSession,
@@ -113,7 +133,7 @@ async def research_agent(
     """Answer the thread's latest question from the documents."""
     question = question_to_answer(state)
 
-    result = await answer_question(session, embedder, chat_model, question)
+    result = await answer_question(session, embedder, chat_model, question, on_prose=prose_writer())
 
     return {
         "messages": [AIMessage(content=result.answer)],

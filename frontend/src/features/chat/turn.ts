@@ -58,9 +58,13 @@ export function applyEvent(turn: Turn, event: StreamEvent): Turn {
     case "retrieval":
       return { ...turn, retrievedCount: event.chunks.length };
     case "token":
-      // Appended, not replaced. The answer is one event today and Phase 7 will
-      // send it in pieces; appending is correct for both.
-      return { ...turn, answer: (turn.answer ?? "") + event.text };
+      // Two shapes, one event: a delta to append while the answer is being
+      // written, and the finished text at the end of the turn, which replaces
+      // what was streamed because page references have been stripped out of
+      // it. The backend decides which; see `TokenEvent` in app/api/events.py.
+      return event.replace
+        ? { ...turn, answer: event.text }
+        : { ...turn, answer: (turn.answer ?? "") + event.text };
     case "citations":
       return { ...turn, citations: event.items };
     case "approval_required":

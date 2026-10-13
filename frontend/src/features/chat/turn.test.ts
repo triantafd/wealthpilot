@@ -34,11 +34,32 @@ describe("applyEvent", () => {
   });
 
   it("appends tokens rather than replacing them", () => {
-    // The answer is one event today and Phase 7 will send it in pieces;
-    // appending is correct for both, and replacing would silently truncate
-    // the answer the day the backend changes.
-    let turn = applyEvent(start(), { type: "token", text: "The minimum is " });
-    turn = applyEvent(turn, { type: "token", text: "£1,500." });
+    // How the answer arrives while it is being written. Replacing here would
+    // show only the last few words of every answer.
+    let turn = applyEvent(start(), {
+      type: "token",
+      text: "The minimum is ",
+      replace: false,
+    });
+    turn = applyEvent(turn, { type: "token", text: "£1,500.", replace: false });
+
+    expect(turn.answer).toBe("The minimum is £1,500.");
+  });
+
+  it("shows the finished text instead of the streamed prose", () => {
+    // The last token event of a turn carries the answer after the backend has
+    // stripped its page references, so it replaces rather than appends. Doing
+    // this by appending would print the answer twice.
+    let turn = applyEvent(start(), {
+      type: "token",
+      text: "The minimum is £1,500 (page 1).",
+      replace: false,
+    });
+    turn = applyEvent(turn, {
+      type: "token",
+      text: "The minimum is £1,500.",
+      replace: true,
+    });
 
     expect(turn.answer).toBe("The minimum is £1,500.");
   });
@@ -89,7 +110,11 @@ describe("applyEvent", () => {
     // tool_start, tool_end and guardrail are in the contract and unemitted.
     // They must not blank the turn if the backend starts sending them before
     // this page handles them.
-    const withAnswer = applyEvent(start(), { type: "token", text: "£1,500." });
+    const withAnswer = applyEvent(start(), {
+      type: "token",
+      text: "£1,500.",
+      replace: true,
+    });
     const events: StreamEvent[] = [
       { type: "tool_start", tool: "propose_rebalance", tier: "HIGH", args: {} },
       { type: "tool_end", tool: "propose_rebalance", ms: 12 },
@@ -105,7 +130,9 @@ describe("applyEvent", () => {
     const events: StreamEvent[] = [
       { type: "route", route: "research", confidence: 0.9 },
       { type: "retrieval", chunks: [{ id: 1, documentId: "fee-schedule", page: 1, score: 0.9 }] },
-      { type: "token", text: "The minimum annual advisory fee is £1,500." },
+      { type: "token", text: "The minimum annual ", replace: false },
+      { type: "token", text: "advisory fee is £1,500.", replace: false },
+      { type: "token", text: "The minimum annual advisory fee is £1,500.", replace: true },
       { type: "citations", items: [{ documentId: "fee-schedule", page: 1, quote: "£1,500" }] },
       { type: "done", usage: { inputTokens: 10, outputTokens: 2, costUsd: 0.000001, ms: 100 } },
     ];

@@ -837,3 +837,44 @@ Phase 7.
 What this experiment bought: the regression was found for the price of two
 prompt-sized diffs and about twenty cents of model calls, before the SSE layer
 had been rebuilt on top of it. Splitting the task was worth more than the task.
+
+
+### What shipped instead: option (a), and why it needed no re-baseline
+
+Option (a) keeps the forced schema and streams the JSON it arrives in, growing
+the `answer` field with a partial parser. A spike established the two facts it
+depends on before any of it was built: langchain-openai's
+`with_structured_output` chain is model-then-parser, so streaming the model
+step gives the raw fragments the parser would otherwise swallow; and the
+request body of that streamed call is identical to the non-streaming one apart
+from `stream: true`. The spike read the second one off the wire, by patching
+`openai._base_client.AsyncAPIClient.post` rather than the resource class —
+langchain reaches the provider through `with_raw_response.create`, which walks
+straight past a patch on `AsyncCompletions.create`.
+
+An identical request means the baseline still describes what runs, so there was
+nothing to re-measure. The smoke suite was run anyway, because a claim like
+that is worth one minute and nine tenths of a cent:
+
+| metric | before | after | after (2nd run) |
+|---|---|---|---|
+| `citations.validity` | 0.963 | 0.963 | 0.963 |
+| `answer.must_include` | 0.889 | 0.889 | 0.889 |
+| `answer.refusal_correct` | 1.000 | 1.000 | 1.000 |
+| `answer.no_prose_refs` | 1.000 | 1.000 | 1.000 |
+| `retrieval.mrr` | 0.693 | 0.693 | 0.693 |
+| `ops.errors` | 0 | 0 | 0 |
+| `answer.prose_refs_written` (report-only) | 8.0 | 11.0 | 11.0 |
+
+The last row is the only movement, and it is noise rather than a finding: a
+second run of the *old* code gave 13.0. It counts page references the model
+wrote into its prose, all of which are stripped, which is why
+`answer.no_prose_refs` stays at 1.000 either way.
+
+The equality that makes all of this true is now a test rather than a result.
+`tests/test_generate_streaming.py` builds the configured model twice against a
+stubbed httpx transport — no network, no key — records both request bodies and
+asserts they match apart from the stream flags, naming `response_format` in
+particular, because a forced tool call instead of a JSON schema is exactly what
+option (c) changed. A langchain upgrade that reshapes the chain fails that test
+instead of quietly costing seven answers.

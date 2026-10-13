@@ -312,28 +312,27 @@ screen.*
       "and for a junior account?" eval case, and smoke re-run — which should
       not move, because the RAG suite calls `answer_question` directly and
       never passes through the supervisor
-- [ ] **Token streaming of the answer. Option (c) was tried and rejected —
-      decision pending.** (c) was prose with the citations as trailing
-      `<citation document="…" page="N">quote</citation>` tags, parsed and
-      verified after the fact. It was built, measured over three runs each way
-      against three before-runs, and reverted: it costs
-      `answer.refusal_correct` **1.000 → 0.902** and `answer.must_include`
-      **0.942 → 0.880**, because seven questions the structured model answered
-      correctly now get the refusal sentence instead. The cause is not the
-      prompt wording — removing the new section entirely leaves the prompt
-      byte-identical to the before-run's and it still over-refuses — and not
-      the position of the refusal instruction either. What is left is the
-      forced function call: filling a schema makes refusing cost the model an
-      explicit sentence in a field described as the answer, where in free prose
-      refusing is the cheapest output available. `citations.validity` stayed
-      inside its band at 0.960 and `citations.malformed` was 0.0, so the model
-      followed the tag format exactly — the format was never the problem. Full
-      numbers and both failed hypotheses in `docs/EXPERIMENTS.md`. **Next: a
-      spike, not a build** — whether LangChain streams partial structured
-      output for OpenAI and the `GeneratedAnswer` schema, which would be option
-      (a) and keeps the measured refusal behaviour. If that is not cheaply
-      possible, Phase 5 ships no token streaming: a "thinking…" state instead,
-      and token streaming moves to Phase 7
+- [x] **Token streaming of the answer, by streaming the structured output.**
+      The answer appears as it is written, and the request is unchanged: the
+      model still fills the `GeneratedAnswer` schema, and
+      `app/rag/generate.py:ProseAccumulator` grows the `answer` field out of
+      the arriving JSON with a partial parser. The deltas reach the browser on
+      LangGraph's `custom` stream, written by the research node while it is
+      still running, because `updates` only reports a node once it has
+      returned and `messages` would carry the JSON fragments. The turn's last
+      `token` event sets a new `replace` flag and carries the finished text,
+      which is what strips the page references off what was streamed.
+      Before/after on the smoke suite: every gated metric identical
+      (`citations.validity` 0.963, `answer.must_include` 0.889,
+      `answer.refusal_correct` 1.000, `answer.no_prose_refs` 1.000,
+      `ops.errors` 0), as expected from a request that did not change.
+      `answer.prose_refs_written` is report-only and moved 8 → 11, which is
+      noise: a second run of the old code gave 13. The claim the whole thing
+      rests on — that streaming sends the same bytes as invoking — is a test
+      against a stubbed transport (`tests/test_generate_streaming.py`), not a
+      measurement to be redone. Option (c), which did change the request and
+      cost ten points of refusal accuracy, is written up in
+      `docs/EXPERIMENTS.md`
 - [ ] Render the answer's markdown — `**£1,500**` currently shows literally
 - [ ] **Show asking differently from refusing.** The action agent reports
       `action_outcome` (`propose` / `ask_account` / `refuse`) in state as of
@@ -473,6 +472,12 @@ owed from Phase 3 is fixed.*
 *Phase 5 makes the app usable; this makes it good.*
 
 - [ ] Agent timeline: tool calls as they run, each tagged with its risk tier
+- [ ] Put `retrieval` back in front of the answer in the timeline. Token
+      streaming left it behind: the deltas come from the research node while it
+      runs, and `retrieved` only lands with the node's update, so the badge
+      appears after the prose it preceded. The fix is to write retrieval to the
+      custom stream too, which means stopping the node's update from emitting
+      it a second time — the same duplicate-event problem `route` already had
 - [ ] Citations drawer opening the source document at the cited page
 - [ ] Usage dashboard
 - [ ] Evals page (baseline vs latest, failing cases)
