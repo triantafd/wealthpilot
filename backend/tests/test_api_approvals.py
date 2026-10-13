@@ -174,6 +174,13 @@ async def test_deciding_twice_is_a_conflict(
     assert second.status_code == 409
     assert (await get_approval(db_session, approval_id)).decided_by == "adviser-7"
 
+    # The message, not just the code. The second reviewer has to be told what
+    # happened and by whom; "failed with 409" is not something to show a
+    # person, and the frontend renders this `detail` verbatim.
+    detail = second.json()["detail"]
+    assert "already" in detail and "approved" in detail
+    assert "adviser-7" in detail, f"the conflict must name who decided it first: {detail!r}"
+
 
 async def test_deciding_an_unknown_approval_is_a_404(client: AsyncClient) -> None:
     response = await client.post(

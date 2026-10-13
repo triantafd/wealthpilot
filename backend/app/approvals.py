@@ -193,20 +193,52 @@ async def decide(
             f"approval {approval_id} is already {row.status!r}, decided by {row.decided_by!r}"
         )
 
-    await session.execute(
-        update(Approval)
-        .where(Approval.id == approval_id)
-        # Only a pending row may be decided, enforced here as well as checked
-        # above: two reviewers clicking at once would otherwise both pass the
-        # read and the second would overwrite the first.
-        .where(Approval.status == "pending")
-        .values(
-            status=_STATUS[decision],
-            decided_by=decided_by,
-            decided_at=datetime.now(UTC),
-            decision_note=note,
+    # The guard and the check on what it matched are one unit. The `where`
+    # alone stops the second reviewer overwriting the first, which is what the
+    # read above cannot do — but it does not tell this function that it
+    # matched nothing, and a decision that did not apply used to fall straight
+    # through to the audit insert and then return the *winner's* row. A
+    # reviewer who pressed reject got HTTP 200 and status "approved", and the
+    # audit log kept two contradictory decisions for one approval with nothing
+    # saying which took effect. The phantom audit row is the worse half: a
+    # status code is transient and an audit row is permanent.
+    #
+    # At READ COMMITTED — confirmed to be this server's default — the loser's
+    # UPDATE blocks on the winner's row lock, re-evaluates the `where` when the
+    # lock clears, and matches no row. So `None` here means exactly "someone
+    # else decided it first", which is what AlreadyDecidedError says.
+    #
+    # This is the pattern `registry._claim_approval` already uses to spend an
+    # approval; the two now read the same way.
+    decided = (
+        await session.execute(
+            update(Approval)
+            .where(Approval.id == approval_id)
+            .where(Approval.status == "pending")
+            .values(
+                status=_STATUS[decision],
+                decided_by=decided_by,
+                decided_at=datetime.now(UTC),
+                decision_note=note,
+            )
+            .returning(Approval.id)
         )
-    )
+    ).scalar_one_or_none()
+    if decided is None:
+        # Raised before the audit insert, so a decision that did not apply
+        # leaves no trace claiming it did. Re-read for the message: the winner
+        # committed while this transaction was waiting, so the row fetched
+        # above still says "pending".
+        current = (
+            await session.execute(
+                select(Approval.status, Approval.decided_by).where(Approval.id == approval_id)
+            )
+        ).one_or_none()
+        status = current.status if current else "unknown"
+        winner = current.decided_by if current else None
+        raise AlreadyDecidedError(
+            f"approval {approval_id} is already {status!r}, decided by {winner!r}"
+        )
 
     await session.execute(
         insert(AuditLogEntry).values(
