@@ -277,7 +277,7 @@ screen.*
 
 ### First, because a reviewer currently gets the opposite of what they clicked
 
-- [ ] **A concurrent approve and reject reports the loser as success.**
+- [x] **A concurrent approve and reject reports the loser as success.**
       `decide()` guards its UPDATE with `.where(status == "pending")` and a
       comment reasoning about two reviewers clicking at once, but never checks
       that the update hit a row. The loser falls through, writes a
@@ -293,15 +293,25 @@ screen.*
 
 - [x] Conversation history — the page keeps one turn and replaces it, so a
       second question erases the first
-- [ ] **Make the conversation survive a refresh.** History lives in the
-      component, so reloading loses it even though the checkpointer has every
-      turn. `GET /threads/{id}` returns messages as role and content only — no
-      citations, no per-turn route, no cost — so restoring from it today would
-      redraw the questions and answers with the evidence missing, which is
-      worse than an honest empty page. Needs that endpoint to return the whole
-      turn, which overlaps with "show what an approved action actually did", so
-      it goes after the inbox. The thread id also has to outlive the page: it
-      is a `useRef` today
+- [x] **Agents see recent turns, so the `ask_account` reply works.** Every
+      agent read only the latest human message, so a bare account id answering
+      "which account?" routed to `out_of_scope` at confidence 0.90 and the
+      agent asked again — `ask_account` scored 100% throughout, because every
+      eval case was a single message. A six-message window, plus
+      `awaiting_account` and a code-enforced rule that an id from the history
+      is only usable when a question was actually outstanding
+- [ ] **Contextualised retrieval, with (d).** History in the answer prompt is
+      not enough: the research agent searches with the latest message, so
+      "and for a junior account?" retrieves against a meaningless query. The
+      supervisor gains a `standalone_question` field — it already makes one
+      structured call per turn and already has the conversation, so the
+      rewrite costs no extra call and no extra latency. **Research ignores it
+      when there is no prior turn**, enforced in code rather than asked of the
+      prompt: a paraphrase of a question that already stood alone would change
+      retrieval for every question and move the whole baseline. Needs the
+      "and for a junior account?" eval case, and smoke re-run — which should
+      not move, because the RAG suite calls `answer_question` directly and
+      never passes through the supervisor
 - [ ] **Token streaming of the answer — decided: option (c).** The model
       writes plain markdown prose and ends with its citations as
       `<citation filename='…' page_number='N'>verbatim quote</citation>`,
@@ -329,6 +339,15 @@ record that cannot answer the question.*
 
 - [ ] Approvals inbox, showing for each decided approval **who approved it and
       which execution it authorised** — which requires the three items below
+- [ ] **Make the conversation survive a refresh.** History lives in the
+      component, so reloading loses it even though the checkpointer has every
+      turn. `GET /threads/{id}` returns messages as role and content only — no
+      citations, no per-turn route, no cost — so restoring from it today would
+      redraw the questions and answers with the evidence missing, which is
+      worse than an honest empty page. Needs that endpoint to return the whole
+      turn, which overlaps with "show what an approved action actually did", so
+      it goes after the inbox. The thread id also has to outlive the page: it
+      is a `useRef` today
 - [ ] **The audit log cannot say who authorised an execution.**
       `audit_log.approval_id` and `audit_log.approver` exist, and the model's
       own docstring says to write "every call (args, result, approver)" there
