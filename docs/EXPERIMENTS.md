@@ -735,3 +735,105 @@ have been a migration that drops LangGraph's tables.
 
 About twenty minutes, one throwaway file, and the spike's test thread was
 deleted from the checkpointer tables afterwards.
+
+## Phase 5 — Prose with trailing citations (option (c)): measured, and it costs refusals
+
+The streaming half of the task was split off deliberately, so that a change to
+the answer prompt could be measured before the SSE layer was rebuilt on top of
+it. It was the right split: the generation change regresses the suite, and the
+cause is not the prompt wording.
+
+**What changed.** `generate_answer` stopped asking for
+`with_structured_output(GeneratedAnswer)` and asked for prose instead, with
+citations as `<citation document="…" page="N">quote</citation>` tags parsed and
+verified afterwards. Nothing else moved: same retrieval, same model, same
+corpus, same cases.
+
+### Before and after, three runs each, 75 cases, `gpt-4o-mini`
+
+| metric | before (`33e7026`) | after | |
+|---|---|---|---|
+| answer.refusal_correct | **1.000** ±0.000 | **0.902** ±0.006 | −9.8 pts |
+| answer.must_include | 0.942 ±0.006 | 0.880 ±0.000 | −6.2 pts |
+| citations.validity | 0.987 ±0.011 | 0.960 ±0.000 | −2.7 pts (2 cases) |
+| answer.faithfulness | 0.881 ±0.003 | 0.861 ±0.009 | report-only |
+| answer.relevancy | 0.609 ±0.014 | 0.616 ±0.004 | report-only |
+| answer.prose_refs_written | 14.3 | 5.0 | **better** |
+| citations.malformed | — | 0.0 | the format is followed |
+| ops.p50_latency_ms | 1577 | 1501 | |
+| retrieval.* | unchanged | unchanged | deterministic |
+
+Reports: `20261013-154820.json` (before), `20261013-160027.json` (after).
+
+**The regression is one behaviour.** Refusals went from 5 of 75 to 12 of 75.
+Seven questions the structured model answered correctly — and answered in all
+three before-runs, since `refusal_correct` was 1.000 ±0.000 — now get
+*"The documents provided do not answer this question."*:
+`fee-etf-trade-01`, `mandate-consent-01`, `restriction-not-a-restriction-01`,
+`partial-isa-death-01`, `vague-drawdown-age-01`, `id-ticker-ocf-01`,
+`id-ticker-risk-01`. They also fail `must_include`, which is the whole of that
+metric's drop. `citations.validity` moved on two unrelated cases
+(`alloc-aggressive-equity-01`, `breach-report-time-01`, 1.00 → 0.00 each) —
+within the before-run's own spread, and not the same fault.
+
+The five cases that *should* refuse still refuse, in every variant below. The
+model has not become more cautious in general; it takes the escape hatch on the
+hard questions — synthesis, a table lookup, a vaguely worded one.
+
+### Two guesses, both wrong
+
+Twelve cases (the seven that broke, the five that must refuse), one run per
+variant. Cheaper than a suite per guess, and it rules a cause in or out.
+
+| prompt variant | correct |
+|---|---|
+| as written | 5/12 |
+| the new citation section's refusal bullet removed | 7/12 |
+| the whole new citation section removed | 5/12 |
+
+Removing the section entirely leaves the prompt byte-identical to the one the
+before-run used, and it still over-refuses. **So the new prompt text is not the
+cause.**
+
+Second guess: the refusal sentence is the last line of the human message, and
+the last line is the loudest. Same words, three positions:
+
+| escape-hatch position | correct |
+|---|---|
+| after the question (today) | 5/12 |
+| before the passages | 7/12 |
+| before the question | 8/12 |
+
+Position moves it, but does not fix it, and single runs of 12 cases cannot tell
+7 from 8. The over-refusal survives every framing.
+
+### What is left, and what it means
+
+The remaining difference is the shape of the request. Under
+`with_structured_output` the provider is given a schema and the model emits a
+function call it has to fill: writing nothing in `answer` is not available, so
+refusing costs it an explicit sentence in a field whose description said *"The
+answer, written for an adviser."* In free prose, refusing is the cheapest
+output there is. That is a property of option (c) itself, not of this
+implementation of it.
+
+So the cost of streamable prose, as decided, is about ten points of refusal
+accuracy — on a metric whose gate in `evals/thresholds.yaml` is 1.00 and whose
+whole point is that the assistant does not decline questions the documents
+answer. Chasing it with a stronger anti-refusal rule in the prompt is available
+and is not being done: the only judge of such a rule would be these same
+cases, which is teaching to the test with extra steps.
+
+**Rejected and reverted**, along with the `citations.malformed` metric that
+only existed to watch the tags — so nothing in the tree now reads as if this
+shipped. The alternative is option (a): keep the forced function call and
+stream the `answer` field out of the arriving JSON with an incremental parser.
+It pays a few tokens of `{"answer":"` before the first readable character and
+keeps the refusal behaviour measured here, and whether LangChain will do it for
+this provider and schema is the next thing to find out — a spike, not a build.
+If it will not, Phase 5 ships a "thinking…" state and token streaming moves to
+Phase 7.
+
+What this experiment bought: the regression was found for the price of two
+prompt-sized diffs and about twenty cents of model calls, before the SSE layer
+had been rebuilt on top of it. Splitting the task was worth more than the task.

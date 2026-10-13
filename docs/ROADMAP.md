@@ -312,15 +312,28 @@ screen.*
       "and for a junior account?" eval case, and smoke re-run — which should
       not move, because the RAG suite calls `answer_question` directly and
       never passes through the supervisor
-- [ ] **Token streaming of the answer — decided: option (c).** The model
-      writes plain markdown prose and ends with its citations as
-      `<citation filename='…' page_number='N'>verbatim quote</citation>`,
-      which are verified after the prose has streamed. Chosen over (a),
-      parsing the structured JSON as it arrives, because prose arrives from
-      the first token and the verbatim quote is preserved for verification;
-      the cost is that the answer prompt changes, so the baseline must be
-      re-measured either side. A provider with native citations would be a
-      third option; this one runs OpenAI
+- [ ] **Token streaming of the answer. Option (c) was tried and rejected —
+      decision pending.** (c) was prose with the citations as trailing
+      `<citation document="…" page="N">quote</citation>` tags, parsed and
+      verified after the fact. It was built, measured over three runs each way
+      against three before-runs, and reverted: it costs
+      `answer.refusal_correct` **1.000 → 0.902** and `answer.must_include`
+      **0.942 → 0.880**, because seven questions the structured model answered
+      correctly now get the refusal sentence instead. The cause is not the
+      prompt wording — removing the new section entirely leaves the prompt
+      byte-identical to the before-run's and it still over-refuses — and not
+      the position of the refusal instruction either. What is left is the
+      forced function call: filling a schema makes refusing cost the model an
+      explicit sentence in a field described as the answer, where in free prose
+      refusing is the cheapest output available. `citations.validity` stayed
+      inside its band at 0.960 and `citations.malformed` was 0.0, so the model
+      followed the tag format exactly — the format was never the problem. Full
+      numbers and both failed hypotheses in `docs/EXPERIMENTS.md`. **Next: a
+      spike, not a build** — whether LangChain streams partial structured
+      output for OpenAI and the `GeneratedAnswer` schema, which would be option
+      (a) and keeps the measured refusal behaviour. If that is not cheaply
+      possible, Phase 5 ships no token streaming: a "thinking…" state instead,
+      and token streaming moves to Phase 7
 - [ ] Render the answer's markdown — `**£1,500**` currently shows literally
 - [ ] **Show asking differently from refusing.** The action agent reports
       `action_outcome` (`propose` / `ask_account` / `refuse`) in state as of
