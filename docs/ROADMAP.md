@@ -403,6 +403,15 @@ owed from Phase 3 is fixed.*
 - [ ] Input guard: heuristic rules + LLM classifier
 - [ ] Output guard: cross-client data check. Citation verification already
       exists — `verify_citations` has been deterministic since Phase 1
+- [ ] **`uv run pytest -m llm` fails as a set, and CLAUDE.md documents it.**
+      Each of the four files holding a real-model test passes alone; run
+      together, one fails with "Event loop is closed". The provider client
+      holds a connection pool bound to the loop that created it, and clearing
+      `get_chat_model`'s `lru_cache` does not help because the pool is inside
+      the SDK's client. Pre-existing — verified on a tree without the
+      contextualised-retrieval work — and the reason every other `llm` test is
+      the only one in its file. `tests/test_contextualised_retrieval.py` shows
+      the workaround: a module-scoped loop plus a module-scoped model fixture
 - [ ] Harden refusal against passage order. `refusal-poa-policy-01` refused
       correctly under one retrieval config and answered confidently and
       irrelevantly under another, **with the same six passages retrieved** and
@@ -476,6 +485,11 @@ the thresholds are set once the answer path, including streaming, is stable.*
 - [ ] **Set every threshold from several runs, not one.** Three runs of a
       suite are cheap and the project has now been wrong twice by trusting a
       single sample
+- [ ] **`citations.validity` also varies, and by more than it looks.** Seven
+      smoke runs measured 0.926 to 1.000 while `retrieval.mrr` sat at exactly
+      0.693 every time, so the movement is the model's quote wording, not
+      retrieval. Any threshold on it has to sit below the observed floor, or
+      be set on the full suite where one case moves it less
 - [ ] Small smoke subset on every PR, full suite nightly
 - [ ] Post the metrics table as a PR comment
 

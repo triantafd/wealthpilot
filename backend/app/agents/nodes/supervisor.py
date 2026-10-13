@@ -44,6 +44,14 @@ class Routing(BaseModel):
     reason: str = Field(
         description="One short clause on why, for the trace. Not shown to the adviser."
     )
+    standalone_question: str = Field(
+        default="",
+        description=(
+            "The latest message restated so it can be understood on its own, "
+            "resolving anything that refers back to the conversation. Repeat "
+            "the message word for word when it already stands alone."
+        ),
+    )
 
 
 async def supervise(state: dict[str, Any], chat_model: BaseChatModel) -> dict[str, Any]:
@@ -70,6 +78,10 @@ async def supervise(state: dict[str, Any], chat_model: BaseChatModel) -> dict[st
     return {
         "route": routing.route,
         "route_confidence": routing.confidence,
+        # Carried for the research agent, which searches with it. Written
+        # whatever the route: a cheap field nobody reads costs nothing, and
+        # making it conditional would mean one more thing that can be absent.
+        "standalone_question": routing.standalone_question.strip(),
         "usage": {"inputTokens": usage.input_tokens, "outputTokens": usage.output_tokens},
     }
 

@@ -18,6 +18,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.conversation import has_prior_turn
 from app.rag.embeddings import Embedder
 from app.rag.generate import AnswerResult, answer_question
 
@@ -43,6 +44,28 @@ def last_question(state: dict[str, Any]) -> str:
             if text.strip():
                 return text
     raise NoQuestionError("no human message in state to answer")
+
+
+def question_to_answer(state: dict[str, Any]) -> str:
+    """What to retrieve and answer with.
+
+    The supervisor's standalone rewrite when there is a conversation to resolve
+    against, and the raw message otherwise.
+
+    **The first-turn rule is enforced here, not asked of the prompt.** With no
+    prior turn there is nothing to resolve, so a rewrite can only paraphrase a
+    question that already stood alone — and a paraphrase changes retrieval for
+    every question ever asked, moving the whole baseline for no reason. The
+    prompt does say to repeat such a message verbatim; this makes it true
+    regardless, on the same principle as the action agent's downgrades: code
+    may make the behaviour safer, and the model cannot override it.
+    """
+    message = last_question(state)
+    if not has_prior_turn(state):
+        return message
+
+    rewritten = (state.get("standalone_question") or "").strip()
+    return rewritten or message
 
 
 def _chunk_refs(result: AnswerResult) -> list[dict[str, Any]]:
@@ -88,7 +111,7 @@ async def research_agent(
     chat_model: BaseChatModel,
 ) -> dict[str, Any]:
     """Answer the thread's latest question from the documents."""
-    question = last_question(state)
+    question = question_to_answer(state)
 
     result = await answer_question(session, embedder, chat_model, question)
 

@@ -113,6 +113,11 @@ class AgentState(TypedDict, total=False):
     # pass, so a message that is not a reply ends the clarification rather than
     # leaving it open for something later to resolve against.
     awaiting_account: bool
+    # The latest message restated to stand on its own, from the supervisor.
+    # Retrieval uses it, because searching with "and for a junior account?"
+    # matches nothing useful. Only ever consulted when there *is* a prior
+    # turn — see `research_agent`.
+    standalone_question: str | None
     guardrail_flags: Annotated[list[str], operator.add]
 
     # The approval the gate created, kept in the state because LangGraph re-runs
@@ -147,6 +152,7 @@ def initial_state(question: str, *, thread_id: str, user_id: str | None = None) 
         pending_action=None,
         action_outcome=None,
         awaiting_account=False,
+        standalone_question=None,
         guardrail_flags=[],
         approval_id=None,
         action_result=None,
