@@ -79,7 +79,7 @@ async def test_asking_which_account_is_its_own_outcome(db_session: AsyncSession)
     )
 
     assert update["action_outcome"] == "ask_account"
-    assert "pending_action" not in update
+    assert update["pending_action"] is None
     assert "?" in str(update["messages"][0].content)
 
 
@@ -94,7 +94,7 @@ async def test_refusing_is_distinct_from_asking(db_session: AsyncSession) -> Non
     )
 
     assert update["action_outcome"] == "refuse"
-    assert "pending_action" not in update
+    assert update["pending_action"] is None
 
 
 async def test_the_outcome_is_flagged_for_the_audit_trail(db_session: AsyncSession) -> None:
@@ -118,7 +118,7 @@ async def test_an_unknown_account_is_refused_at_proposal_time(db_session: AsyncS
     )
 
     assert update["action_outcome"] == "refuse"
-    assert "pending_action" not in update
+    assert update["pending_action"] is None
     assert "AC-99999" in str(update["messages"][0].content)
 
 
@@ -128,7 +128,7 @@ async def test_a_proposal_without_an_id_becomes_a_question(db_session: AsyncSess
     update = await _run("rebalance it", db_session, _model(outcome="propose", account_id=""))
 
     assert update["action_outcome"] == "ask_account"
-    assert "pending_action" not in update
+    assert update["pending_action"] is None
 
 
 async def test_a_refusal_is_never_upgraded_to_a_proposal(
@@ -144,7 +144,7 @@ async def test_a_refusal_is_never_upgraded_to_a_proposal(
     )
 
     assert update["action_outcome"] == "refuse"
-    assert "pending_action" not in update
+    assert update["pending_action"] is None
 
 
 async def test_asking_is_never_upgraded_either(db_session: AsyncSession, an_account: str) -> None:
@@ -155,7 +155,7 @@ async def test_asking_is_never_upgraded_either(db_session: AsyncSession, an_acco
     )
 
     assert update["action_outcome"] == "ask_account"
-    assert "pending_action" not in update
+    assert update["pending_action"] is None
 
 
 # --- Cross-checks ------------------------------------------------------------
@@ -205,8 +205,10 @@ async def test_every_outcome_sets_the_field(
 ) -> None:
     """Nothing may leave the field unset: the scorer treats a missing outcome
     as an error rather than guessing, and so should any other reader."""
+    # The message names the account, because a proposal whose id appears
+    # nowhere in it is downgraded to a question — see the narrow id rule.
     update = await _run(
-        "rebalance something",
+        f"rebalance {an_account}",
         db_session,
         _model(outcome=outcome, account_id=an_account, detail="x"),
     )

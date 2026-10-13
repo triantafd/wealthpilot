@@ -271,12 +271,18 @@ class FakeChatModel:
     whichever node ran first and break the other.
 
     Implements only `with_structured_output`, which is all either node uses.
+
+    A value may be a **list**, for a thread where the same node is asked twice
+    and should answer differently — the clarifying turn asks which account and
+    then proposes. Responses are taken in order and the last one repeats, so a
+    test states only as many as it cares about.
     """
 
     def __init__(self, by_schema: dict[type, Any]) -> None:
         self._by_schema = by_schema
         self.schema: type | None = None
         self.messages: list[Any] = []
+        self.calls: dict[type, int] = {}
 
     def with_structured_output(self, schema: type, **_: object) -> "FakeChatModel":
         self.schema = schema
@@ -289,7 +295,16 @@ class FakeChatModel:
                 f"FakeChatModel was not given a response for {self.schema!r}; "
                 f"it has {list(self._by_schema)}"
             )
-        return self._by_schema[self.schema]
+        prepared = self._by_schema[self.schema]
+        if not isinstance(prepared, list):
+            return prepared
+
+        assert self.schema is not None
+        index = self.calls.get(self.schema, 0)
+        self.calls[self.schema] = index + 1
+        # The last response repeats rather than raising: a node called once
+        # more than a test anticipated should not fail on the fake.
+        return prepared[min(index, len(prepared) - 1)]
 
 
 def fake_model(answer: str, *citations: "Citation") -> Any:

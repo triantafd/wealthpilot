@@ -209,7 +209,9 @@ async def test_a_proposal_for_the_wrong_account_fails_on_the_account_only(
     two would hide a rebalance proposed against the wrong client.
 
     Both accounts exist, so this isolates the account check from the existence
-    check: the agent proposed a real account, just not the one asked for.
+    check: the agent proposed a real account, just not the one asked for. The
+    message names both, because an id appearing nowhere in it is downgraded to
+    a question — which is the narrow id rule, tested separately.
     """
     from sqlalchemy import insert
 
@@ -222,7 +224,7 @@ async def test_a_proposal_for_the_wrong_account_fails_on_the_account_only(
     )
     case = ActionCase(
         id="a-2",
-        message=f"rebalance {an_account}",
+        message=f"rebalance {an_account} and AC-TEST02",
         expected_outcome="propose",
         expected_account=an_account,
         expected_tool="propose_rebalance",

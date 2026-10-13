@@ -22,7 +22,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel, Field
 
-from app.agents.nodes.research import last_question
+from app.agents.conversation import recent_messages
+from app.agents.nodes.research import NoQuestionError
 from app.agents.prompts import load_prompt
 from app.rag.generate import NO_ANSWER, TokenUsage
 
@@ -53,15 +54,15 @@ async def supervise(state: dict[str, Any], chat_model: BaseChatModel) -> dict[st
     accumulates across nodes, so the routing call's tokens are counted in the
     turn's total rather than disappearing.
     """
-    question = last_question(state)
+    # The conversation, not just the latest message. A bare "AC-00042" in
+    # reply to "which account?" is an instruction; read alone it looks like
+    # nothing, and was routed to out_of_scope with confidence 0.90.
+    history = recent_messages(state)
+    if not history:
+        raise NoQuestionError("no human message in state to route")
 
     structured = chat_model.with_structured_output(Routing, include_raw=True)
-    response = await structured.ainvoke(
-        [
-            ("system", load_prompt("supervisor")),
-            ("human", question),
-        ]
-    )
+    response = await structured.ainvoke([("system", load_prompt("supervisor")), *history])
 
     routing, raw = _unpack(response)
     usage = TokenUsage.from_message(raw)

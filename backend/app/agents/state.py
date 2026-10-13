@@ -104,6 +104,15 @@ class AgentState(TypedDict, total=False):
     # because asking and refusing look alike in prose and mean opposite things
     # to the adviser. Replaced only, never accumulated: one turn, one outcome.
     action_outcome: str | None
+    # True when the action agent asked which account and is waiting for a
+    # reply. Its own field rather than inferred from `action_outcome`, which
+    # survives into later turns: a research turn followed by a bare account id
+    # would otherwise look like a reply to a question nobody asked.
+    #
+    # It never survives more than one turn. The action agent clears it on every
+    # pass, so a message that is not a reply ends the clarification rather than
+    # leaving it open for something later to resolve against.
+    awaiting_account: bool
     guardrail_flags: Annotated[list[str], operator.add]
 
     # The approval the gate created, kept in the state because LangGraph re-runs
@@ -137,6 +146,7 @@ def initial_state(question: str, *, thread_id: str, user_id: str | None = None) 
         sql_queries=[],
         pending_action=None,
         action_outcome=None,
+        awaiting_account=False,
         guardrail_flags=[],
         approval_id=None,
         action_result=None,

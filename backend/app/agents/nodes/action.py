@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.conversation import recent_messages
 from app.agents.nodes.research import last_question
 from app.agents.prompts import load_prompt
 from app.db.models import Account
@@ -57,6 +58,14 @@ class ActionDecision(BaseModel):
             "account; refuse when no single answer would make it proposable."
         ),
     )
+    replying_to_our_question: bool = Field(
+        default=False,
+        description=(
+            "True only when the latest message is the adviser answering your "
+            "own question about which account. False otherwise, including "
+            "when an account id merely appears earlier in the conversation."
+        ),
+    )
     account_id: str = Field(
         default="",
         description="The account id exactly as written, e.g. AC-0042. Empty unless proposing.",
@@ -87,12 +96,11 @@ async def propose_action(
     model is the thing under test here, and a code path that proposed anyway
     would mask a prompt regression behind a green suite.
     """
-    question = last_question(state)
-
+    # The conversation, so a reply naming only an account id can be understood
+    # as the answer to the agent's own question.
+    history = recent_messages(state)
     structured = chat_model.with_structured_output(ActionDecision, include_raw=True)
-    response = await structured.ainvoke(
-        [("system", load_prompt("action_propose")), ("human", question)]
-    )
+    response = await structured.ainvoke([("system", load_prompt("action_propose")), *history])
     decision, raw = _unpack(response)
     usage = TokenUsage.from_message(raw)
     tokens = {"inputTokens": usage.input_tokens, "outputTokens": usage.output_tokens}
@@ -100,6 +108,28 @@ async def propose_action(
     outcome: Outcome = decision.outcome
     account_id = decision.account_id.strip()
     detail = decision.detail.strip()
+
+    # The narrow rule, enforced here rather than left to the prompt.
+    #
+    # An id the adviser supplied in answer to this agent's own question is
+    # authoritative. An id that merely appears somewhere in the conversation is
+    # not: "AC-00001 looks fine, rebalance the other one" would otherwise
+    # propose against AC-00001. So a proposal whose id came from the history
+    # rather than the latest message is only allowed when a question was
+    # actually outstanding — which the thread records, not the model.
+    #
+    # Code decides this because the model is the thing being measured, and the
+    # same principle applies as to the downgrades below: code may make the
+    # outcome safer, never less safe.
+    latest = last_question(state)
+    if (
+        outcome == "propose"
+        and not _names(latest, account_id)
+        and not state.get("awaiting_account")
+    ):
+        outcome = "ask_account"
+        detail = "Which account should I raise the rebalance for?"
+        account_id = ""
 
     if outcome == "propose" and not account_id:
         # The prompt forbids guessing an id, so a proposal without one is the
@@ -116,6 +146,16 @@ async def propose_action(
         message = detail or "I cannot propose that action."
         return {
             "action_outcome": outcome,
+            # Set when asking, cleared otherwise — so a question stays open for
+            # exactly one turn and a message that is not a reply ends it.
+            "awaiting_account": outcome == "ask_account",
+            # Cleared explicitly. `pending_action` is replaced rather than
+            # accumulated, so omitting the key leaves the *previous* turn's
+            # proposal in state — and the gate interrupts on whatever it finds
+            # there. A turn that proposes nothing would otherwise re-raise the
+            # last turn's action for approval. Found by the negative test
+            # below, not by reasoning about it.
+            "pending_action": None,
             "messages": [AIMessage(content=message)],
             "guardrail_flags": [f"action_not_proposed:{outcome}"],
             "usage": tokens,
@@ -128,10 +168,29 @@ async def propose_action(
     action = get(TOOL).propose(args)
     return {
         "action_outcome": outcome,
+        "awaiting_account": False,
         # A dict, not the model: the checkpointer serialises state.
         "pending_action": action.model_dump(by_alias=True),
         "usage": tokens,
     }
+
+
+def _names(message: str, account_id: str) -> bool:
+    """Whether the message itself contains this account id.
+
+    Punctuation and case are ignored on both sides, so "AC 00042" and
+    "ac-00042" count as naming `AC-00042`. A stricter literal match would
+    downgrade a correct proposal to a question whenever the adviser typed the
+    id a little differently, which is safe but wrong often enough to be
+    useless.
+    """
+    if not account_id:
+        return False
+    return _squash(account_id) in _squash(message)
+
+
+def _squash(text: str) -> str:
+    return "".join(character for character in text.lower() if character.isalnum())
 
 
 async def _account_exists(session: AsyncSession, account_id: str) -> bool:

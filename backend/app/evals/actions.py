@@ -33,6 +33,7 @@ from statistics import median
 from typing import Any, Literal
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,9 +57,20 @@ class ActionCase(BaseModel):
     expected_account: str | None = None
     expected_tool: str | None = None
     must_interrupt: bool = False
+    # Whether the agent had a question outstanding when this message arrived.
+    # Stated by the case rather than guessed from the history: the narrow id
+    # rule turns on it, and the graph-level tests cover the previous turn
+    # actually setting it.
+    awaiting_account: bool = False
     why: str = ""
     tags: list[str] = Field(default_factory=list)
     style: str = "informal"
+    # Earlier messages, oldest first, as (role, content) with role "human" or
+    # "ai". Empty for a single-message case, which is most of them. A case
+    # cannot otherwise express a clarifying reply — "AC-00042" means nothing
+    # on its own, and a suite of single messages is exactly why `ask_account`
+    # scored 100% while being impossible end to end.
+    history: list[tuple[str, str]] = Field(default_factory=list)
 
 
 @dataclass
@@ -134,6 +146,12 @@ async def run_action_case(
     started = time.perf_counter()
     try:
         state = dict(initial_state(case.message, thread_id=f"eval-{case.id}"))
+        prior: list[BaseMessage] = [
+            HumanMessage(content=text) if role == "human" else AIMessage(content=text)
+            for role, text in case.history
+        ]
+        state["messages"] = [*prior, HumanMessage(content=case.message)]
+        state["awaiting_account"] = case.awaiting_account
         update = await propose_action(state, session, chat_model)
     except Exception as exc:
         return ActionResult(

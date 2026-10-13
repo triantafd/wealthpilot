@@ -46,9 +46,18 @@ async def _paused_thread(saver: Any, session: AsyncSession) -> tuple[str, str]:
     thread = f"t-{uuid.uuid4()}"
     # A fake model, or compile_graph builds a real ChatOpenAI and the
     # supervisor calls the API — see fake_graph_model.
-    graph = compile_graph(session, saver, chat_model=fake_graph_model(route="action"))
-    state = initial_state("rebalance it", thread_id=thread, user_id="adviser-7")
-    state["pending_action"] = _action().model_dump(by_alias=True)
+    # The action agent proposes it, rather than the test setting
+    # `pending_action` by hand. It used to be set here, which stopped working
+    # when a non-proposal turn began clearing the field explicitly — and the
+    # hand-set value was never realistic anyway: it skipped the node whose job
+    # this is. The message names the account because a proposal whose id
+    # appears nowhere in it is downgraded to a question.
+    graph = compile_graph(
+        session,
+        saver,
+        chat_model=fake_graph_model(route="action", account_id=ACCOUNT),
+    )
+    state = initial_state(f"rebalance {ACCOUNT}", thread_id=thread, user_id="adviser-7")
     await graph.ainvoke(state, thread_config(thread))
     return thread, (await list_approvals(session, status="pending"))[-1].id
 
