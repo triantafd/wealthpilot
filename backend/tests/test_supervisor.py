@@ -249,3 +249,34 @@ async def test_a_real_model_routes_these_as_the_prompt_says() -> None:
             )
 
     assert not wrong, "the prompt did not route these as it says:\n" + "\n".join(wrong)
+
+
+async def test_the_graph_builds_no_provider_client_to_read_a_checkpoint(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reading a thread's history runs no node, so it must construct no
+    provider client.
+
+    This failed in CI on this branch's first push: `compile_graph` built an
+    `OpenAIEmbedder` eagerly, which raises without an API key, so seven tests
+    fell over and `GET /threads/{id}` would have failed in any deployment
+    where only the key-less read path was exercised. The docstring already
+    promised this behaviour — the import was lazy, the construction was not.
+
+    Asserted by making construction itself fail, rather than by unsetting the
+    key: it then tests laziness directly, and cannot pass because some
+    unrelated fixture happened to supply a key.
+    """
+    import app.llm
+    import app.rag.embeddings
+
+    def _forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a provider client was built to read a checkpoint")
+
+    monkeypatch.setattr(app.rag.embeddings, "OpenAIEmbedder", _forbidden)
+    monkeypatch.setattr(app.llm, "get_chat_model", _forbidden)
+
+    graph = compile_graph(db_session, InMemorySaver())
+    snapshot = await graph.aget_state(thread_config("never-ran"))
+
+    assert not snapshot.created_at

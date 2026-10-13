@@ -63,20 +63,48 @@ def _destination(state: AgentState) -> str:
 
 def build_graph(
     session: AsyncSession,
-    embedder: Embedder,
-    chat_model: BaseChatModel,
+    embedder: Embedder | None = None,
+    chat_model: BaseChatModel | None = None,
 ) -> StateGraph[AgentState, None, Any, Any]:
-    """The graph, uncompiled, so a caller can choose its checkpointer."""
+    """The graph, uncompiled, so a caller can choose its checkpointer.
+
+    Either may be omitted, and is then built the first time a node actually
+    needs it. A graph compiled only to read a checkpoint — the thread-history
+    endpoint, and the approvals endpoint resuming a paused run — runs no node,
+    so it constructs no provider client and needs no API key.
+    """
     graph = StateGraph(AgentState)
 
+    # Caches rather than defaults: constructing these eagerly made reading a
+    # thread's history fail wherever no key is configured, which is what broke
+    # CI on this branch's first push.
+    cached_embedder = embedder
+    cached_chat_model = chat_model
+
+    def _embedder() -> Embedder:
+        nonlocal cached_embedder
+        if cached_embedder is None:
+            from app.rag.embeddings import OpenAIEmbedder
+
+            cached_embedder = OpenAIEmbedder()
+        return cached_embedder
+
+    def _chat_model() -> BaseChatModel:
+        nonlocal cached_chat_model
+        if cached_chat_model is None:
+            from app.llm import get_chat_model
+
+            cached_chat_model = get_chat_model()
+        return cached_chat_model
+
     async def supervisor_node(state: AgentState) -> dict[str, Any]:
-        return await supervise(dict(state), chat_model)
+        return await supervise(dict(state), _chat_model())
 
     async def research_node(state: AgentState) -> dict[str, Any]:
-        return await research_agent(dict(state), session, embedder, chat_model)
+        return await research_agent(dict(state), session, _embedder(), _chat_model())
 
     async def propose_node(state: AgentState) -> dict[str, Any]:
-        return await propose_action(dict(state), session, chat_model)
+        return await propose_action(dict(state), session, _chat_model())
 
     async def request_node(state: AgentState) -> dict[str, Any]:
         return await request_approval(dict(state), session)
@@ -120,16 +148,8 @@ def compile_graph(
     The checkpointer is required rather than optional: without one an interrupt
     cannot resume, which is the entire point of the approval gate.
 
-    The embedder and model default to the configured real ones, built lazily so
-    importing this module needs no API key — the approvals endpoint resumes a
-    thread without ever calling a model, and should not need credentials to do
-    it.
+    The embedder and model default to the configured real ones, constructed by
+    `build_graph` only when a node first needs one — so resuming a paused
+    thread, or reading its history, needs no API key.
     """
-    from app.llm import get_chat_model
-    from app.rag.embeddings import OpenAIEmbedder
-
-    return build_graph(
-        session,
-        embedder if embedder is not None else OpenAIEmbedder(),
-        chat_model if chat_model is not None else get_chat_model(),
-    ).compile(checkpointer=checkpointer)
+    return build_graph(session, embedder, chat_model).compile(checkpointer=checkpointer)

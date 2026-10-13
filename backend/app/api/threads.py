@@ -150,7 +150,18 @@ async def get_thread(
 
     from app.agents.graph import compile_graph
 
-    graph = compile_graph(session, saver)
+    # The nodes never run here — only the checkpointer is read — so the
+    # embedder and chat model come from app.state rather than being built.
+    # Constructing OpenAIEmbedder() raises without an API key, which made
+    # reading a thread's history fail wherever no key is configured: it broke
+    # CI on this branch's first push, and would have broken any deployment
+    # where only the key-less read path was exercised.
+    graph = compile_graph(
+        session,
+        saver,
+        embedder=getattr(request.app.state, "embedder", None),
+        chat_model=getattr(request.app.state, "chat_model", None),
+    )
     snapshot = await graph.aget_state(thread_config(thread_id))
     if not snapshot.created_at:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"no thread {thread_id!r}")
