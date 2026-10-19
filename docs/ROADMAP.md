@@ -436,19 +436,38 @@ record that cannot answer the question.*
       branch would call `interrupt()` with no approval id and pause the thread
       on an approval that does not exist, and for a tool that needs no
       approval it would simply run it
-- [ ] **An audit insert can raise, mask the original error, and lose its own
-      row.** From the security review of 2026-10-19. `args` and `result` go to
-      JSONB through the engine's default `json.dumps`, so a non-serialisable
-      value — a `Decimal`, which is what every `Numeric` column returns — makes
-      the insert raise *instead of* the tool's own exception, with no row
-      written. Worse on the error path: if a tool fails with a database error
-      the transaction is already aborted, so the `error` row cannot be written
-      at all, which is exactly the unaudited failure the audit work set out to
-      remove. Certain to bite when the SQL tool lands. Fix: normalise through
-      the existing canonical JSON (`default=str`) before inserting, and run the
-      tool body inside `session.begin_nested()` so its failure rolls back to a
-      savepoint and leaves the session usable for the audit row. Never swallow
-      an audit failure
+- [x] **An audit insert can no longer mask the error it was recording.**
+      From the security review of 2026-10-19. `args` and `result` went to
+      JSONB through the engine's default `json.dumps`, so a `Decimal` — what
+      every `Numeric` column hands back — made the INSERT raise *instead of*
+      the tool's own exception, losing the row; and a tool failing with a
+      database error left the transaction aborted, so the `error` row could
+      not be written at all, which is exactly the unaudited failure the audit
+      work set out to remove. Values are now normalised with `default=str`
+      (a row saying `"1500.00"` beats an exception that takes the record with
+      it), and the tool body runs inside `session.begin_nested()` so its
+      failure rolls back to a savepoint and leaves the session usable. Both
+      fixes have a test that fails without them — checked by reverting each
+      one, not by assuming
+- [ ] **A failed execution through `/approvals/{id}` discards its own audit
+      row.** From the security review of 2026-10-19, and the half of the
+      error-masking fix that is not in the write path. `graph.ainvoke` in
+      `post_decision` is unguarded and the gate deliberately re-raises
+      anything that is not a `ToolError`, so the exception reaches
+      `get_session`, which rolls the transaction back — discarding the
+      `decision` row, the `error` row, `consumed_at`, and the approval's
+      `approved` status in one go. The row is now *insertable* (the savepoint
+      fixed that) and still not *durable*. Net effect of the exact scenario
+      the savepoint exists for: HTTP 500, nothing in `audit_log`, the approval
+      back in the inbox as pending — while the checkpointer, which has its own
+      connection, has already committed the resumed state. The SSE path is
+      fine: it turns the exception into an `error` event, so the request
+      commits. Two options: write `denied` and `error` rows out of band on a
+      short-lived session that commits immediately (a row describing an
+      attempt that did *not* succeed is not falsified by the caller rolling
+      back, while an `ok` row must stay inside the caller's transaction), or
+      catch in `post_decision`, commit, and then return the 500. Needs an
+      API-level test, which is why no unit test caught it
 - [ ] **Anchor the thread binding to the runtime thread, not to state.** The
       gate passes `state["thread_id"]` and the approval was written from the
       same field, so the check is self-consistent rather than anchored. Safe
@@ -457,13 +476,16 @@ record that cannot answer the question.*
       endpoint, a script, an eval harness — makes it decorative. Fix: take
       `config["configurable"]["thread_id"]` in the gate node, which LangGraph
       already offers, and use it for both `create_approval` and `execute`
-- [ ] **Give `audit_log` an event-type column.** Three different events now
-      write near-identical `denied` rows — a human rejecting, the registry
-      refusing, the gate refusing before the registry — and the only thing
-      distinguishing them is whether `result` or `error` is set. `decide()`
-      also inserts directly rather than through `_audit`, so the FK rule and
-      every future column have to be written twice. Deferred once already with
-      a comment saying "Phase 5"
+- [x] **`audit_log` rows say which kind of event they are.** Three different
+      things write a `denied` row — a human rejecting, the registry refusing a
+      call, the gate refusing before the registry — and once `approval_id` and
+      `approver` were on all of them the only thing left distinguishing a
+      decision from a call was whether `result` or `error` happened to be
+      populated. `event_type` is now a column (`call` / `decision`), backfilled
+      by the rule the old code happened to follow. `decide()` no longer
+      inserts directly: every row goes through `app/audit.py:write_audit`, so
+      the foreign-key rule and the next column added to the table are written
+      once rather than in two places that can drift
 - [ ] Show what an approved action actually did — today it says only
       "the action has run"
 - [ ] Restart safety: a HIGH action interrupted before a server restart

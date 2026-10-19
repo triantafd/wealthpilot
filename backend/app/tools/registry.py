@@ -35,28 +35,24 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.events import ProposedAction, Tier
-from app.db.models.ops import AUDIT_OUTCOMES, Approval, AuditLogEntry
+from app.audit import UNKNOWN_TIER, AuditTier, Outcome, write_audit
+from app.db.models.ops import AUDIT_OUTCOMES, Approval
 
-# Spelled from the schema's own constant, so an outcome the check
-# constraint rejects fails at import rather than at the first denied call.
-OK, ERROR, DENIED = AUDIT_OUTCOMES
+# Typed, and checked against the schema's own constant, so an outcome the
+# check constraint rejects fails at import rather than while writing the row
+# that was supposed to survive a failure.
+OK: Outcome = "ok"
+ERROR: Outcome = "error"
+DENIED: Outcome = "denied"
+if (OK, ERROR, DENIED) != AUDIT_OUTCOMES:
+    raise RuntimeError(f"outcomes {(OK, ERROR, DENIED)} != schema {AUDIT_OUTCOMES}")
 
-# What a call to a name nobody registered is recorded as. Not one of the three
-# real tiers: an unknown tool has no tier, and writing `HIGH` to make the row
-# fit the constraint would put an invented fact in the audit log. The table's
-# check constraint allows it; see the migration that widened it.
-#
-# `AuditTier` exists so this stays typed. A plain `str` here means a typo'd
-# tier is caught only by the check constraint — a runtime error, in the middle
-# of writing the row that was supposed to survive the failure.
-AuditTier = Tier | Literal["UNKNOWN"]
-UNKNOWN_TIER: AuditTier = "UNKNOWN"
 
 # The body of a tool: takes the session and its arguments, returns a JSON-able
 # result for the audit log and the stream.
@@ -290,39 +286,38 @@ async def _audit(
     *,
     thread_id: str | None,
     user_id: str | None,
-    outcome: str,
+    outcome: Outcome,
     result: dict[str, Any] | None = None,
     error: str | None = None,
     duration_ms: int | None = None,
     claim: "_Claim | None" = None,
     approval_id: str | None = None,
 ) -> None:
-    """Write one row.
+    """Write one `call` row, with whatever the gate decided about it.
 
     Takes a name and a tier rather than a `ToolSpec`, because the rows most
     worth having are the ones where there is no spec: a call to a tool nobody
-    registered is audited as `UNKNOWN`. `claim` is what the gate decided, when
-    there was a gate.
+    registered is audited as `UNKNOWN`.
 
     The approval id is recorded only when the approval row exists: the column
     is a foreign key, and an attempt quoting an id that was never issued has
     nothing to point at. The reason is in `error` either way, so that attempt
     is still on the record — it is the id that cannot be, not the event.
     """
-    await session.execute(
-        insert(AuditLogEntry).values(
-            thread_id=thread_id,
-            user_id=user_id,
-            tool_name=tool_name,
-            tier=tier,
-            args=args,
-            result=result,
-            outcome=outcome,
-            error=error,
-            duration_ms=duration_ms,
-            approval_id=approval_id if claim is not None and claim.exists else None,
-            approver=claim.approver if claim is not None else None,
-        )
+    await write_audit(
+        session,
+        event_type="call",
+        tool_name=tool_name,
+        tier=tier,
+        args=args,
+        outcome=outcome,
+        thread_id=thread_id,
+        user_id=user_id,
+        result=result,
+        error=error,
+        duration_ms=duration_ms,
+        approval_id=approval_id if claim is not None and claim.exists else None,
+        approver=claim.approver if claim is not None else None,
     )
 
 
@@ -416,7 +411,39 @@ async def execute(
 
     started = time.perf_counter()
     try:
-        result = await spec.run(session, **args)
+        # Anything the caller left pending is flushed first, so the savepoint
+        # below contains the tool's writes and only the tool's writes.
+        await session.flush()
+        # A savepoint, so a tool that fails with a *database* error leaves the
+        # session usable. Without it the transaction is already aborted by the
+        # time the error row is written, the insert fails with
+        # InFailedSqlTransaction, and the failure this table exists to record
+        # is the one failure it cannot record. The caller still owns the outer
+        # transaction; this rolls back only the tool's own writes.
+        nested = await session.begin_nested()
+        try:
+            result = await spec.run(session, **args)
+            if not nested.is_active:
+                # The tool called commit() or rollback() itself. Both reach
+                # past the savepoint to the root transaction and neither
+                # raises, so without this check a committing tool would make
+                # the audit row non-atomic with the writes it describes, and a
+                # rolling-back tool would hand back its own approval unspent —
+                # `consumed_at` returns to NULL and the action is replayable.
+                # Enforced rather than asserted in a comment, because the
+                # comment above is the invariant this keeps true.
+                raise ToolError(f"{spec.name} committed or rolled back the session")
+            await nested.commit()
+        except BaseException:
+            # BaseException so a cancelled request releases the savepoint too.
+            # Cancellation is the one case that still leaves no row: a client
+            # disconnecting mid-tool raises CancelledError, which is not an
+            # `Exception` and so does not reach the audit below. Auditing
+            # under cancellation needs `asyncio.shield`, which is a change to
+            # make deliberately rather than in passing.
+            if nested.is_active:
+                await nested.rollback()
+            raise
     except Exception as exc:
         await _audit(
             session,

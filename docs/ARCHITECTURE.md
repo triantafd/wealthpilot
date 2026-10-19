@@ -161,8 +161,10 @@ Vite, React, TypeScript, Tailwind, shadcn/ui, TanStack Query, Recharts.
 
 - Langfuse callback on every graph run: one trace per request, with spans per node and tool.
 - `usage` table written at the end of each run (tokens, cost, latency, route, user).
-- `audit_log` rows carry `approval_id` and `approver`, so a decision and the execution it
-  authorised join on the approval rather than on a thread and a timestamp. Two caveats a reader
+- `audit_log` rows carry `event_type` (`call` or `decision`), plus `approval_id` and `approver`,
+  so a decision and the execution it authorised join on the approval rather than on a thread and
+  a timestamp. Every row is written by `app/audit.py:write_audit` — one INSERT site, so a column
+  added to the table cannot be remembered in one caller and forgotten in the other. Two caveats a reader
   of that table needs: `approver` is whatever the decision request supplied and is **not verified
   until authentication lands** (Phase 9 — it must come from the authenticated principal, not the
   body); and `tier` admits a fourth value, `UNKNOWN`, for a call to a tool name nobody

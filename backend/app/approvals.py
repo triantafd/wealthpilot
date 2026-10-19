@@ -24,7 +24,8 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.events import ProposedAction
-from app.db.models.ops import Approval, AuditLogEntry
+from app.audit import Outcome, write_audit
+from app.db.models.ops import Approval
 
 Decision = Literal["approve", "reject"]
 
@@ -32,7 +33,7 @@ Decision = Literal["approve", "reject"]
 # from the schema's own vocabulary so a value its check constraint rejects
 # fails at import rather than at the first decision.
 _STATUS: dict[Decision, str] = {"approve": "approved", "reject": "rejected"}
-_OUTCOME: dict[Decision, str] = {"approve": "ok", "reject": "denied"}
+_OUTCOME: dict[Decision, Outcome] = {"approve": "ok", "reject": "denied"}
 
 
 class ApprovalError(RuntimeError):
@@ -240,27 +241,27 @@ async def decide(
             f"approval {approval_id} is already {status!r}, decided by {winner!r}"
         )
 
-    await session.execute(
-        insert(AuditLogEntry).values(
-            thread_id=row.thread_id,
-            user_id=decided_by,
-            tool_name=row.tool_name,
-            tier=row.tier,
-            args=row.args,
-            # A decision row carries `decision`; a tool-call row carries the
-            # tool's own result. That is how a reader tells them apart — a
-            # dedicated event-type column would be clearer, and is noted for
-            # Phase 5 rather than migrated for one slice.
-            result={"approval_id": str(approval_id), "decision": decision, "note": note},
-            outcome=_OUTCOME[decision],
-            # The same two columns the execution's row now carries, so a
-            # decision and the call it authorised join on the approval instead
-            # of being correlated by thread and timestamp. The copy inside
-            # `result` stays: it is what the reader was shown, and the column
-            # is what a query trusts.
-            approval_id=approval_id,
-            approver=decided_by,
-        )
+    await write_audit(
+        session,
+        # Not a call: nothing ran. Until this column existed a reader had to
+        # infer that from `result` carrying a `decision` key.
+        event_type="decision",
+        tool_name=row.tool_name,
+        tier=row.tier,
+        args=row.args,
+        outcome=_OUTCOME[decision],
+        thread_id=row.thread_id,
+        user_id=decided_by,
+        # A decision row carries `decision`; a tool-call row carries the
+        # tool's own result.
+        result={"approval_id": str(approval_id), "decision": decision, "note": note},
+        # The same two columns the execution's row carries, so a decision and
+        # the call it authorised join on the approval instead of being
+        # correlated by thread and timestamp. The copy inside `result` stays:
+        # it is what the reader was shown, and the column is what a query
+        # trusts.
+        approval_id=approval_id,
+        approver=decided_by,
     )
 
     return await get_approval(session, approval_id)

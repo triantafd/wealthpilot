@@ -106,6 +106,9 @@ async def test_a_decision_is_audited(db_session: AsyncSession) -> None:
     assert rows[0].user_id == "adviser-7"
     assert rows[0].result is not None
     assert rows[0].result["decision"] == "reject"
+    # Says so, rather than leaving a reader to infer it from the shape of
+    # `result`: a rejection and a refused call both write `denied`.
+    assert rows[0].event_type == "decision"
 
 
 async def test_an_already_decided_approval_cannot_be_decided_again(
@@ -247,6 +250,7 @@ async def test_the_audit_row_says_who_authorised_the_execution(
     # approval and the approver, which is what makes them one story rather
     # than two rows that happen to share a thread.
     assert len(rows) == 2
+    assert [row.event_type for row in rows] == ["decision", "call"]
     assert {str(row.approval_id) for row in rows} == {approval_id}
     assert [row.approver for row in rows] == ["adviser-7", "adviser-7"]
 

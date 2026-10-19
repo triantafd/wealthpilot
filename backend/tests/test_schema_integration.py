@@ -168,8 +168,9 @@ async def test_audit_entry_outlives_its_approval(migrated_db: AsyncConnection) -
     )
     await migrated_db.execute(
         text(
-            "INSERT INTO audit_log (thread_id, tool_name, tier, outcome, approval_id, approver) "
-            "VALUES ('zt', 'rebalance_portfolio', 'HIGH', 'ok', :id, 'adviser@firm.test')"
+            "INSERT INTO audit_log "
+            "(event_type, thread_id, tool_name, tier, outcome, approval_id, approver) "
+            "VALUES ('call', 'zt', 'rebalance_portfolio', 'HIGH', 'ok', :id, 'adviser@firm.test')"
         ),
         {"id": approval_id},
     )

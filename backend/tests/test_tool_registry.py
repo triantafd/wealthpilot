@@ -8,18 +8,22 @@ the check — and the first two assert that reaching past it does not work.
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 import pytest
 from sqlalchemy import func, insert, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.tools.actions  # noqa: F401  -- registers propose_rebalance
+from app.audit import MAX_FIELD_CHARS
 from app.db.models.firm import Account, Client, Task
 from app.db.models.ops import AUDIT_OUTCOMES, Approval, AuditLogEntry
 from app.tools.registry import (
     REGISTRY,
     ApprovalRequiredError,
+    ToolError,
     UnknownToolError,
     execute,
     get,
@@ -571,3 +575,211 @@ def test_importing_the_registry_is_enough_to_register_the_tools() -> None:
     )
 
     assert "propose_rebalance" in result.stdout
+
+
+# --- The audit row has to survive what it is recording -----------------------
+# Two failures that used to destroy the row written about them. Both are read
+# tests of `app/audit.py`, reached through `execute` because that is where the
+# values come from.
+
+
+@pytest.fixture
+def a_temporary_tool() -> Any:
+    """Register a tool for one test and take it out again.
+
+    `REGISTRY` is module state, so a tool left behind would change what every
+    later test sees — including the test that asserts every registered tool
+    has a real tier.
+    """
+    registered: list[str] = []
+
+    def add(name: str, tier: str, fn: Any) -> None:
+        register(name=name, tier=tier, description="for a test", summarise=lambda a: "x")(fn)  # type: ignore[arg-type]
+        registered.append(name)
+
+    yield add
+
+    for name in registered:
+        REGISTRY.pop(name, None)
+
+
+async def test_a_result_postgres_cannot_serialise_still_leaves_a_row(
+    db_session: AsyncSession, a_temporary_tool: Any
+) -> None:
+    """`Decimal` is what every `Numeric` column hands back, so this is what the
+    SQL tool would have done to every `ok` row it produced: the insert raised
+    while recording the call, and the call's own result was lost with it."""
+
+    async def pays_in_decimals(session: AsyncSession, **kwargs: Any) -> dict[str, Any]:
+        return {"fee": Decimal("1500.00"), "when": datetime(2026, 1, 1, tzinfo=UTC)}
+
+    a_temporary_tool("quote_fee", "READ", pays_in_decimals)
+
+    result = await execute(db_session, "quote_fee", {"amount": Decimal("2.5")}, thread_id=THREAD)
+
+    assert result["fee"] == Decimal("1500.00"), "the caller still gets real values"
+    (row,) = await _audit_rows(db_session)
+    assert row.outcome == "ok"
+    # Stringified rather than lost: a row that says "1500.00" is worth more
+    # than an exception that takes the record of the call with it.
+    assert row.result["fee"] == "1500.00"
+    assert row.args == {"amount": "2.5"}
+
+
+async def test_a_tool_that_breaks_the_transaction_is_still_audited(
+    db_session: AsyncSession, a_temporary_tool: Any
+) -> None:
+    """The failure this table most needs to record is the one it could not.
+
+    A tool failing with a *database* error leaves the transaction aborted, so
+    the error row could not be inserted — the insert raised
+    InFailedSqlTransaction, which then masked the tool's own exception. The
+    savepoint in `execute` is what makes the session usable again.
+    """
+
+    async def breaks_the_transaction(session: AsyncSession, **kwargs: Any) -> dict[str, Any]:
+        # No such client: a foreign key violation, raised by Postgres.
+        await session.execute(
+            insert(Task).values(client_id="CL-NOPE", title="never", status="open")
+        )
+        return {}
+
+    a_temporary_tool("break_it", "READ", breaks_the_transaction)
+
+    with pytest.raises(IntegrityError):
+        await execute(db_session, "break_it", {}, thread_id=THREAD)
+
+    (row,) = await _audit_rows(db_session)
+    assert row.outcome == "error"
+    assert "IntegrityError" in (row.error or "")
+    assert (await db_session.execute(select(func.count()).select_from(Task))).scalar_one() == 0
+
+
+async def test_a_call_and_a_decision_say_which_they_are(db_session: AsyncSession) -> None:
+    """Three different events write a `denied` row. Inferring which from
+    whether `result` or `error` is populated is a guess, not a query."""
+    await _an_account(db_session)
+
+    with pytest.raises(ApprovalRequiredError):
+        await execute(db_session, "propose_rebalance", {"account_id": ACCOUNT}, thread_id=THREAD)
+
+    (row,) = await _audit_rows(db_session)
+    assert row.event_type == "call"
+
+
+async def test_values_postgres_rejects_do_not_destroy_the_row(
+    db_session: AsyncSession, a_temporary_tool: Any
+) -> None:
+    """NaN and NUL are the two Postgres refuses outright.
+
+    `json.dumps` writes `NaN` happily and Postgres then rejects the whole
+    INSERT, so a ratio over a zero denominator — not an exotic value — used to
+    destroy the record of the call that produced it. NUL arrives from model
+    output and from an approval note.
+    """
+
+    async def divides_by_zero(session: AsyncSession, **kwargs: Any) -> dict[str, Any]:
+        return {"drift": float("nan"), "note": "over \x00 band"}
+
+    a_temporary_tool("measure_drift", "READ", divides_by_zero)
+
+    result = await execute(db_session, "measure_drift", {"q": "a\x00b"}, thread_id=THREAD)
+
+    assert result["drift"] != result["drift"], "the caller still gets the real NaN"
+    (row,) = await _audit_rows(db_session)
+    assert row.outcome == "ok"
+    assert row.args == {"q": "ab"}
+    assert row.result["drift"] == "nan", "described, not dropped"
+    assert row.result["note"] == "over  band", "and the rest of the payload survives it"
+
+
+async def test_an_awkward_argument_does_not_replace_the_tools_own_error(
+    db_session: AsyncSession, a_temporary_tool: Any
+) -> None:
+    """The failure mode this module exists to prevent, in one test.
+
+    A `Decimal` in the arguments used to make the *error row's* INSERT raise,
+    so the caller saw a TypeError from the logging and never learned what the
+    tool had actually complained about.
+    """
+
+    async def fails(session: AsyncSession, **kwargs: Any) -> dict[str, Any]:
+        raise ToolError("the tool's own problem")
+
+    a_temporary_tool("awkward", "READ", fails)
+
+    with pytest.raises(ToolError, match="the tool's own problem"):
+        await execute(db_session, "awkward", {"amount": Decimal("2.5")}, thread_id=THREAD)
+
+    (row,) = await _audit_rows(db_session)
+    assert row.outcome == "error"
+    assert row.args == {"amount": "2.5"}
+    assert "the tool's own problem" in (row.error or "")
+
+
+async def test_a_vast_result_is_clamped_rather_than_stored(
+    db_session: AsyncSession, a_temporary_tool: Any
+) -> None:
+    """An audit row is evidence, not storage. A retrieval tool's result or a
+    SQL tool's rows would otherwise put the corpus in the table one call at a
+    time, and a log nobody can query is a log nobody reads."""
+
+    async def returns_the_corpus(session: AsyncSession, **kwargs: Any) -> dict[str, Any]:
+        return {"text": "x" * 200_000}
+
+    a_temporary_tool("dump", "READ", returns_the_corpus)
+
+    await execute(db_session, "dump", {}, thread_id=THREAD)
+
+    (row,) = await _audit_rows(db_session)
+    assert row.result["truncated"] is True
+    assert len(row.result["value"]) <= MAX_FIELD_CHARS
+
+
+async def test_a_tool_that_commits_is_refused_and_audited(
+    db_session: AsyncSession, a_temporary_tool: Any
+) -> None:
+    """`commit()` inside the savepoint reaches past it to the root transaction
+    and raises nothing, which would make the audit row non-atomic with the
+    writes it describes — exactly the lie `execute` promises not to tell."""
+
+    async def commits(session: AsyncSession, **kwargs: Any) -> dict[str, Any]:
+        await session.commit()
+        return {}
+
+    a_temporary_tool("commits", "READ", commits)
+
+    with pytest.raises(ToolError, match="committed or rolled back"):
+        await execute(db_session, "commits", {}, thread_id=THREAD)
+
+    (row,) = await _audit_rows(db_session)
+    assert row.outcome == "error"
+
+
+async def test_a_failing_tool_does_not_hand_back_its_own_approval(
+    db_session: AsyncSession,
+) -> None:
+    """The ordering the savepoint must not disturb.
+
+    The claim is spent before the savepoint opens, so rolling the tool's
+    writes back must not un-spend it — otherwise a tool that fails leaves a
+    HIGH action approved and replayable.
+    """
+    await _an_account(db_session)
+    approval_id = await _approval(
+        db_session, tool="propose_rebalance", status="approved", args={"account_id": "AC-GONE"}
+    )
+
+    with pytest.raises(Exception):  # noqa: B017 -- any failure will do; the claim is the point
+        await execute(
+            db_session,
+            "propose_rebalance",
+            {"account_id": "AC-GONE"},
+            thread_id=THREAD,
+            approval_id=approval_id,
+        )
+
+    consumed = (
+        await db_session.execute(select(Approval.consumed_at).where(Approval.id == approval_id))
+    ).scalar_one()
+    assert consumed is not None, "a failed tool has still used its approval; a human decides again"
