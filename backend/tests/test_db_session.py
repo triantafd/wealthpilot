@@ -87,3 +87,36 @@ async def test_a_failing_handler_writes_nothing(
         ).scalar_one_or_none()
 
     assert found is None, "a failed request must not commit"
+
+
+# --- The guard that makes the fixtures above the only way in -----------------
+
+
+def test_the_development_database_cannot_be_opened_from_a_test() -> None:
+    """The guard in `conftest`, exercised rather than assumed.
+
+    Application code calling `get_sessionmaker()` gets whatever `DATABASE_URL`
+    names — development data — however careful the fixtures are being. That
+    has happened three times in this project, most recently writing audit rows
+    about tools that do not exist into the database whose purpose is to
+    demonstrate an audit trail. This asserts the suite now stops instead.
+    """
+    from app.db.session import get_sessionmaker
+
+    with pytest.raises(RuntimeError, match="development database"):
+        get_sessionmaker()
+
+
+def test_the_guard_covers_a_factory_imported_by_name() -> None:
+    """The reason the guard patches `get_engine` and not `get_sessionmaker`.
+
+    `app/audit.py` does `from app.db.session import get_sessionmaker`, so it
+    holds its own reference and a patch on that name would miss it — which is
+    exactly the path that leaked. The function body still resolves
+    `get_engine` in its own module when it runs, so that is where the guard
+    goes.
+    """
+    from app.audit import _own_session
+
+    with pytest.raises(RuntimeError, match="development database"):
+        _own_session()

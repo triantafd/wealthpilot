@@ -9,6 +9,7 @@ import uuid
 from typing import Any
 
 import pytest
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 from sqlalchemy import func, insert, select
@@ -17,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import app.tools.actions  # noqa: F401  -- registers propose_rebalance
 from app.agents.checkpointer import checkpointer
 from app.agents.nodes.approval_gate import approval_gate, request_approval
-from app.agents.state import AgentState, initial_state, thread_config
+from app.agents.state import AgentState, initial_state, thread_config, thread_of
 from app.api.events import ProposedAction
 from app.approvals import (
     AlreadyDecidedError,
@@ -141,11 +142,13 @@ def _gated_graph(saver: Any, session: AsyncSession) -> Any:
     """
     graph = StateGraph(AgentState)
 
-    async def request(state: AgentState) -> dict[str, Any]:
-        return await request_approval(dict(state), session)
+    # Config as well as state, exactly as `app/agents/graph.py` does: both
+    # nodes bind to the thread the run is on, not the one state names.
+    async def request(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+        return await request_approval(dict(state), session, thread_id=thread_of(config))
 
-    async def gate(state: AgentState) -> dict[str, Any]:
-        return await approval_gate(dict(state), session)
+    async def gate(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+        return await approval_gate(dict(state), session, thread_id=thread_of(config))
 
     graph.add_node("request", request)
     graph.add_node("gate", gate)
@@ -379,7 +382,7 @@ async def test_a_proposal_with_no_approval_recorded_leaves_an_audit_row(
     state = dict(initial_state("rebalance it", thread_id="t-unapproved", user_id="adviser-7"))
     state["pending_action"] = _action().model_dump(by_alias=True)
 
-    update = await approval_gate(state, db_session)
+    update = await approval_gate(state, db_session, thread_id="t-unapproved")
 
     assert any(f.startswith("action_unauthorised") for f in update["guardrail_flags"])
     (row,) = list((await db_session.execute(select(AuditLogEntry))).scalars().all())
@@ -389,6 +392,47 @@ async def test_a_proposal_with_no_approval_recorded_leaves_an_audit_row(
     assert row.thread_id == "t-unapproved" and row.user_id == "adviser-7"
     assert "no approval recorded" in (row.error or "")
     assert (await db_session.execute(select(func.count()).select_from(Task))).scalar_one() == 0
+
+
+async def test_the_gate_refuses_a_state_seeded_from_another_thread(
+    db_session: AsyncSession,
+) -> None:
+    """What anchoring to the run config buys.
+
+    The registry binds an approval to a thread, but until now both ends of
+    that comparison came from `state["thread_id"]` — the approval was written
+    from it and the check read it back, so the check was self-consistent
+    rather than true. The run config is what decides which checkpoint a turn
+    reads and writes, so it is what the binding hangs off now, and a state
+    claiming a different thread is refused and audited instead of executed.
+    """
+    state = dict(initial_state("rebalance it", thread_id="t-elsewhere", user_id="adviser-7"))
+    state["pending_action"] = _action().model_dump(by_alias=True)
+    state["approval_id"] = str(uuid.uuid4())
+
+    update = await approval_gate(state, db_session, thread_id="t-the-run")
+
+    assert update["pending_action"] is None
+    assert any("another thread" in f for f in update["guardrail_flags"])
+    (row,) = list((await db_session.execute(select(AuditLogEntry))).scalars().all())
+    assert row.outcome == "denied"
+    assert row.thread_id == "t-the-run", "audited against the thread that ran, not the claim"
+    assert (await db_session.execute(select(func.count()).select_from(Task))).scalar_one() == 0
+
+
+async def test_an_approval_is_bound_to_the_thread_the_run_is_on(
+    db_session: AsyncSession, checkpointer_dsn: str
+) -> None:
+    """`create_approval` takes the run's thread too, so the two ends of the
+    binding cannot both be derived from the same state field."""
+    thread = f"t-{uuid.uuid4()}"
+    await _an_account(db_session)
+
+    async with checkpointer(checkpointer_dsn) as saver:
+        _, approval_id = await _paused_thread(saver, db_session, thread)
+
+    record = await get_approval(db_session, approval_id)
+    assert record.thread_id == thread
 
 
 async def test_a_gate_with_nothing_to_approve_is_a_no_op(

@@ -45,29 +45,64 @@ def _action(state: dict[str, Any]) -> ProposedAction | None:
     return data if isinstance(data, ProposedAction) else ProposedAction.model_validate(data)
 
 
-async def request_approval(state: dict[str, Any], session: AsyncSession) -> dict[str, Any]:
+async def request_approval(
+    state: dict[str, Any], session: AsyncSession, *, thread_id: str
+) -> dict[str, Any]:
     """Record the approval, so the inbox can show it before the graph pauses.
 
     Idempotent through `approval_id`: if the state already carries one, this is
     a re-run and no second row is created.
+
+    `thread_id` comes from the run config rather than from state — see
+    `app/agents/state.py:thread_of`. It is the thread the approval is bound
+    to, and the registry checks it again at execution.
     """
     action = _action(state)
     if action is None or state.get("approval_id") is not None:
         return {}
 
     approval_id = await create_approval(
-        session, action, thread_id=state["thread_id"], requested_by=state.get("user_id")
+        session, action, thread_id=thread_id, requested_by=state.get("user_id")
     )
     return {"approval_id": approval_id}
 
 
-async def approval_gate(state: dict[str, Any], session: AsyncSession) -> dict[str, Any]:
-    """Pause for a human, then run the action or record the refusal."""
+async def approval_gate(
+    state: dict[str, Any], session: AsyncSession, *, thread_id: str
+) -> dict[str, Any]:
+    """Pause for a human, then run the action or record the refusal.
+
+    `thread_id` is the run's own, not `state["thread_id"]`. The registry binds
+    an approval to its thread, and a check that compares state against an
+    approval written from that same state is self-consistent rather than true;
+    anchoring both ends to the run config is what makes the binding mean
+    something if anything ever seeds state from elsewhere.
+    """
     action = _action(state)
     if action is None:
         # A gate on a path with no action is a no-op, so the graph can route
         # through it unconditionally.
         return {}
+
+    seeded = state.get("thread_id")
+    if seeded is not None and seeded != thread_id:
+        # The state says one thread and the run is on another. Nothing
+        # produces this today; if something ever does, it is a replay or a
+        # seeded state, and running a HIGH action from it is exactly what the
+        # binding exists to stop.
+        reason = f"state belongs to another thread, not {thread_id}"
+        await audit_denied(
+            session,
+            action.tool,
+            action.args,
+            reason=reason,
+            thread_id=thread_id,
+            user_id=state.get("user_id"),
+        )
+        return {
+            "pending_action": None,
+            "guardrail_flags": [f"action_unauthorised:{reason}"],
+        }
 
     approval_id = state.get("approval_id")
     if approval_id is None:
@@ -86,7 +121,7 @@ async def approval_gate(state: dict[str, Any], session: AsyncSession) -> dict[st
             action.tool,
             action.args,
             reason=reason,
-            thread_id=state.get("thread_id"),
+            thread_id=thread_id,
             user_id=state.get("user_id"),
         )
         return {
@@ -109,7 +144,7 @@ async def approval_gate(state: dict[str, Any], session: AsyncSession) -> dict[st
             session,
             action.tool,
             action.args,
-            thread_id=state["thread_id"],
+            thread_id=thread_id,
             user_id=state.get("user_id"),
             approval_id=approval_id,
         )

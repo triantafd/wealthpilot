@@ -488,24 +488,17 @@ record that cannot answer the question.*
       call writes to is locked for the whole migration. Milliseconds at this
       size and correct as written; the shape to demonstrate is `NOT VALID`
       then a batched backfill then `VALIDATE CONSTRAINT`
-- [ ] **Anchor the thread binding to the runtime thread, not to state.** The
-      gate passes `state["thread_id"]` and the approval was written from the
-      same field, so the check is self-consistent rather than anchored. Safe
-      only because `initial_state` and `thread_config` are built from the same
-      path parameter today; any later path that seeds state — a replay
-      endpoint, a script, an eval harness — makes it decorative. Fix: take
-      `config["configurable"]["thread_id"]` in the gate node, which LangGraph
-      already offers, and use it for both `create_approval` and `execute`
-- [x] **`audit_log` rows say which kind of event they are.** Three different
-      things write a `denied` row — a human rejecting, the registry refusing a
-      call, the gate refusing before the registry — and once `approval_id` and
-      `approver` were on all of them the only thing left distinguishing a
-      decision from a call was whether `result` or `error` happened to be
-      populated. `event_type` is now a column (`call` / `decision`), backfilled
-      by the rule the old code happened to follow. `decide()` no longer
-      inserts directly: every row goes through `app/audit.py:write_audit`, so
-      the foreign-key rule and the next column added to the table are written
-      once rather than in two places that can drift
+- [x] **The thread binding is anchored to the run, not to state.** The gate
+      passed `state["thread_id"]` and the approval had been written from the
+      same field, so the check was self-consistent rather than true — safe
+      only because `initial_state` and `thread_config` happen to be built from
+      the same request today, and decorative the moment anything else seeds
+      state. Both ends now come from LangGraph's run config
+      (`app/agents/state.py:thread_of`): `request_approval` binds the approval
+      to the thread the run is on, and `approval_gate` executes against it. A
+      state claiming a different thread is refused and audited rather than
+      run — nothing produces that today, and if something ever does it is a
+      replay, which is what the binding exists to stop
 - [ ] Show what an approved action actually did — today it says only
       "the action has run"
 - [ ] Restart safety: a HIGH action interrupted before a server restart

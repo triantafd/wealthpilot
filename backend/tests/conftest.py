@@ -153,6 +153,48 @@ async def db(test_database: str) -> AsyncIterator[AsyncConnection]:
         await engine.dispose()
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _development_database_is_off_limits() -> Iterator[None]:
+    """Fail the moment anything in the suite opens the *development* database.
+
+    Three times now, code under test has reached `get_sessionmaker()` — which
+    reads `DATABASE_URL` and therefore points at development data — while the
+    fixtures were busy being careful with a throwaway one. The last time it
+    wrote two audit rows about tools that do not exist into a database whose
+    whole purpose is to demonstrate an audit trail. Care is not a mechanism.
+
+    `get_engine` is the chokepoint rather than `get_sessionmaker`, because a
+    module that did `from app.db.session import get_sessionmaker` holds its
+    own reference to that function and a patch on the name would miss it —
+    but the function body still looks `get_engine` up in this module's
+    globals when it runs. Both caches are cleared so a factory built before
+    the guard cannot outlive it.
+
+    Anything in the suite that needs a database gets one from `db_session`,
+    or builds its own engine against `_test_database_name()`.
+    """
+    import app.db.session as session_module
+
+    def refuse() -> Any:
+        raise RuntimeError(
+            "a test opened the development database. Use the `db_session` "
+            "fixture, or build an engine for `_test_database_name()`. If this "
+            "is application code reaching `get_sessionmaker()` on its own, it "
+            "needs a seam the suite can point somewhere safe — see "
+            "`app.audit.failure_session_factory`."
+        )
+
+    real_get_engine = session_module.get_engine
+    session_module.get_engine.cache_clear()
+    session_module.get_sessionmaker.cache_clear()
+    session_module.get_engine = refuse  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        session_module.get_engine = real_get_engine
+        session_module.get_sessionmaker.cache_clear()
+
+
 @pytest.fixture
 async def migrated_db(db: AsyncConnection) -> AsyncConnection:
     """As `db`. The schema is guaranteed by the session fixture's migration run.
