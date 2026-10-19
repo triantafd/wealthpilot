@@ -12,6 +12,7 @@
  * if the backend adds a field, this stops compiling.
  */
 
+import type { Decision } from "@/lib/api";
 import { isStreamEvent, type StreamEvent } from "@shared/stream-events";
 
 /** A frame is `data: <json>` and frames are separated by a blank line. */
@@ -102,12 +103,19 @@ export async function createThread(signal?: AbortSignal): Promise<string> {
   return body.thread_id;
 }
 
-/** Decide an approval. Returns whether the graph resumed. */
+/**
+ * Decide an approval.
+ *
+ * Returns the whole decision, not just `resumed`. The approval it carries
+ * includes the execution the decision authorised — which is the only channel
+ * chat has for it: the turn\'s SSE stream ended at the interrupt, and the
+ * resumed run happens inside this request.
+ */
 export async function decideApproval(
   approvalId: string,
   decision: "approve" | "reject",
   options: { note?: string; decidedBy: string; signal?: AbortSignal },
-): Promise<boolean> {
+): Promise<Decision> {
   const response = await fetch(`/api/approvals/${approvalId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -123,6 +131,5 @@ export async function decideApproval(
   if (!response.ok) {
     throw new StreamError(response.status, `the decision was not accepted (${response.status})`);
   }
-  const body = (await response.json()) as { resumed: boolean };
-  return body.resumed;
+  return (await response.json()) as Decision;
 }

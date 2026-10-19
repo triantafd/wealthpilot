@@ -6,6 +6,7 @@
  * breaks React fast refresh.
  */
 
+import type { Execution } from "@/lib/api";
 import type {
   ActionOutcome,
   Citation,
@@ -33,6 +34,12 @@ export interface Turn {
   outcome?: ActionOutcome;
   approval?: { approvalId: string; action: ProposedAction };
   decision?: "approve" | "reject";
+  /** What the decision authorised, from the decide response. The turn's SSE
+   *  stream ended at the interrupt, so this is the only channel it has. */
+  executed?: Execution | null;
+  /** Whether the approval was spent. An approval can be spent with no
+   *  execution recorded against it; see `ExecutionOutcome`. */
+  executionSpent?: boolean;
   error?: string;
   cost?: number;
   ms?: number;

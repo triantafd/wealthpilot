@@ -510,8 +510,17 @@ record that cannot answer the question.*
       state claiming a different thread is refused and audited rather than
       run — nothing produces that today, and if something ever does it is a
       replay, which is what the binding exists to stop
-- [ ] Show what an approved action actually did — today it says only
-      "the action has run"
+- [x] **Show what an approved action actually did.** It said "the action has
+      run" — a fixed string, true or not. No backend change was needed: the
+      inbox work put the execution on `POST /approvals/{id}`'s response, which
+      is the only channel chat has for it, because the turn's SSE stream ended
+      at the interrupt and the resumed run happens inside that request.
+      `decideApproval` now returns the decision rather than just `resumed`,
+      and the turn renders what the action did — "raised task 103", or why it
+      did not. The wording lives in one `ExecutionOutcome` component shared
+      with the inbox: it has four cases to keep apart, and two copies would
+      have drifted within a week. The REST types moved to `lib/api.ts`, since
+      chat reading another feature's types is the wrong direction
 - [ ] Restart safety: a HIGH action interrupted before a server restart
       resumes after it
 

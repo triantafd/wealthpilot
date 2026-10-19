@@ -1,17 +1,12 @@
 import { useState } from "react";
 
+import { ExecutionOutcome } from "@/components/execution-outcome";
 import { PageHeader } from "@/components/page-shell";
 import { TierBadge } from "@/components/tier-badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "cn";
 
-import {
-  useApprovals,
-  useDecide,
-  type Approval,
-  type ApprovalStatus,
-  type Execution,
-} from "./approvals";
+import { useApprovals, useDecide, type Approval, type ApprovalStatus } from "./approvals";
 
 /**
  * Inbox of HIGH-risk actions the graph paused on.
@@ -137,50 +132,13 @@ function Provenance({ approval }: { approval: Approval }) {
         <span className="font-medium text-foreground">{approval.decided_by ?? "unknown"}</span>
         {approval.decided_at ? ` · ${new Date(approval.decided_at).toLocaleString()}` : null}
       </p>
-      <Outcome
-        execution={approval.execution}
-        status={approval.status}
-        spent={approval.consumed_at !== null}
-      />
-    </div>
-  );
-}
-
-function Outcome({
-  execution,
-  status,
-  spent,
-}: {
-  execution: Execution | null;
-  status: ApprovalStatus;
-  spent: boolean;
-}) {
-  if (execution === null) {
-    return (
-      <p data-testid="outcome">
-        {status === "rejected"
-          ? "Nothing ran."
-          : spent
-            ? // The approval was consumed, so something did run — but no audit
-              // row names it. True of every approval decided before the
-              // provenance columns were written, and the inbox should not
-              // claim an absence it cannot vouch for.
-              "Spent, but no execution was recorded against it."
-            : // Approved and genuinely never executed: the action failed
-              // before the tool did anything, or the thread was no longer
-              // waiting. Saying "approved" alone would imply it happened.
-              "Approved, but nothing ran under it."}
+      <p>
+        <ExecutionOutcome
+          execution={approval.execution}
+          status={approval.status}
+          spent={approval.consumed_at !== null}
+        />
       </p>
-    );
-  }
-
-  const taskId = execution.result?.task_id;
-  return (
-    <p data-testid="outcome">
-      {execution.outcome === "ok"
-        ? `Ran${taskId ? ` · raised task ${String(taskId)}` : ""}`
-        : `Did not run · ${execution.error ?? execution.outcome}`}
-      {execution.attempts > 1 ? ` · offered ${execution.attempts} times` : null}
-    </p>
+    </div>
   );
 }

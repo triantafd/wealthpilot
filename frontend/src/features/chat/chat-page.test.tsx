@@ -44,7 +44,36 @@ function sseBody(events: object[]): ReadableStream<Uint8Array> {
   });
 }
 
-function stubFetch(events: object[], options: { decideOk?: boolean } = {}) {
+const RAN = {
+  outcome: "ok",
+  at: "2026-10-19T10:05:01Z",
+  duration_ms: 42,
+  result: { task_id: 103, account_id: "AC-0042" },
+  error: null,
+  attempts: 1,
+};
+
+const DECIDED_APPROVAL = {
+  id: "a-1",
+  thread_id: "t-1",
+  tool_name: "propose_rebalance",
+  tier: "HIGH",
+  args: { account_id: "AC-0042" },
+  summary: "Raise a rebalance task for account AC-0042.",
+  status: "approved",
+  requested_by: null,
+  decided_by: "adviser-7",
+  decision_note: null,
+  created_at: "2026-10-19T10:00:00Z",
+  decided_at: "2026-10-19T10:05:00Z",
+  consumed_at: "2026-10-19T10:05:01Z",
+  execution: RAN,
+};
+
+function stubFetch(
+  events: object[],
+  options: { decideOk?: boolean; execution?: Record<string, unknown> | null } = {},
+) {
   return vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const path = typeof url === "string" ? url : url.toString();
 
@@ -58,9 +87,27 @@ function stubFetch(events: object[], options: { decideOk?: boolean } = {}) {
       });
     }
     if (path.startsWith("/api/approvals/")) {
+      const decision = JSON.parse(String(init?.body)).decision as "approve" | "reject";
       return options.decideOk === false
         ? new Response("no", { status: 409 })
-        : new Response(JSON.stringify({ resumed: true }), { status: 200 });
+        : new Response(
+            // The shape `POST /approvals/{id}` really answers with. It used
+            // to be stubbed as `{resumed: true}` alone, which let the page
+            // read a field the endpoint had never returned.
+            JSON.stringify({
+              resumed: true,
+              approval: {
+                ...DECIDED_APPROVAL,
+                status: decision === "reject" ? "rejected" : "approved",
+                consumed_at: decision === "reject" ? null : "2026-10-19T10:05:01Z",
+                // `in` rather than `??`: an explicitly passed `null` is the
+                // case under test, and `null ?? RAN` would quietly be RAN.
+                execution:
+                  decision === "reject" ? null : "execution" in options ? options.execution : RAN,
+              },
+            }),
+            { status: 200 },
+          );
     }
     throw new Error(`unexpected request: ${path}`);
   });
@@ -177,7 +224,8 @@ describe("ChatPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "Approve" }));
 
     await waitFor(() => expect(screen.getByTestId("decision")).toBeInTheDocument());
-    expect(screen.getByTestId("decision")).toHaveTextContent(/has run/i);
+    // What it did, not that it did something: the task it raised.
+    expect(screen.getByTestId("decision")).toHaveTextContent(/raised task 103/i);
     // The buttons must go: leaving them would invite a second decision, which
     // the backend refuses with a 409.
     expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
@@ -235,6 +283,22 @@ describe("ChatPage", () => {
     await ask("anything");
 
     await waitFor(() => expect(screen.getByTestId("error")).toHaveTextContent("provider exploded"));
+  });
+
+  it("does not claim an approved action ran when it did not", async () => {
+    // A real state, not a hypothetical: the decision is durable and the
+    // execution can still fail before the tool does anything. "The action has
+    // run" was a fixed string that said otherwise every time.
+    vi.stubGlobal("fetch", stubFetch(ACTION_TURN, { execution: null }));
+    renderChat();
+
+    await ask("rebalance AC-0042");
+    await waitFor(() => expect(screen.getByTestId("approval")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("decision")).toHaveTextContent(/no execution was recorded/i),
+    );
   });
 
   it("surfaces a rejected decision instead of pretending it worked", async () => {

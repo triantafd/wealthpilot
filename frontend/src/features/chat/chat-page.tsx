@@ -1,6 +1,7 @@
 import { cn } from "cn";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { ExecutionOutcome } from "@/components/execution-outcome";
 import { PageHeader } from "@/components/page-shell";
 import { TierBadge } from "@/components/tier-badge";
 import { Button } from "@/components/ui/button";
@@ -82,9 +83,17 @@ export function ChatPage() {
       // have asked something else since.
       setBusy(true);
       try {
-        await decideApproval(approvalId, decision, { decidedBy: DECIDED_BY });
+        const decided = await decideApproval(approvalId, decision, { decidedBy: DECIDED_BY });
         setTurns((current) =>
-          updateTurn(current, turnId, (turn) => ({ ...turn, decision, approval: undefined })),
+          updateTurn(current, turnId, (turn) => ({
+            ...turn,
+            decision,
+            approval: undefined,
+            // What it actually did, rather than the assurance that it did
+            // something. `null` is a fact too — see `ExecutionOutcome`.
+            executed: decided.approval.execution,
+            executionSpent: decided.approval.consumed_at !== null,
+          })),
         );
       } catch (error) {
         const text = error instanceof Error ? error.message : "the decision failed";
@@ -270,7 +279,13 @@ function TurnView({
 
       {turn.decision ? (
         <p className="text-xs text-muted-foreground" data-testid="decision">
-          {turn.decision === "approve" ? "Approved — the action has run." : "Rejected — nothing ran."}
+          {turn.decision === "approve" ? "Approved" : "Rejected"}
+          {" — "}
+          <ExecutionOutcome
+            execution={turn.executed ?? null}
+            status={turn.decision === "approve" ? "approved" : "rejected"}
+            spent={turn.executionSpent ?? false}
+          />
         </p>
       ) : null}
 

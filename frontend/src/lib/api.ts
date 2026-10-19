@@ -93,3 +93,48 @@ export interface Health {
   version: string;
   env: string;
 }
+
+/** What an approval authorised, once it was spent.
+ *
+ *  Absent for three different reasons, and they are not the same statement: a
+ *  rejection ran nothing, an approval can be decided and still never execute,
+ *  and one spent before `audit_log.approval_id` was written ran something no
+ *  row can name. `ExecutionOutcome` is where that is turned into words. */
+export interface Execution {
+  outcome: "ok" | "error" | "denied";
+  at: string;
+  duration_ms: number | null;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  attempts: number;
+}
+
+export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
+
+/** One approval, as `/approvals` and `POST /approvals/{id}` return it.
+ *
+ *  Hand-written rather than shared, unlike the SSE contract in
+ *  `shared/stream-events.ts`: these are REST models and they are snake_case
+ *  on the wire, so the names here are the backend's own. */
+export interface Approval {
+  id: string;
+  thread_id: string;
+  tool_name: string;
+  tier: "READ" | "LOW" | "HIGH";
+  args: Record<string, unknown>;
+  summary: string | null;
+  status: ApprovalStatus;
+  requested_by: string | null;
+  decided_by: string | null;
+  decision_note: string | null;
+  created_at: string;
+  decided_at: string | null;
+  consumed_at: string | null;
+  execution: Execution | null;
+}
+
+/** What `POST /approvals/{id}` answers with. */
+export interface Decision {
+  approval: Approval;
+  resumed: boolean;
+}
