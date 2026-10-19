@@ -29,7 +29,7 @@ from app.approvals import (
 )
 from app.db.models.firm import Account, Client, Task
 from app.db.models.ops import Approval, AuditLogEntry
-from app.tools.registry import get
+from app.tools.registry import ApprovalRequiredError, execute, get
 
 ACCOUNT = "AC-TEST01"
 
@@ -212,6 +212,105 @@ async def test_approving_runs_the_tool(db_session: AsyncSession, checkpointer_ds
     assert task.title == f"Rebalance {ACCOUNT}"
 
 
+async def test_the_audit_row_says_who_authorised_the_execution(
+    db_session: AsyncSession, checkpointer_dsn: str
+) -> None:
+    """The question the approvals inbox has to answer.
+
+    Both columns existed from Phase 0 and neither was ever written, so
+    answering "who approved this task?" meant correlating by thread and
+    timestamp — ambiguous the moment one thread holds two approvals for the
+    same tool. Columns that exist and stay empty are worse than absent ones,
+    because a reader believes them.
+    """
+    thread = f"t-{uuid.uuid4()}"
+    await _an_account(db_session)
+
+    async with checkpointer(checkpointer_dsn) as saver:
+        graph, approval_id = await _paused_thread(saver, db_session, thread)
+        await decide(db_session, approval_id, "approve", decided_by="adviser-7")
+        await graph.ainvoke(Command(resume="approve"), thread_config(thread))
+
+    rows = list(
+        (
+            await db_session.execute(
+                select(AuditLogEntry)
+                .where(AuditLogEntry.thread_id == thread)
+                .order_by(AuditLogEntry.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    # Two rows: the decision, then the execution it authorised. Both name the
+    # approval and the approver, which is what makes them one story rather
+    # than two rows that happen to share a thread.
+    assert len(rows) == 2
+    assert {str(row.approval_id) for row in rows} == {approval_id}
+    assert [row.approver for row in rows] == ["adviser-7", "adviser-7"]
+
+    execution = rows[-1]
+    assert execution.outcome == "ok"
+    assert execution.result is not None and "task_id" in execution.result
+
+
+async def test_a_refused_execution_is_filed_against_its_approval(
+    db_session: AsyncSession, checkpointer_dsn: str
+) -> None:
+    """A denied attempt is the row an investigation starts from, so it carries
+    the same provenance as a successful one. Spending the approval twice is the
+    cheapest way to reach the refusal with a real approval in hand."""
+    thread = f"t-{uuid.uuid4()}"
+    await _an_account(db_session)
+
+    async with checkpointer(checkpointer_dsn) as saver:
+        graph, approval_id = await _paused_thread(saver, db_session, thread)
+        await decide(db_session, approval_id, "approve", decided_by="adviser-7")
+        await graph.ainvoke(Command(resume="approve"), thread_config(thread))
+        # The same approval, offered a second time: single-use, so refused.
+        with pytest.raises(ApprovalRequiredError):
+            await execute(
+                db_session,
+                "propose_rebalance",
+                {"account_id": ACCOUNT, "reason": "equity 4pp over band"},
+                thread_id=thread,
+                approval_id=approval_id,
+            )
+
+    denied = (
+        await db_session.execute(select(AuditLogEntry).where(AuditLogEntry.outcome == "denied"))
+    ).scalar_one()
+    assert str(denied.approval_id) == approval_id
+    assert denied.approver == "adviser-7"
+    assert "already been used" in (denied.error or "")
+
+
+async def test_an_approval_id_that_was_never_issued_is_audited_without_it(
+    db_session: AsyncSession, checkpointer_dsn: str
+) -> None:
+    """`audit_log.approval_id` is a foreign key, so an id nobody issued cannot
+    be recorded as one. The attempt still is: the reason names the id."""
+    await _an_account(db_session)
+    invented = str(uuid.uuid4())
+
+    with pytest.raises(ApprovalRequiredError):
+        await execute(
+            db_session,
+            "propose_rebalance",
+            {"account_id": ACCOUNT},
+            thread_id="t-nothread",
+            approval_id=invented,
+        )
+
+    row = (
+        await db_session.execute(select(AuditLogEntry).where(AuditLogEntry.outcome == "denied"))
+    ).scalar_one()
+    assert row.approval_id is None
+    assert row.approver is None
+    assert invented in (row.error or "")
+
+
 async def test_rejecting_does_not_run_the_tool(
     db_session: AsyncSession, checkpointer_dsn: str
 ) -> None:
@@ -265,6 +364,27 @@ async def test_resuming_does_not_create_a_second_approval(
         )
     ).scalar_one()
     assert count == 1
+
+
+async def test_a_proposal_with_no_approval_recorded_leaves_an_audit_row(
+    db_session: AsyncSession,
+) -> None:
+    """The gate refuses before it reaches the registry, so until now the
+    attempt existed only as a guardrail string inside a checkpoint — nothing a
+    query an investigation runs would ever see."""
+    state = dict(initial_state("rebalance it", thread_id="t-unapproved", user_id="adviser-7"))
+    state["pending_action"] = _action().model_dump(by_alias=True)
+
+    update = await approval_gate(state, db_session)
+
+    assert any(f.startswith("action_unauthorised") for f in update["guardrail_flags"])
+    (row,) = list((await db_session.execute(select(AuditLogEntry))).scalars().all())
+    assert row.outcome == "denied"
+    assert row.tool_name == "propose_rebalance"
+    assert row.tier == "HIGH", "a registered tool keeps its own tier"
+    assert row.thread_id == "t-unapproved" and row.user_id == "adviser-7"
+    assert "no approval recorded" in (row.error or "")
+    assert (await db_session.execute(select(func.count()).select_from(Task))).scalar_one() == 0
 
 
 async def test_a_gate_with_nothing_to_approve_is_a_no_op(

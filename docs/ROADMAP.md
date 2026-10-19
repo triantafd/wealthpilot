@@ -402,28 +402,68 @@ record that cannot answer the question.*
       turn, which overlaps with "show what an approved action actually did", so
       it goes after the inbox. The thread id also has to outlive the page: it
       is a `useRef` today
-- [ ] **The audit log cannot say who authorised an execution.**
-      `audit_log.approval_id` and `audit_log.approver` exist, and the model's
-      own docstring says to write "every call (args, result, approver)" there
-      — neither column is ever written by either insert. Answering "who
-      approved this task?" needs correlation by thread and timestamp, which is
-      ambiguous as soon as one thread has two approvals for the same tool.
-      Columns that exist and stay empty are worse than absent ones, because
-      the schema implies a guarantee the code does not keep. Have
-      `_claim_approval` return the claimed row's `decided_by`, pass
-      `approval_id` and `approver` into `_audit` including on the denied path,
-      and set the column in `decide()` rather than only the `result` blob
-- [ ] **Bind the approval to its thread.** `execute(..., thread_id=X,
-      approval_id=A)` never checks `A.thread_id == X`. Not an escalation —
-      tool and args must still match exactly and the claim is single-use, so
-      the worst case is the right action executing in the wrong thread's audit
-      context. One line of defence in depth, and it removes the ambiguity the
-      audit-provenance item above describes
-- [ ] **Two gate paths leave no audit row.** A missing `approval_id` in state
-      refuses *before* calling `execute`, so the attempt exists only as a
-      `guardrail_flags` string inside the checkpoint; and `execute` resolves
-      the tool name first, so an unknown name raises with nothing audited.
-      Harmless with one hard-coded tool, a trap once a model picks the name
+- [x] **The audit log says who authorised an execution.** Both columns
+      existed from Phase 0 and neither insert ever wrote them, so "who
+      approved this task?" meant correlating by thread and timestamp —
+      ambiguous the moment one thread holds two approvals for the same tool.
+      `_claim_approval` now returns a `_Claim` carrying the approval's
+      `decided_by`, and `execute` puts `approval_id` and `approver` on the
+      `ok`, `error` **and** `denied` rows; `decide()` sets the same two
+      columns, so a decision and the call it authorised join on the approval
+      rather than on a timestamp. The id is recorded only when the approval
+      row exists, because the column is a foreign key — an attempt quoting an
+      id nobody issued still gets a row, with the id in `error`
+- [x] **The approval is bound to its thread.** `execute(..., thread_id=X,
+      approval_id=A)` never checked `A.thread_id == X`. Not an escalation —
+      tool and arguments must still match exactly and the claim is single-use
+      — so what it prevents is the right action running in the wrong thread's
+      audit context, which is the ambiguity the provenance columns exist to
+      remove. The comparison is in the `SELECT` *and* in the conditional
+      `UPDATE`'s `WHERE`, so the check and the spend stay one statement. Fails
+      closed: `create_approval` requires a thread, so a caller supplying none
+      cannot be in the thread the approval names — which broke several
+      registry tests that spent approvals with no thread at all, and they were
+      fixed rather than the rule loosened
+- [x] **Both unaudited gate paths now leave a row.** A call to a name nobody
+      registered raised from `get()` before anything was written; it is now
+      audited as `denied` first. That needed a tier, and an unknown tool has
+      none, so the `audit_log.tier` check constraint was widened to allow
+      `UNKNOWN` (migration `b7c21e9f4a30`) — recording such a call as `HIGH`
+      to fit the old constraint would have put an invented fact in the log.
+      The gate's own refusal, when state carries no `approval_id`, writes
+      through a new `registry.audit_denied`. **The plan said this one was a
+      deletion — letting `execute` refuse — and that was wrong:** deleting the
+      branch would call `interrupt()` with no approval id and pause the thread
+      on an approval that does not exist, and for a tool that needs no
+      approval it would simply run it
+- [ ] **An audit insert can raise, mask the original error, and lose its own
+      row.** From the security review of 2026-10-19. `args` and `result` go to
+      JSONB through the engine's default `json.dumps`, so a non-serialisable
+      value — a `Decimal`, which is what every `Numeric` column returns — makes
+      the insert raise *instead of* the tool's own exception, with no row
+      written. Worse on the error path: if a tool fails with a database error
+      the transaction is already aborted, so the `error` row cannot be written
+      at all, which is exactly the unaudited failure the audit work set out to
+      remove. Certain to bite when the SQL tool lands. Fix: normalise through
+      the existing canonical JSON (`default=str`) before inserting, and run the
+      tool body inside `session.begin_nested()` so its failure rolls back to a
+      savepoint and leaves the session usable for the audit row. Never swallow
+      an audit failure
+- [ ] **Anchor the thread binding to the runtime thread, not to state.** The
+      gate passes `state["thread_id"]` and the approval was written from the
+      same field, so the check is self-consistent rather than anchored. Safe
+      only because `initial_state` and `thread_config` are built from the same
+      path parameter today; any later path that seeds state — a replay
+      endpoint, a script, an eval harness — makes it decorative. Fix: take
+      `config["configurable"]["thread_id"]` in the gate node, which LangGraph
+      already offers, and use it for both `create_approval` and `execute`
+- [ ] **Give `audit_log` an event-type column.** Three different events now
+      write near-identical `denied` rows — a human rejecting, the registry
+      refusing, the gate refusing before the registry — and the only thing
+      distinguishing them is whether `result` or `error` is set. `decide()`
+      also inserts directly rather than through `_audit`, so the FK rule and
+      every future column have to be written twice. Deferred once already with
+      a comment saying "Phase 5"
 - [ ] Show what an approved action actually did — today it says only
       "the action has run"
 - [ ] Restart safety: a HIGH action interrupted before a server restart
@@ -574,6 +614,13 @@ of the credit.*
       `user_id` comes from the request. See ROADMAP Phase 9" — and the bullet
       it points at names only `/usage` and `/approvals`. `user_id` must come
       from the authenticated principal there too
+- [ ] **`audit_log.approver` now reads as provenance and is still
+      self-asserted.** It is populated from `DecisionRequest.decided_by` in the
+      request body. The gap is the one above; what changed is the stakes — an
+      empty column was obviously unusable, whereas a populated one reads to
+      any later query or dashboard as a verified fact. When auth lands, source
+      it from the authenticated principal and add a test that the body cannot
+      set it. Flagged by the security review of 2026-10-19
 - [ ] **Authorisation, not just authentication.** There is no notion of which
       accounts an adviser may act on, so `propose_rebalance` can raise a task
       against any client's account and the approvals inbox is unscoped. Scope

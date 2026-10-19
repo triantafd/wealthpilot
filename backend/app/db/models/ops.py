@@ -27,6 +27,11 @@ from app.db.base import Base, TimestampMixin
 
 # Mirrors app/tools/registry.py. Kept as TEXT + CHECK for the same reason as
 # the firm enums: a new tier should be a one-line alter.
+#
+# `audit_log.tier` admits one more value, `UNKNOWN`, which is not a tier — it
+# is what a call to an unregistered name is recorded as. A review query that
+# filters on these three therefore excludes exactly the attempts most worth
+# looking at. See `registry.AuditTier`.
 RISK_TIERS = ("READ", "LOW", "HIGH")
 APPROVAL_STATUSES = ("pending", "approved", "rejected", "expired")
 AUDIT_OUTCOMES = ("ok", "error", "denied")
@@ -106,10 +111,19 @@ class AuditLogEntry(Base, TimestampMixin):
 
     __tablename__ = "audit_log"
     __table_args__ = (
-        CheckConstraint("tier IN ('READ', 'LOW', 'HIGH')", name="tier"),
+        # `UNKNOWN` is not a risk tier. It is what a call to a name nobody
+        # registered is recorded as — see `registry.UNKNOWN_TIER`. Writing one
+        # of the three real tiers to make such a row fit would be an invented
+        # fact in the audit log, and the log is the thing an investigation
+        # trusts.
+        CheckConstraint("tier IN ('READ', 'LOW', 'HIGH', 'UNKNOWN')", name="tier"),
         CheckConstraint("outcome IN ('ok', 'error', 'denied')", name="outcome"),
         Index("ix_audit_log_thread_id_created_at", "thread_id", "created_at"),
         Index("ix_audit_log_tool_name", "tool_name"),
+        # The join key: a decision row and the execution it authorised share
+        # an approval id, which is how "who approved this?" is answered
+        # without correlating by timestamp.
+        Index("ix_audit_log_approval_id", "approval_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

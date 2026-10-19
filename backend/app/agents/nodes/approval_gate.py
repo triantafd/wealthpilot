@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.events import ProposedAction
 from app.approvals import create_approval
-from app.tools.registry import ApprovalRequiredError, ToolError, execute
+from app.tools.registry import ApprovalRequiredError, ToolError, audit_denied, execute
 
 
 def _action(state: dict[str, Any]) -> ProposedAction | None:
@@ -74,9 +74,24 @@ async def approval_gate(state: dict[str, Any], session: AsyncSession) -> dict[st
         # request_approval did not run, so nothing authorises this. Refuse
         # rather than create an approval here: creating one before an interrupt
         # is the bug this split exists to fix.
+        #
+        # Audited, though. The attempt used to exist only as the guardrail
+        # string below, inside a checkpoint — so "was this ever tried?" had no
+        # answer in any table. It cannot go through `execute`, which would
+        # either interrupt with an id that does not exist or, for a tool that
+        # needs no approval, run it.
+        reason = f"no approval recorded for {action.tool}"
+        await audit_denied(
+            session,
+            action.tool,
+            action.args,
+            reason=reason,
+            thread_id=state.get("thread_id"),
+            user_id=state.get("user_id"),
+        )
         return {
             "pending_action": None,
-            "guardrail_flags": [f"action_unauthorised:no approval recorded for {action.tool}"],
+            "guardrail_flags": [f"action_unauthorised:{reason}"],
         }
 
     # Everything below runs again on resume: `interrupt` raises on the first

@@ -253,6 +253,13 @@ async def decide(
             # Phase 5 rather than migrated for one slice.
             result={"approval_id": str(approval_id), "decision": decision, "note": note},
             outcome=_OUTCOME[decision],
+            # The same two columns the execution's row now carries, so a
+            # decision and the call it authorised join on the approval instead
+            # of being correlated by thread and timestamp. The copy inside
+            # `result` stays: it is what the reader was shown, and the column
+            # is what a query trusts.
+            approval_id=approval_id,
+            approver=decided_by,
         )
     )
 

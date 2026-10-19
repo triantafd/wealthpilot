@@ -161,6 +161,12 @@ Vite, React, TypeScript, Tailwind, shadcn/ui, TanStack Query, Recharts.
 
 - Langfuse callback on every graph run: one trace per request, with spans per node and tool.
 - `usage` table written at the end of each run (tokens, cost, latency, route, user).
+- `audit_log` rows carry `approval_id` and `approver`, so a decision and the execution it
+  authorised join on the approval rather than on a thread and a timestamp. Two caveats a reader
+  of that table needs: `approver` is whatever the decision request supplied and is **not verified
+  until authentication lands** (Phase 9 — it must come from the authenticated principal, not the
+  body); and `tier` admits a fourth value, `UNKNOWN`, for a call to a tool name nobody
+  registered, so a query filtering on the three real tiers silently drops those rows.
 - Structured JSON logs; in AWS they go to CloudWatch.
 
 ## 9. Repository layout
