@@ -64,6 +64,14 @@ describe("applyEvent", () => {
     expect(turn.answer).toBe("The minimum is £1,500.");
   });
 
+  it("keeps which outcome the action agent reached", () => {
+    // Asking and refusing both arrive as prose; this is the only thing that
+    // tells them apart.
+    const turn = applyEvent(start(), { type: "action_outcome", outcome: "ask_account" });
+
+    expect(turn.outcome).toBe("ask_account");
+  });
+
   it("keeps the citations the backend verified", () => {
     const turn = applyEvent(start(), {
       type: "citations",

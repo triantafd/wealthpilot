@@ -6,7 +6,12 @@
  * breaks React fast refresh.
  */
 
-import type { Citation, ProposedAction, StreamEvent } from "@shared/stream-events";
+import type {
+  ActionOutcome,
+  Citation,
+  ProposedAction,
+  StreamEvent,
+} from "@shared/stream-events";
 
 export interface Turn {
   /**
@@ -23,6 +28,9 @@ export interface Turn {
   retrievedCount?: number;
   answer?: string;
   citations: Citation[];
+  /** What the action agent decided. `ask_account` and `refuse` both arrive as
+   *  prose, so without this the screen cannot tell them apart. */
+  outcome?: ActionOutcome;
   approval?: { approvalId: string; action: ProposedAction };
   decision?: "approve" | "reject";
   error?: string;
@@ -69,6 +77,8 @@ export function applyEvent(turn: Turn, event: StreamEvent): Turn {
       return { ...turn, citations: event.items };
     case "approval_required":
       return { ...turn, approval: { approvalId: event.approvalId, action: event.action } };
+    case "action_outcome":
+      return { ...turn, outcome: event.outcome };
     case "done":
       return { ...turn, cost: event.usage.costUsd, ms: event.usage.ms };
     case "error":

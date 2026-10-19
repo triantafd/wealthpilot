@@ -21,6 +21,12 @@ from pydantic.alias_generators import to_camel
 
 Tier = Literal["READ", "LOW", "HIGH"]
 
+# What the action agent decided to do about a request. Named for the action
+# route rather than called `outcome`, because a research refusal and an
+# out-of-scope refusal are different facts and a single blurred field is how a
+# UI ends up labelling "how old are you" as a declined action.
+ActionOutcome = Literal["propose", "ask_account", "refuse"]
+
 
 class ContractModel(BaseModel):
     """Base for everything on the wire: camelCase out, either name in."""
@@ -127,6 +133,20 @@ class ApprovalRequiredEvent(ContractModel):
     action: ProposedAction
 
 
+class ActionOutcomeEvent(ContractModel):
+    """Which of its three outcomes the action agent reached.
+
+    `propose` and `refuse` are visible already — one raises an approval card,
+    the other does not — but `ask_account` and `refuse` both arrive as a
+    paragraph of prose, and they are opposites: one is a question that a reply
+    carries forward, the other is a dead end. The agent has recorded the
+    distinction in state since Phase 4a; this is what carries it to the screen.
+    """
+
+    type: Literal["action_outcome"] = "action_outcome"
+    outcome: ActionOutcome
+
+
 class CitationsEvent(ContractModel):
     type: Literal["citations"] = "citations"
     items: list[Citation]
@@ -154,6 +174,7 @@ StreamEvent = Annotated[
     | RetrievalEvent
     | TokenEvent
     | ApprovalRequiredEvent
+    | ActionOutcomeEvent
     | CitationsEvent
     | GuardrailEvent
     | DoneEvent
@@ -170,6 +191,7 @@ EVENT_MODELS: tuple[type[ContractModel], ...] = (
     RetrievalEvent,
     TokenEvent,
     ApprovalRequiredEvent,
+    ActionOutcomeEvent,
     CitationsEvent,
     GuardrailEvent,
     DoneEvent,

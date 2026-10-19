@@ -5,7 +5,8 @@ The graph emits per-node state updates; the browser expects the ten events in
 route handler so it can be tested by collecting a list instead of parsing HTTP.
 
 **Which events are emitted, and which are not.** `route`, `retrieval`, `token`,
-`citations`, `approval_required`, `done` and `error` are produced here.
+`citations`, `approval_required`, `action_outcome`, `done` and `error` are
+produced here.
 `tool_start`, `tool_end` and `guardrail` are in the contract and not yet sent:
 the stream sees *node* updates, and a tool call happens inside a node, so
 emitting them needs a channel from `tools/registry.py` out to the stream. That
@@ -41,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.graph import compile_graph
 from app.agents.state import initial_state, thread_config
 from app.api.events import (
+    ActionOutcomeEvent,
     ApprovalRequiredEvent,
     Citation,
     CitationsEvent,
@@ -91,6 +93,20 @@ def _citations_event(update: dict[str, Any]) -> CitationsEvent | None:
     if not items:
         return None
     return CitationsEvent(items=[Citation.model_validate(c) for c in items])
+
+
+def _action_outcome_event(update: dict[str, Any]) -> ActionOutcomeEvent | None:
+    """What the action agent decided, before the message that says it.
+
+    Emitted ahead of the `token` event deliberately: `ask_account` and
+    `refuse` both arrive as a paragraph, and a label that lands after the
+    paragraph explains something the reader has already read.
+    """
+    outcome = update.get("action_outcome")
+    if outcome not in ("propose", "ask_account", "refuse"):
+        # Includes None, which is every node that is not the action agent.
+        return None
+    return ActionOutcomeEvent(outcome=outcome)
 
 
 def _token_event(update: dict[str, Any]) -> TokenEvent | None:
@@ -160,6 +176,7 @@ def events_for(node: str, chunk: Any) -> list[ContractModel]:
     # the first one's.
     builders: list[Callable[[dict[str, Any]], ContractModel | None]] = [
         _retrieval_event,
+        _action_outcome_event,
         _token_event,
         _citations_event,
     ]

@@ -61,6 +61,12 @@
         "required": true
       }
     },
+    "action_outcome": {
+      "outcome": {
+        "kind": "string",
+        "required": true
+      }
+    },
     "citations": {
       "items": {
         "kind": "array",

@@ -1,3 +1,4 @@
+import { cn } from "cn";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { PageHeader } from "@/components/page-shell";
@@ -6,6 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Inline } from "@/lib/inline-markdown";
 import { ask, createThread, decideApproval } from "@/lib/stream";
+import type { ActionOutcome } from "@shared/stream-events";
+
 import { applyEvent, newTurn, type Turn, updateTurn } from "./turn";
 
 /**
@@ -149,6 +152,38 @@ function Empty() {
   );
 }
 
+/** Asking, as distinct from refusing.
+
+ *  Both reach the screen as a paragraph, and they are opposites: one is a
+ *  question a reply carries forward, the other is a dead end the adviser
+ *  should stop pushing at. `propose` renders nothing — the approval card
+ *  below, with its HIGH tier badge, says it louder than a label would.
+ *
+ *  Local to this file rather than a component beside `TierBadge`, which earns
+ *  its place by appearing in the timeline, the inbox and the audit view. This
+ *  appears once. */
+function OutcomeNotice({ outcome }: { outcome?: ActionOutcome }) {
+  if (outcome !== "ask_account" && outcome !== "refuse") return null;
+
+  const asking = outcome === "ask_account";
+  return (
+    <p
+      data-testid="outcome"
+      title={
+        asking
+          ? "The agent needs one more detail. Reply and it will carry on."
+          : "The agent will not propose this action."
+      }
+      className={cn(
+        "inline-flex items-center rounded-sm px-1.5 py-0.5 text-[10px] font-medium",
+        asking ? "bg-accent text-accent-foreground" : "bg-muted text-muted-foreground",
+      )}
+    >
+      {asking ? "needs your answer" : "declined"}
+    </p>
+  );
+}
+
 function TurnView({
   turn,
   busy,
@@ -171,6 +206,8 @@ function TurnView({
           {turn.retrievedCount ? ` · ${turn.retrievedCount} passages searched` : null}
         </p>
       ) : null}
+
+      <OutcomeNotice outcome={turn.outcome} />
 
       {turn.answer ? (
         <p className="text-sm leading-relaxed whitespace-pre-wrap" data-testid="answer">

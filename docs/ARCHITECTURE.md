@@ -130,6 +130,7 @@ type StreamEvent =
   | { type: "retrieval"; chunks: { id: number; documentId: string; page: number; score: number }[] }
   | { type: "token"; text: string; replace: boolean }
   | { type: "approval_required"; approvalId: string; action: ProposedAction }
+  | { type: "action_outcome"; outcome: "propose" | "ask_account" | "refuse" }
   | { type: "citations"; items: { documentId: string; page: number; quote: string }[] }
   | { type: "guardrail"; flag: string }
   | { type: "done"; usage: { inputTokens: number; outputTokens: number; costUsd: number; ms: number } }

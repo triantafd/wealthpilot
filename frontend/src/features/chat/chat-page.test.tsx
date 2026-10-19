@@ -80,6 +80,8 @@ const RESEARCH_TURN = [
 
 const ACTION_TURN = [
   { type: "route", route: "action", confidence: 0.88 },
+  // The backend sends this on every action turn, including a proposal.
+  { type: "action_outcome", outcome: "propose" },
   {
     type: "approval_required",
     approvalId: "a-1",
@@ -91,6 +93,25 @@ const ACTION_TURN = [
     },
   },
   { type: "done", usage: { inputTokens: 681, outputTokens: 28, costUsd: 0.000118, ms: 1061 } },
+];
+
+/** A turn where the agent needs one more detail before it can propose. */
+const ASKING_TURN = [
+  { type: "route", route: "action", confidence: 0.86 },
+  { type: "action_outcome", outcome: "ask_account" },
+  {
+    type: "token",
+    text: "Which account should I raise the rebalance for?",
+    replace: true,
+  },
+  { type: "done", usage: { inputTokens: 612, outputTokens: 19, costUsd: 0.000103, ms: 870 } },
+];
+
+const REFUSED_TURN = [
+  { type: "route", route: "action", confidence: 0.84 },
+  { type: "action_outcome", outcome: "refuse" },
+  { type: "token", text: "there is no account AC-99999", replace: true },
+  { type: "done", usage: { inputTokens: 618, outputTokens: 14, costUsd: 0.000101, ms: 840 } },
 ];
 
 async function ask(question: string) {
@@ -171,6 +192,40 @@ describe("ChatPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "Reject" }));
 
     await waitFor(() => expect(screen.getByTestId("decision")).toHaveTextContent(/nothing ran/i));
+  });
+
+  it("marks a turn that is asking, not refusing", async () => {
+    // The two arrive as the same shape of paragraph. An adviser who reads a
+    // question as a refusal stops, and the proposal never gets made.
+    vi.stubGlobal("fetch", stubFetch(ASKING_TURN));
+    renderChat();
+
+    await ask("rebalance the account, it has drifted");
+
+    await waitFor(() => expect(screen.getByTestId("outcome")).toBeInTheDocument());
+    expect(screen.getByTestId("outcome")).toHaveTextContent(/needs your answer/i);
+    expect(screen.queryByTestId("approval")).not.toBeInTheDocument();
+  });
+
+  it("marks a refusal as a dead end", async () => {
+    vi.stubGlobal("fetch", stubFetch(REFUSED_TURN));
+    renderChat();
+
+    await ask("rebalance AC-99999");
+
+    await waitFor(() => expect(screen.getByTestId("outcome")).toBeInTheDocument());
+    expect(screen.getByTestId("outcome")).toHaveTextContent(/declined/i);
+  });
+
+  it("labels nothing when the agent proposed", async () => {
+    // The approval card and its HIGH badge already say it, louder.
+    vi.stubGlobal("fetch", stubFetch(ACTION_TURN));
+    renderChat();
+
+    await ask("rebalance AC-00042");
+
+    await waitFor(() => expect(screen.getByTestId("approval")).toBeInTheDocument());
+    expect(screen.queryByTestId("outcome")).not.toBeInTheDocument();
   });
 
   it("shows an error event rather than an empty answer", async () => {

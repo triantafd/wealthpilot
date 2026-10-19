@@ -370,14 +370,20 @@ screen.*
       would italicise the gap between two of them. Markdown's flanking rule is
       implemented, so `£1,400,000 * 0.0085 * 12` stays a sum. Citation quotes
       get the same renderer — same corpus, same `**`
-- [ ] **Show asking differently from refusing.** The action agent reports
-      `action_outcome` (`propose` / `ask_account` / `refuse`) in state as of
-      Phase 4a, so the distinction exists; nothing carries it to the screen.
-      `ask_account` is one reply away from a proposal and a refusal is a dead
-      end, and prose alone does not tell an adviser which they are looking at.
-      Per working rule 5 this means a new field on the SSE contract:
-      `shared/stream-events.ts` and `backend/app/api/events.py` change
-      together, with the contract test kept passing
+- [x] **Show asking differently from refusing.** The action agent has reported
+      `action_outcome` (`propose` / `ask_account` / `refuse`) in state since
+      Phase 4a; nothing carried it to the screen, where `ask_account` and
+      `refuse` are both a paragraph of prose — one a question a reply carries
+      forward, the other a dead end. Now a tenth member of the SSE union,
+      `action_outcome`, rather than a field on an existing event: it is a fact
+      a different node produces at a different moment, and hanging it off
+      `done` would deliver the label after the reader had read the paragraph.
+      It is emitted *before* the `token` event for the same reason. Named for
+      the action route, not `outcome`, because a research refusal and an
+      out-of-scope refusal are different facts and one blurred field is how a
+      UI ends up calling "how old are you" a declined action. `propose` is
+      carried but deliberately shows nothing — the approval card and its HIGH
+      badge say it louder
 
 ### Approvals
 
