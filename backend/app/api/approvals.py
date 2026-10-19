@@ -33,7 +33,9 @@ from app.approvals import (
     ApprovalNotFoundError,
     ApprovalRecord,
     Decision,
+    ExecutionRecord,
     decide,
+    executions_for,
     get_approval,
     list_approvals,
 )
@@ -41,6 +43,27 @@ from app.db.models.ops import APPROVAL_STATUSES
 from app.db.session import get_session
 
 router = APIRouter(tags=["approvals"])
+
+
+class Execution(BaseModel):
+    """What the approval authorised, once it was spent.
+
+    Absent while an approval is pending, and absent after a decision that
+    never ran — a rejection, or an approval whose execution failed before the
+    tool did anything. "Approved, never ran" is a real state and the inbox
+    says so rather than implying the action happened.
+    """
+
+    outcome: str = Field(description="ok, error or denied — the audit row's own vocabulary.")
+    at: Any
+    duration_ms: int | None = None
+    result: dict[str, Any] | None = Field(
+        None, description="What the tool returned. For a rebalance, the task it raised."
+    )
+    error: str | None = None
+    attempts: int = Field(
+        1, description="How many times this approval was offered. More than one is worth seeing."
+    )
 
 
 class Approval(BaseModel):
@@ -58,8 +81,18 @@ class Approval(BaseModel):
     requested_by: str | None
     decided_by: str | None
     decision_note: str | None
+    created_at: Any
+    decided_at: Any | None = Field(
+        None, description="When a human decided it. Null while it is waiting."
+    )
     consumed_at: Any | None = Field(
         None, description="Set once the approval has been spent. An approval is single-use."
+    )
+    execution: Execution | None = Field(
+        None,
+        description=(
+            "The call this approval authorised, from the audit log. Null when nothing ran under it."
+        ),
     )
 
 
@@ -96,8 +129,11 @@ class DecisionResponse(BaseModel):
     )
 
 
-def _public(record: ApprovalRecord) -> Approval:
-    return Approval.model_validate(record, from_attributes=True)
+def _public(record: ApprovalRecord, execution: ExecutionRecord | None = None) -> Approval:
+    approval = Approval.model_validate(record, from_attributes=True)
+    if execution is not None:
+        approval.execution = Execution.model_validate(execution, from_attributes=True)
+    return approval
 
 
 @router.get("/approvals", summary="Approvals inbox")
@@ -119,7 +155,10 @@ async def get_approvals(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"status must be one of {', '.join(APPROVAL_STATUSES)}",
         )
-    return [_public(r) for r in await list_approvals(session, status=status_filter, limit=limit)]
+    records = await list_approvals(session, status=status_filter, limit=limit)
+    # One query for the page, not one per row.
+    executions = await executions_for(session, [r.id for r in records])
+    return [_public(r, executions.get(r.id)) for r in records]
 
 
 @router.post("/approvals/{approval_id}", summary="Decide an approval and resume the graph")
@@ -177,9 +216,9 @@ async def post_decision(
     # Re-read: the resume spends the approval, so the record from `decide` is
     # already stale and would report consumed_at as null for an approval the
     # registry has just used.
-    return DecisionResponse(
-        approval=_public(await get_approval(session, approval_id)), resumed=resumed
-    )
+    record = await get_approval(session, approval_id)
+    executions = await executions_for(session, [record.id])
+    return DecisionResponse(approval=_public(record, executions.get(record.id)), resumed=resumed)
 
 
 async def _resume(

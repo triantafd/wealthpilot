@@ -391,8 +391,19 @@ screen.*
 authorised what" becomes visible, so there is no point building it over a
 record that cannot answer the question.*
 
-- [ ] Approvals inbox, showing for each decided approval **who approved it and
-      which execution it authorised** — which requires the three items below
+- [x] **Approvals inbox, showing for each decided approval who approved it and
+      which execution it authorised.** `GET /approvals` carries an `execution`
+      built from the `audit_log` rows that reference the approval — one query
+      for the page rather than one per row — with `attempts`, because an
+      approval offered twice is a different story from one that ran once. The
+      page replaces its placeholder: a waiting/approved/rejected/all filter,
+      approve and reject from the inbox itself, and for anything decided, who
+      decided it and what it did. Three absences are distinguished rather than
+      flattened: a rejection ran nothing, an approval can be decided and still
+      never execute, and an approval spent before the provenance columns
+      existed ran something no row can name. All three are visible in the dev
+      data — the 9 October approval says exactly the third, today's says
+      "raised task 103"
 - [ ] **Make the conversation survive a refresh.** History lives in the
       component, so reloading loses it even though the checkpointer has every
       turn. `GET /threads/{id}` returns messages as role and content only — no

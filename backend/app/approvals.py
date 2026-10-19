@@ -16,6 +16,7 @@ implementation detail of the gate; it is the record of who allowed what.
 """
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -25,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.events import ProposedAction
 from app.audit import Outcome, write_audit
-from app.db.models.ops import Approval
+from app.db.models.ops import Approval, AuditLogEntry
 
 Decision = Literal["approve", "reject"]
 
@@ -70,6 +71,78 @@ class ApprovalRecord:
     created_at: datetime
     decided_at: datetime | None
     consumed_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ExecutionRecord:
+    """What happened when an approval was spent.
+
+    The other half of "who approved this?": a decision is only half a story
+    without what it authorised. Assembled from `audit_log` rows that carry the
+    approval's id — which they only have since the provenance work, before
+    which this could not be asked at all.
+
+    `attempts` counts the `call` rows, not the successes: an approval offered
+    twice leaves a `denied` row and then nothing, and "tried twice" is a
+    different fact from "ran once".
+    """
+
+    outcome: str
+    at: datetime
+    duration_ms: int | None
+    result: dict[str, Any] | None
+    error: str | None
+    attempts: int
+
+
+async def executions_for(
+    session: AsyncSession, approval_ids: Sequence[str]
+) -> dict[str, ExecutionRecord]:
+    """The latest execution of each approval, keyed by approval id.
+
+    One query for the whole page rather than one per row: an inbox listing
+    fifty approvals would otherwise be fifty round trips, and the N+1 would
+    only show up once somebody had fifty.
+
+    Only `call` rows: a `decision` row is the approval being decided, which
+    the approval itself already says.
+    """
+    if not approval_ids:
+        return {}
+
+    rows = (
+        await session.execute(
+            select(
+                AuditLogEntry.approval_id,
+                AuditLogEntry.outcome,
+                AuditLogEntry.created_at,
+                AuditLogEntry.duration_ms,
+                AuditLogEntry.result,
+                AuditLogEntry.error,
+            )
+            .where(
+                AuditLogEntry.approval_id.in_([uuid.UUID(a) for a in approval_ids]),
+                AuditLogEntry.event_type == "call",
+            )
+            .order_by(AuditLogEntry.id)
+        )
+    ).all()
+
+    latest: dict[str, ExecutionRecord] = {}
+    for row in rows:
+        key = str(row.approval_id)
+        attempts = latest[key].attempts + 1 if key in latest else 1
+        # Later rows replace earlier ones, so the last one wins — ordered by
+        # id above, which is the sequence the rows were written in.
+        latest[key] = ExecutionRecord(
+            outcome=row.outcome,
+            at=row.created_at,
+            duration_ms=row.duration_ms,
+            result=row.result,
+            error=row.error,
+            attempts=attempts,
+        )
+    return latest
 
 
 def _record(row: Any) -> ApprovalRecord:

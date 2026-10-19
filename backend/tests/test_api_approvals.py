@@ -22,7 +22,7 @@ from app.agents.state import initial_state, thread_config
 from app.approvals import create_approval, get_approval, list_approvals
 from app.db.models.firm import Account, Client, Task
 from app.db.models.ops import AuditLogEntry
-from app.tools.registry import REGISTRY, get
+from app.tools.registry import REGISTRY, ApprovalRequiredError, execute, get
 from tests.conftest import fake_graph_model
 
 ACCOUNT = "AC-TEST01"
@@ -309,3 +309,107 @@ async def test_a_tool_failing_on_resume_keeps_the_decision_and_audits_the_failur
     assert "the task queue is down" in (failure.error or "")
     assert str(failure.approval_id) == approval_id
     assert (await db_session.execute(select(func.count()).select_from(Task))).scalar_one() == 0
+
+
+# --- What the decision authorised --------------------------------------------
+# The half of the inbox that only became answerable once audit rows carried
+# `approval_id`. Before that, "which execution did this approve?" meant
+# correlating by thread and timestamp.
+
+
+async def test_a_decided_approval_carries_the_execution_it_authorised(
+    client: AsyncClient, db_session: AsyncSession, saver: Any
+) -> None:
+    await _an_account(db_session)
+    _, approval_id = await _paused_thread(saver, db_session)
+    await client.post(
+        f"/approvals/{approval_id}",
+        json={"decision": "approve", "decided_by": "adviser-7"},
+    )
+
+    (approval,) = (await client.get("/approvals?status=approved")).json()
+
+    assert approval["decided_by"] == "adviser-7"
+    execution = approval["execution"]
+    assert execution["outcome"] == "ok"
+    assert execution["attempts"] == 1
+    # The task the rebalance raised: what the approval actually authorised.
+    assert execution["result"]["account_id"] == ACCOUNT
+    assert execution["result"]["task_id"] > 0
+
+
+async def test_the_inbox_says_when_as_well_as_who(
+    client: AsyncClient, db_session: AsyncSession, saver: Any
+) -> None:
+    """Half of "who approved this" is when. Both timestamps were on the record
+    and neither reached the response model, so the page rendered nothing where
+    the date goes — and a TypeScript type that declared them happily compiled
+    against a payload that never had them."""
+    await _an_account(db_session)
+    _, approval_id = await _paused_thread(saver, db_session)
+    await client.post(
+        f"/approvals/{approval_id}",
+        json={"decision": "approve", "decided_by": "adviser-7"},
+    )
+
+    (approval,) = (await client.get("/approvals?status=approved")).json()
+
+    assert approval["created_at"] is not None
+    assert approval["decided_at"] is not None
+
+
+async def test_a_pending_approval_has_no_execution(
+    client: AsyncClient, db_session: AsyncSession, saver: Any
+) -> None:
+    """Nothing has run, and the inbox must not imply otherwise."""
+    await _an_account(db_session)
+    await _paused_thread(saver, db_session)
+
+    (approval,) = (await client.get("/approvals?status=pending")).json()
+
+    assert approval["execution"] is None
+
+
+async def test_a_rejected_approval_has_no_execution(
+    client: AsyncClient, db_session: AsyncSession, saver: Any
+) -> None:
+    """A rejection writes a `decision` row, not a `call` row. Counting it as
+    an execution would say the action ran when the whole point is that it did
+    not."""
+    await _an_account(db_session)
+    _, approval_id = await _paused_thread(saver, db_session)
+    await client.post(
+        f"/approvals/{approval_id}",
+        json={"decision": "reject", "decided_by": "adviser-7"},
+    )
+
+    (approval,) = (await client.get("/approvals?status=rejected")).json()
+
+    assert approval["execution"] is None
+
+
+async def test_an_approval_offered_twice_says_so(
+    client: AsyncClient, db_session: AsyncSession, saver: Any
+) -> None:
+    """`attempts` counts calls, not successes. One run and one refused replay
+    is a different story from one run, and the inbox should not flatten it."""
+    await _an_account(db_session)
+    _, approval_id = await _paused_thread(saver, db_session)
+    await client.post(
+        f"/approvals/{approval_id}",
+        json={"decision": "approve", "decided_by": "adviser-7"},
+    )
+    # The same approval offered again: single-use, so refused and audited.
+    with pytest.raises(ApprovalRequiredError):
+        await execute(
+            db_session,
+            "propose_rebalance",
+            {"account_id": ACCOUNT},
+            thread_id=(await get_approval(db_session, approval_id)).thread_id,
+            approval_id=approval_id,
+        )
+
+    (approval,) = (await client.get("/approvals?status=approved")).json()
+
+    assert approval["execution"]["attempts"] == 2
+    assert approval["execution"]["outcome"] == "denied", "the latest attempt, not the happiest"
