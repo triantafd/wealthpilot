@@ -292,6 +292,7 @@ async def _audit(
     duration_ms: int | None = None,
     claim: "_Claim | None" = None,
     approval_id: str | None = None,
+    out_of_band: bool = False,
 ) -> None:
     """Write one `call` row, with whatever the gate decided about it.
 
@@ -318,6 +319,7 @@ async def _audit(
         duration_ms=duration_ms,
         approval_id=approval_id if claim is not None and claim.exists else None,
         approver=claim.approver if claim is not None else None,
+        out_of_band=out_of_band,
     )
 
 
@@ -349,6 +351,7 @@ async def audit_denied(
         user_id=user_id,
         outcome=DENIED,
         error=reason,
+        out_of_band=True,
     )
 
 
@@ -384,6 +387,7 @@ async def execute(
             user_id=user_id,
             outcome=DENIED,
             error=f"{type(exc).__name__}: {exc}",
+            out_of_band=True,
         )
         raise
 
@@ -403,6 +407,9 @@ async def execute(
                 error=f"{spec.tier} tool refused: {claim.refusal or 'unauthorised'}",
                 claim=claim,
                 approval_id=approval_id,
+                # A refusal is true whatever the caller's transaction does
+                # next, and it is the row an investigation starts from.
+                out_of_band=True,
             )
             raise ApprovalRequiredError(
                 f"{name} is {spec.tier}-risk and was not authorised: "
@@ -457,6 +464,9 @@ async def execute(
             duration_ms=int((time.perf_counter() - started) * 1000),
             claim=claim,
             approval_id=approval_id,
+            # The tool did not succeed, so this row survives the caller's
+            # rollback — which is what used to eat it.
+            out_of_band=True,
         )
         raise
 

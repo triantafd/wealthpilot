@@ -129,12 +129,27 @@ async def post_decision(
     body: DecisionRequest,
     approval_id: Annotated[str, Path(description="The approval's id.")],
 ) -> DecisionResponse:
-    """Record the decision, then resume the thread that is waiting on it.
+    """Record the decision, commit it, then resume the thread waiting on it.
 
-    The decision is written first and committed with the resume in one
-    transaction. The registry re-reads the approval when the gate runs, so a
-    resume cannot authorise anything the decision did not — the ordering is
-    what makes the gate's own check meaningful rather than decorative.
+    The decision is written first. The registry re-reads the approval when the
+    gate runs, so a resume cannot authorise anything the decision did not —
+    the ordering is what makes the gate's own check meaningful rather than
+    decorative.
+
+    **The decision is committed before the resume**, and that is the whole
+    point of the commit sitting here rather than being left to `get_session`.
+    A tool failing during the resume raises past this handler, `get_session`
+    rolls back, and until now that rollback took the decision with it: an
+    adviser's approval silently un-made by a failure that happened after it,
+    while the checkpointer — which has its own connection — had already
+    committed the resumed state. A decision is a human's act and a fact on its
+    own; what the execution then does is a separate fact. The failure row is
+    durable for the same reason, written out of band by `app/audit.py`.
+
+    What stays rolled back on a failure is `consumed_at` and whatever the tool
+    half-wrote, which is correct: the action did not run. The approval is left
+    approved and unspent, and nothing can replay it — the thread is past its
+    interrupt, so `_resume` finds nothing waiting.
     """
     try:
         record = await decide(
@@ -146,7 +161,18 @@ async def post_decision(
         # 409: the request is well-formed, the resource is in the wrong state.
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
-    resumed = await _resume(request, session, record.thread_id, body.decision)
+    await session.commit()
+
+    try:
+        resumed = await _resume(request, session, record.thread_id, body.decision)
+    except Exception as exc:
+        # The decision and the audit row are already durable; the tool's own
+        # writes are not. 500 rather than a success the caller would believe:
+        # the approval was recorded, the action was not performed.
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"the decision was recorded, but the action failed: {type(exc).__name__}",
+        ) from exc
 
     # Re-read: the resume spends the approval, so the record from `decide` is
     # already stale and would report consumed_at as null for an approval the

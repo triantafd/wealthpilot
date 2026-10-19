@@ -24,6 +24,7 @@ so anything unserialisable is stringified rather than allowed to raise.
 """
 
 import json
+import logging
 import uuid
 from math import isfinite
 from typing import Any, Literal, get_args
@@ -33,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.events import Tier
 from app.db.models.ops import AUDIT_EVENT_TYPES, AUDIT_OUTCOMES, AuditLogEntry
+from app.db.session import get_sessionmaker
 
 # What a row records. `call` is an attempt to run a tool, whatever became of
 # it; `decision` is a human approving or rejecting one.
@@ -138,6 +140,51 @@ def clamp(text: str) -> str:
     return text.replace("\x00", "")[:MAX_FIELD_CHARS]
 
 
+logger = logging.getLogger(__name__)
+
+
+def _own_session() -> AsyncSession:
+    """A session of this row's own, on its own connection.
+
+    Replaced in `tests/conftest.py` by one bound to the test's connection, so
+    a test still runs this code path and still rolls back. Nothing else
+    reassigns it.
+    """
+    return get_sessionmaker()()
+
+
+failure_session_factory = _own_session
+
+
+async def _write_out_of_band(values: dict[str, Any]) -> None:
+    """Write a failure row on its own session and commit it there.
+
+    A row describing an attempt that did **not** succeed is not falsified by
+    the caller rolling back — the attempt still happened — so it does not
+    belong in the caller's transaction. An `ok` row is the opposite: it
+    asserts that a tool's writes landed, and committing that separately would
+    make it a lie the moment the caller rolls back.
+
+    This exists because the rollback was eating exactly the rows that matter.
+    A tool failing during `POST /approvals/{id}` raised past the handler to
+    `get_session`, which rolled back the decision row, the error row and the
+    approval's status together: an HTTP 500 and nothing in `audit_log` to say
+    anything had been attempted.
+    """
+    session = failure_session_factory()
+    try:
+        async with session:
+            await session.execute(insert(AuditLogEntry).values(**values))
+            await session.commit()
+    except Exception:
+        # Never raised onward. This runs inside an `except` block that is
+        # recording someone else's failure, and an exception here would
+        # replace theirs — the precise bug this module was rewritten to stop.
+        # Logged rather than swallowed silently: a lost audit row is worth
+        # knowing about, just not worth losing the original error over.
+        logger.exception("could not write audit row out of band: %s", values.get("tool_name"))
+
+
 async def write_audit(
     session: AsyncSession,
     *,
@@ -153,6 +200,7 @@ async def write_audit(
     duration_ms: int | None = None,
     approval_id: uuid.UUID | str | None = None,
     approver: str | None = None,
+    out_of_band: bool = False,
 ) -> None:
     """Append one row. Does not commit: the caller owns the transaction.
 
@@ -160,25 +208,37 @@ async def write_audit(
     attempt quoting an id that was never issued must pass None and leave the
     id in `error`. The registry works that out from the claim it tried to
     make; nothing here can.
+
+    `out_of_band` writes the row on its own session and commits it there; see
+    `_write_out_of_band` for when that is honest and when it is not. It is
+    refused for an `ok` row rather than left to a caller to get right.
     """
-    await session.execute(
-        insert(AuditLogEntry).values(
-            event_type=event_type,
-            thread_id=thread_id,
-            user_id=user_id,
-            # Clamped: `audit_denied` takes a caller-supplied name, and a
-            # model picking the name is the case this column exists for.
-            tool_name=clamp(tool_name),
-            tier=tier,
-            args=jsonable(args),
-            result=jsonable(result),
-            outcome=outcome,
-            # Not run through `jsonable` — it is text, not JSON — but it comes
-            # from `str(exc)`, which for a database error embeds the statement
-            # that failed, so it gets the same bound and the same scrubbing.
-            error=clamp(error) if error is not None else None,
-            duration_ms=duration_ms,
-            approval_id=approval_id,
-            approver=approver,
+    if out_of_band and outcome == "ok":
+        raise ValueError(
+            "an `ok` row must stay in the caller's transaction; see _write_out_of_band"
         )
+
+    values: dict[str, Any] = dict(
+        event_type=event_type,
+        thread_id=thread_id,
+        user_id=user_id,
+        # Clamped: `audit_denied` takes a caller-supplied name, and a model
+        # picking the name is the case this column exists for.
+        tool_name=clamp(tool_name),
+        tier=tier,
+        args=jsonable(args),
+        result=jsonable(result),
+        outcome=outcome,
+        # Not run through `jsonable` — it is text, not JSON — but it comes
+        # from `str(exc)`, which for a database error embeds the statement
+        # that failed, so it gets the same bound and the same scrubbing.
+        error=clamp(error) if error is not None else None,
+        duration_ms=duration_ms,
+        approval_id=approval_id,
+        approver=approver,
     )
+
+    if out_of_band:
+        await _write_out_of_band(values)
+        return
+    await session.execute(insert(AuditLogEntry).values(**values))

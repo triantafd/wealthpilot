@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from app import observability
+from app import audit, observability
 from app.agents.checkpointer import setup_checkpointer
 from app.config import get_settings
 from app.db.session import get_session
@@ -179,9 +179,28 @@ async def db_session(migrated_db: AsyncConnection) -> AsyncIterator[AsyncSession
     commits — ingestion does — would leave rows behind for the next test.
     """
     session = AsyncSession(bind=migrated_db, join_transaction_mode="create_savepoint")
+
+    def _on_this_tests_connection() -> AsyncSession:
+        """Where `app/audit.py` writes a failure row during a test.
+
+        In production that row goes on its own connection and commits there,
+        so it survives the caller's rollback. A test cannot have that: a real
+        second connection would neither see this test's uncommitted rows —
+        every approval it writes — nor roll back with it, so the rows would
+        leak into whatever ran next. Binding it to the same connection keeps
+        the code path under test and the isolation intact; `commit()` here
+        releases a savepoint, exactly as it does for the session above.
+
+        `tests/test_audit.py` covers the real factory, with its own cleanup.
+        """
+        return AsyncSession(bind=migrated_db, join_transaction_mode="create_savepoint")
+
+    original_factory = audit.failure_session_factory
+    audit.failure_session_factory = _on_this_tests_connection
     try:
         yield session
     finally:
+        audit.failure_session_factory = original_factory
         await session.close()
 
 

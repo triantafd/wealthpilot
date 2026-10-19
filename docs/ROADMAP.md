@@ -449,25 +449,45 @@ record that cannot answer the question.*
       failure rolls back to a savepoint and leaves the session usable. Both
       fixes have a test that fails without them — checked by reverting each
       one, not by assuming
-- [ ] **A failed execution through `/approvals/{id}` discards its own audit
-      row.** From the security review of 2026-10-19, and the half of the
-      error-masking fix that is not in the write path. `graph.ainvoke` in
-      `post_decision` is unguarded and the gate deliberately re-raises
-      anything that is not a `ToolError`, so the exception reaches
-      `get_session`, which rolls the transaction back — discarding the
-      `decision` row, the `error` row, `consumed_at`, and the approval's
-      `approved` status in one go. The row is now *insertable* (the savepoint
-      fixed that) and still not *durable*. Net effect of the exact scenario
-      the savepoint exists for: HTTP 500, nothing in `audit_log`, the approval
-      back in the inbox as pending — while the checkpointer, which has its own
-      connection, has already committed the resumed state. The SSE path is
-      fine: it turns the exception into an `error` event, so the request
-      commits. Two options: write `denied` and `error` rows out of band on a
-      short-lived session that commits immediately (a row describing an
-      attempt that did *not* succeed is not falsified by the caller rolling
-      back, while an `ok` row must stay inside the caller's transaction), or
-      catch in `post_decision`, commit, and then return the 500. Needs an
-      API-level test, which is why no unit test caught it
+- [x] **A failed execution no longer discards its own audit row, or the
+      decision that authorised it.** `graph.ainvoke` in `post_decision` is
+      unguarded and the gate deliberately re-raises anything that is not a
+      `ToolError`, so the exception reached `get_session` and its rollback
+      took the decision row, the error row, `consumed_at` and the approval's
+      status with it: HTTP 500, nothing in `audit_log`, the approval back in
+      the inbox as pending — while the checkpointer, on its own connection,
+      had already committed the resumed state. Two changes. `denied` and
+      `error` rows are written **out of band**, on their own session that
+      commits there: a row describing an attempt that did *not* succeed is not
+      falsified by the caller rolling back, so it does not belong in the
+      caller's transaction. An `ok` row is the opposite — it asserts a tool's
+      writes landed — so writing one out of band is refused in code rather
+      than left to a caller to get right. And the decision is committed
+      *before* the resume, because an adviser's approval is a fact of its own
+      and a failure after it must not silently un-make it. What stays rolled
+      back is `consumed_at` and whatever the tool half-wrote, which is
+      correct: the action did not run, and nothing can replay it because the
+      thread is past its interrupt
+- [ ] **A cancelled request still writes no audit row.** A client
+      disconnecting mid-tool raises `CancelledError`, which is not an
+      `Exception` and so never reaches the audit in `execute`. The savepoint
+      is released correctly; only the row is missing. Fixing it needs
+      `asyncio.shield` around the write, which is a change to make
+      deliberately rather than in passing. Recorded 2026-10-19
+- [ ] **Redact bound parameters out of `audit_log.error`.** The string is
+      `f"{type(exc).__name__}: {exc}"`, and a SQLAlchemy `DBAPIError` embeds
+      `[SQL: ...] [parameters: ...]`. It is clamped and NUL-stripped but not
+      redacted, so when the text-to-SQL tool lands the log will carry
+      model-generated SQL (wanted) together with the client values bound into
+      it (not wanted, and the table has no redaction or retention policy).
+      Log the statement plus a parameter count or hashed parameters
+- [ ] **Shape the `audit_log` migrations for a table that is being written
+      to.** `c3e8a1d07b55` adds the column, backfills with one unbatched
+      UPDATE over a sequential scan, and validates the check constraint under
+      `ACCESS EXCLUSIVE`, all in one transaction — so the table every tool
+      call writes to is locked for the whole migration. Milliseconds at this
+      size and correct as written; the shape to demonstrate is `NOT VALID`
+      then a batched backfill then `VALIDATE CONSTRAINT`
 - [ ] **Anchor the thread binding to the runtime thread, not to state.** The
       gate passes `state["thread_id"]` and the approval was written from the
       same field, so the check is self-consistent rather than anchored. Safe

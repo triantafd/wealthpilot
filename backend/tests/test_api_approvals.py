@@ -9,6 +9,7 @@ Without that a test would resume threads in development data.
 """
 
 import uuid
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -20,7 +21,8 @@ from app.agents.graph import compile_graph
 from app.agents.state import initial_state, thread_config
 from app.approvals import create_approval, get_approval, list_approvals
 from app.db.models.firm import Account, Client, Task
-from app.tools.registry import get
+from app.db.models.ops import AuditLogEntry
+from app.tools.registry import REGISTRY, get
 from tests.conftest import fake_graph_model
 
 ACCOUNT = "AC-TEST01"
@@ -257,3 +259,53 @@ async def test_the_response_reports_the_approval_after_the_resume(
     ).json()
 
     assert body["approval"]["consumed_at"] is not None
+
+
+async def test_a_tool_failing_on_resume_keeps_the_decision_and_audits_the_failure(
+    client: AsyncClient, db_session: AsyncSession, saver: Any
+) -> None:
+    """A failure after the decision must not un-make the decision.
+
+    The gate deliberately re-raises anything that is not a `ToolError`, so the
+    exception used to reach `get_session`, which rolled back the decision row,
+    the error row and the approval's status together: 500, an approval back in
+    the inbox as pending, and nothing in `audit_log` — while the checkpointer,
+    on its own connection, had already committed the resumed state.
+
+    What this test can show is the ordering and the rows. It cannot show the
+    rollback itself: the `client` fixture replaces `get_session` with the
+    test's own session, which never rolls back mid-test. That half is
+    `tests/test_audit.py:test_a_failure_row_commits_on_its_own_session`.
+    """
+    await _an_account(db_session)
+    _, approval_id = await _paused_thread(saver, db_session)
+
+    async def explodes(session: AsyncSession, **kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("the task queue is down")
+
+    intact = get("propose_rebalance")
+    REGISTRY["propose_rebalance"] = replace(intact, run=explodes)
+    try:
+        response = await client.post(
+            f"/approvals/{approval_id}",
+            json={"decision": "approve", "decided_by": "adviser-7"},
+        )
+    finally:
+        REGISTRY["propose_rebalance"] = intact
+
+    assert response.status_code == 500
+    assert "the action failed" in response.json()["detail"]
+
+    # The human's decision is a fact of its own, and survives.
+    approval = await get_approval(db_session, approval_id)
+    assert approval.status == "approved"
+    assert approval.decided_by == "adviser-7"
+
+    # And the attempt is on the record, with the approval it was made under.
+    failure = (
+        await db_session.execute(select(AuditLogEntry).where(AuditLogEntry.outcome == "error"))
+    ).scalar_one()
+    assert failure.event_type == "call"
+    assert "the task queue is down" in (failure.error or "")
+    assert str(failure.approval_id) == approval_id
+    assert (await db_session.execute(select(func.count()).select_from(Task))).scalar_one() == 0
