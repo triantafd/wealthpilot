@@ -333,7 +333,22 @@ screen.*
       measurement to be redone. Option (c), which did change the request and
       cost ten points of refusal accuracy, is written up in
       `docs/EXPERIMENTS.md`
-- [ ] Render the answer's markdown — `**£1,500**` currently shows literally
+- [x] **Render the answer's markdown.** `**£1,500**` showed literally.
+      `frontend/src/lib/inline-markdown.tsx` renders bold, italic and code
+      spans and nothing else, because that is what answers contain: across the
+      75 answers in the last full `rag` report, `**bold**` 19, `*italic*` 11,
+      `` `code` `` 4, and no bullets, lists, headings, tables or newlines at
+      all. Not `react-markdown`: a remark pipeline for three inline constructs,
+      and block rendering of model output would need a link/image/HTML
+      allow-list to maintain. This returns React elements only — no
+      `dangerouslySetInnerHTML`, no URL parsed — so a link, an image or a
+      `<script>` in an answer is text by construction, which is a property
+      Phase 6 can rely on. Underscore emphasis is deliberately unsupported:
+      `_x_` appeared in none of the 75 answers and snake_case identifiers
+      (`execution_only`, `ask_account`) are everywhere, so `_` as a delimiter
+      would italicise the gap between two of them. Markdown's flanking rule is
+      implemented, so `£1,400,000 * 0.0085 * 12` stays a sum. Citation quotes
+      get the same renderer — same corpus, same `**`
 - [ ] **Show asking differently from refusing.** The action agent reports
       `action_outcome` (`propose` / `ask_account` / `refuse`) in state as of
       Phase 4a, so the distinction exists; nothing carries it to the screen.

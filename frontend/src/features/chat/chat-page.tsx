@@ -4,6 +4,7 @@ import { PageHeader } from "@/components/page-shell";
 import { TierBadge } from "@/components/tier-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Inline } from "@/lib/inline-markdown";
 import { ask, createThread, decideApproval } from "@/lib/stream";
 import { applyEvent, newTurn, type Turn, updateTurn } from "./turn";
 
@@ -173,7 +174,9 @@ function TurnView({
 
       {turn.answer ? (
         <p className="text-sm leading-relaxed whitespace-pre-wrap" data-testid="answer">
-          {turn.answer}
+          {/* The model emphasises figures: `**£1,500**`. `whitespace-pre-wrap`
+              stays, so a newline still shows the day an answer has one. */}
+          <Inline text={turn.answer} />
         </p>
       ) : null}
 
@@ -188,7 +191,11 @@ function TurnView({
                 {citation.documentId} · page {citation.page}
               </span>
               <br />
-              &ldquo;{citation.quote}&rdquo;
+              {/* Quotes are verbatim from the same markdown corpus, so they
+                  carry the same `**` a reader should not have to see. */}
+              &ldquo;
+              <Inline text={citation.quote} />
+              &rdquo;
             </li>
           ))}
         </ul>

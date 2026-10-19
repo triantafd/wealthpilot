@@ -69,7 +69,8 @@ function stubFetch(events: object[], options: { decideOk?: boolean } = {}) {
 const RESEARCH_TURN = [
   { type: "route", route: "research", confidence: 0.91 },
   { type: "retrieval", chunks: [{ id: 1, documentId: "fee-schedule", page: 1, score: 0.9 }] },
-  { type: "token", text: "The minimum annual advisory fee is £1,500." },
+  // As the model actually answers: the figure comes back emphasised.
+  { type: "token", text: "The minimum annual advisory fee is **£1,500**." },
   {
     type: "citations",
     items: [{ documentId: "fee-schedule", page: 1, quote: "a minimum annual fee of £1,500" }],
@@ -123,6 +124,10 @@ describe("ChatPage", () => {
     expect(screen.getByTestId("route")).toHaveTextContent("research");
     expect(screen.getByTestId("route")).toHaveTextContent("0.91");
     expect(screen.getByTestId("answer")).toHaveTextContent("£1,500");
+    // Rendered, not shown as markup: the figure is bold and no asterisks
+    // reach the reader.
+    expect(screen.getByTestId("answer").querySelector("strong")).toHaveTextContent("£1,500");
+    expect(screen.getByTestId("answer").textContent).not.toContain("**");
     expect(screen.getByTestId("citations")).toHaveTextContent("fee-schedule");
     expect(screen.getByTestId("done")).toHaveTextContent("2814ms");
   });
