@@ -238,6 +238,27 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       (≥60 cases) covering every destination, and retire the slice file.
       Two shapes the slice has none of: an instruction naming **no account id**,
       and a message carrying **two requests at once**
+- [ ] **A question about the last answer has nowhere to go.** Observed in the
+      app on 2026-10-19 and reproduced: ask the fee question, then "whre did
+      you see that". The supervisor resolves the pronoun correctly —
+      `standalone_question` came back as *"Where did you see that there is a
+      floor on what we charge?"* — and then has only `research`, `action` and
+      `out_of_scope` to choose from, so it re-runs retrieval and answers the
+      original question a second time. The information the adviser wants is
+      already on screen as the citation (*fee-schedule · page 1*); no path
+      reads the thread's own last turn instead of the corpus.
+      The fix is a fourth destination — `conversation` — answering from state
+      with no retrieval and no second model call, which also makes provenance
+      demonstrable at the moment a reviewer asks for it. **Dataset first:** the
+      slice has a follow-up and a clarification but no provenance or meta case
+      at all, so the suite is green through this and would stay green through
+      the fix. Two other things that run gave up: routing confidence was 0.90
+      on all three turns including the one with no good destination, which is
+      evidence for the threshold item above that the number carries little
+      signal; and the rewrite retrieves worse than the adviser's own phrasing
+      (`fee-schedule#p1` fell out of the top 3 and the answer still cited it
+      correctly from lower down), which is the known informal-phrasing gap
+      rather than anything new
 - [ ] **Decide whether an execution-only account is rebalanceable.** The
       action agent checks only that the account exists, deliberately matching
       `propose_rebalance`, which checks the same and nothing more — an agent
