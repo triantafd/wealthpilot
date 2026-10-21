@@ -1,5 +1,6 @@
 import { cn } from "cn";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 
 import { ExecutionOutcome } from "@/components/execution-outcome";
 import { PageHeader } from "@/components/page-shell";
@@ -27,13 +28,19 @@ import { applyEvent, newTurn, type Turn, updateTurn } from "./turn";
  * them, and replaces the lot with the finished text when the turn ends — see
  * `turn.ts`.
  *
- * The conversation is kept in this component and not reloaded from the server.
- * The checkpointer does persist every turn, but `GET /threads/{id}` returns
- * messages as role and content only — no citations, no per-turn route, no cost
- * — so restoring from it would redraw the questions and answers with the
- * evidence missing, which is worse than an honest empty page. Surviving a
- * refresh is its own roadmap item, and needs that endpoint to return the whole
- * turn first.
+ * **The thread id lives in the URL**, as `/chat/:threadId`. It used to be a
+ * `useRef`, which meant a reload started a conversation the checkpointer knew
+ * nothing about — the adviser's own history, their pending approvals and the
+ * context behind "and for a junior account?" all silently gone. The id is now
+ * the page's address, so a reload lands back on the same thread and a
+ * follow-up continues it.
+ *
+ * The transcript itself is still only in this component, so a reload shows an
+ * empty one. That is the next step and not this one: it needs
+ * `GET /threads/{id}/turns`, which exists now, mapped back into `Turn`. What is
+ * deliberately not done is restoring from `GET /threads/{id}` — it returns
+ * messages as role and content only, so the answers would come back with their
+ * citations, route and cost missing, which is worse than an honest empty page.
  */
 
 /** Until there is authentication, the decider is a placeholder. Phase 9. */
@@ -44,9 +51,29 @@ export function ChatPage() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [busy, setBusy] = useState(false);
   const bottom = useRef<HTMLDivElement | null>(null);
-  // One thread for the page's life, so a follow-up continues the conversation
-  // rather than starting a new one the checkpointer knows nothing about.
-  const threadId = useRef<string | null>(null);
+
+  const { threadId: inUrl } = useParams<{ threadId: string }>();
+  const navigate = useNavigate();
+  // The thread this page is currently driving. The URL is the source of truth;
+  // this is how the page tells its own navigation apart from someone else's.
+  //
+  // It has to, because React Router keeps this component mounted across
+  // `/chat` -> `/chat/abc`, so "the id changed" cannot simply mean "start
+  // again". Three cases, wanting different things: the id appearing because we
+  // just created it (keep going — the first question is still streaming), the
+  // id changing to another thread or the Back button (a different
+  // conversation), and the id disappearing because the sidebar's Chat link was
+  // clicked (a new one). Comparing against what we are driving separates them.
+  const driving = useRef<string | null>(inUrl ?? null);
+
+  const address = inUrl ?? null;
+  useEffect(() => {
+    if (address === driving.current) return;
+    driving.current = address;
+    // A different conversation, so nothing on screen belongs to it. The
+    // transcript is not refetched here — see the module docstring.
+    setTurns([]);
+  }, [address]);
 
   const submit = useCallback(
     async (event: React.FormEvent) => {
@@ -60,8 +87,16 @@ export function ChatPage() {
       setTurns((current) => [...current, asked]);
 
       try {
-        threadId.current ??= await createThread();
-        for await (const streamed of ask({ threadId: threadId.current, message: question })) {
+        if (driving.current === null) {
+          const started = await createThread();
+          driving.current = started;
+          // `replace`, not a push: the URL is gaining the identity of the
+          // conversation already on screen rather than moving somewhere new,
+          // and an empty `/chat` is not a place the Back button should return
+          // to mid-answer.
+          navigate(`/chat/${started}`, { replace: true });
+        }
+        for await (const streamed of ask({ threadId: driving.current, message: question })) {
           setTurns((current) =>
             updateTurn(current, asked.id, (turn) => applyEvent(turn, streamed)),
           );
@@ -73,7 +108,7 @@ export function ChatPage() {
         setBusy(false);
       }
     },
-    [busy, message],
+    [busy, message, navigate],
   );
 
   const decide = useCallback(

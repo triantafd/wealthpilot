@@ -627,6 +627,14 @@ owed from Phase 3 is fixed.*
 
 *Phase 5 makes the app usable; this makes it good.*
 
+- [ ] **A thread list, so a conversation can be returned to.** The chat URL
+      carries its thread id since Phase 5, and the sidebar's "Chat" link goes
+      to `/chat` — a new conversation — so leaving a thread means losing the
+      way back to it unless the adviser kept the URL. Needs an endpoint that
+      lists a thread per row with its first question and when it last moved;
+      `checkpoints` has the threads but nothing names them, so the first
+      question has to come out of the earliest checkpoint or a column of its
+      own
 - [ ] Agent timeline: tool calls as they run, each tagged with its risk tier
 - [ ] Put `retrieval` back in front of the answer in the timeline. Token
       streaming left it behind: the deltas come from the research node while it
@@ -708,7 +716,12 @@ of the credit.*
       no wider than what `/approvals` already serves unauthenticated, so this
       is not a regression; it is the point at which "any thread id" stops
       being an acceptable authorisation rule. Needs an owner on the thread,
-      which nothing records today
+      which nothing records today. Note also that a thread id is only a
+      *convention*: `POST /threads` issues a random UUID v4, but
+      `POST /threads/{id}/messages` accepts whatever id the caller sends, so a
+      client can create a thread with a guessable one. That is harmless while
+      a thread is private to whoever holds its id and wrong the moment the id
+      is the authorisation
 - [ ] **`audit_log.approver` now reads as provenance and is still
       self-asserted.** It is populated from `DecisionRequest.decided_by` in the
       request body. The gap is the one above; what changed is the stakes — an

@@ -63,6 +63,15 @@ describe("routing", () => {
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(heading);
   });
 
+  it("renders a thread's URL as the chat page, not as a not-found", () => {
+    // `/chat/:threadId` is how a reload finds the conversation again. Without
+    // the route the page still works and a reload lands on "Not found", which
+    // is the kind of break nothing else notices.
+    renderApp("/chat/dd3f1b2e-0c61-4d0e-9f27-6a5b0b4c7e91");
+
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Chat");
+  });
+
   it("shows a not-found page for an unknown route", () => {
     renderApp("/nope");
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Not found");

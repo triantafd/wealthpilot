@@ -8,6 +8,7 @@
 
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SidebarProvider } from "@/components/ui/sidebar";
@@ -15,18 +16,40 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 
 import { ChatPage } from "./chat-page";
 
+/** A test's view of the address bar: the thread id is part of the URL now. */
+function Address() {
+  return <span data-testid="address">{useLocation().pathname}</span>;
+}
+
 /**
  * The page inside the providers the app shell gives it.
  *
  * `PageHeader` renders a `SidebarTrigger`, which reads the sidebar context, so
  * rendering the page bare fails with "useSidebar must be used within a
  * SidebarProvider" — a shell dependency rather than anything about chat.
+ *
+ * Both chat routes are mounted, because the page reads its thread id with
+ * `useParams` and the two cases — with an id and without — are different
+ * behaviour. That the app wires these paths to this page is pinned in
+ * `App.test.tsx` instead, so a route renamed in one place fails somewhere.
+ *
+ * The two links are the two ways an adviser leaves a conversation without the
+ * component unmounting, which is the case the page has to tell apart from its
+ * own navigation.
  */
-function renderChat() {
+function renderChat(route = "/chat") {
   return render(
     <TooltipProvider>
       <SidebarProvider>
-        <ChatPage />
+        <MemoryRouter initialEntries={[route]}>
+          <Routes>
+            <Route path="/chat" element={<ChatPage />} />
+            <Route path="/chat/:threadId" element={<ChatPage />} />
+          </Routes>
+          <Address />
+          <Link to="/chat/t-elsewhere">another thread</Link>
+          <Link to="/chat">new chat</Link>
+        </MemoryRouter>
       </SidebarProvider>
     </TooltipProvider>,
   );
@@ -372,5 +395,79 @@ describe("ChatPage", () => {
       .map(([url]) => String(url))
       .filter((url) => url.includes("/approvals/"));
     expect(decided).toHaveLength(1);
+  });
+  describe("the thread id in the URL", () => {
+    it("puts the new thread's id in the address, so a reload can find it again", async () => {
+      vi.stubGlobal("fetch", stubFetch(RESEARCH_TURN));
+      renderChat();
+
+      expect(screen.getByTestId("address")).toHaveTextContent("/chat");
+      await ask("what is the fee floor?");
+
+      await waitFor(() => expect(screen.getByTestId("address")).toHaveTextContent("/chat/t-1"));
+    });
+
+    it("keeps the answer on screen while the address gains the thread id", async () => {
+      // The regression the `driving` ref exists to prevent. The page stays
+      // mounted across `/chat` -> `/chat/t-1`, so an effect that treated any
+      // change of the id as a new conversation would wipe the turn that is
+      // still streaming into it — at the exact moment the first answer lands.
+      vi.stubGlobal("fetch", stubFetch(RESEARCH_TURN));
+      renderChat();
+
+      await ask("what is the fee floor?");
+
+      await waitFor(() => expect(screen.getByTestId("address")).toHaveTextContent("/chat/t-1"));
+      expect(screen.getByTestId("answer")).toBeInTheDocument();
+      expect(screen.getAllByTestId("turn")).toHaveLength(1);
+      expect(screen.getByText("what is the fee floor?")).toBeInTheDocument();
+    });
+
+    it("continues the thread the URL names rather than starting another", async () => {
+      // What makes a reload worth anything: the conversation the checkpointer
+      // has, not a new one beside it.
+      const fetchMock = stubFetch(RESEARCH_TURN);
+      vi.stubGlobal("fetch", fetchMock);
+      renderChat("/chat/t-restored");
+
+      await ask("and for a junior account?");
+      await waitFor(() => expect(screen.getByTestId("answer")).toBeInTheDocument());
+
+      const calls = fetchMock.mock.calls.map(([url]) => String(url));
+      expect(calls.filter((url) => url === "/api/threads")).toHaveLength(0);
+      expect(calls).toContain("/api/threads/t-restored/messages");
+    });
+
+    it("clears the transcript when another conversation is opened", async () => {
+      vi.stubGlobal("fetch", stubFetch(RESEARCH_TURN));
+      renderChat("/chat/t-restored");
+
+      await ask("what is the fee floor?");
+      await waitFor(() => expect(screen.getByTestId("answer")).toBeInTheDocument());
+      await userEvent.click(screen.getByRole("link", { name: "another thread" }));
+
+      await waitFor(() => expect(screen.queryByTestId("turn")).not.toBeInTheDocument());
+      expect(screen.getByTestId("address")).toHaveTextContent("/chat/t-elsewhere");
+    });
+
+    it("starts a fresh conversation when the Chat link is clicked", async () => {
+      // The sidebar's own link. The id disappearing is a new conversation, so
+      // the next question must open a thread rather than carry on in the old
+      // one — which would append to a transcript the adviser cannot see.
+      const fetchMock = stubFetch(RESEARCH_TURN);
+      vi.stubGlobal("fetch", fetchMock);
+      renderChat("/chat/t-restored");
+
+      await ask("what is the fee floor?");
+      await waitFor(() => expect(screen.getByTestId("answer")).toBeInTheDocument());
+      await userEvent.click(screen.getByRole("link", { name: "new chat" }));
+      await waitFor(() => expect(screen.queryByTestId("turn")).not.toBeInTheDocument());
+      await ask("a question in a new conversation");
+
+      await waitFor(() => expect(screen.getByTestId("address")).toHaveTextContent("/chat/t-1"));
+      const calls = fetchMock.mock.calls.map(([url]) => String(url));
+      expect(calls.filter((url) => url === "/api/threads")).toHaveLength(1);
+      expect(calls).toContain("/api/threads/t-1/messages");
+    });
   });
 });
