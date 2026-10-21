@@ -15,9 +15,11 @@ with no price on file records NULL, not zero: see that module on why. `/usage`
 counts those rows so a total cannot quietly understate spend.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -81,15 +83,23 @@ class UsageSummary:
     by_route: list[RouteBucket]
 
 
+# `created_at` is written explicitly as `clock_timestamp()` rather than left to
+# the column's `now()` default. `now()` is the *transaction's* start time, so
+# every row written in one transaction shares a timestamp and a row describing a
+# finished turn is stamped with roughly when that turn began. The turn-level
+# history in `app/history.py` matches a usage row to the turn it was written
+# inside by time, which needs the moment the row was written, not the moment its
+# transaction opened — and the difference is invisible until a thread's costs
+# line up against the wrong questions.
 _INSERT = text(
     """
     INSERT INTO usage (
         thread_id, user_id, route, model,
-        input_tokens, output_tokens, cost_usd, latency_ms
+        input_tokens, output_tokens, cost_usd, latency_ms, created_at
     )
     VALUES (
         :thread_id, :user_id, :route, :model,
-        :input_tokens, :output_tokens, :cost_usd, :latency_ms
+        :input_tokens, :output_tokens, :cost_usd, :latency_ms, clock_timestamp()
     )
     RETURNING id
     """
@@ -148,6 +158,16 @@ _BY_ROUTE = text(
 )
 
 
+_BY_THREAD = text(
+    """
+    SELECT created_at, input_tokens, output_tokens, cost_usd, latency_ms
+    FROM usage
+    WHERE thread_id = :thread_id
+    ORDER BY created_at
+    """
+)
+
+
 async def record_usage(
     session: AsyncSession,
     *,
@@ -193,6 +213,16 @@ async def record_usage(
         },
     )
     return int(row.scalar_one())
+
+
+async def usage_for_thread(session: AsyncSession, thread_id: str) -> Sequence[Any]:
+    """Every usage row of one thread, oldest first.
+
+    For the turn-level history: `app/history.py:attach_usage` matches each row
+    to the turn it was written inside. Ordered here rather than there, because
+    the index on `created_at` makes the database the cheaper place to do it.
+    """
+    return (await session.execute(_BY_THREAD, {"thread_id": thread_id})).all()
 
 
 def _window_start(days: int) -> datetime:

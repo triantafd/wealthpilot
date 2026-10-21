@@ -112,7 +112,8 @@ Rules: validate inputs with Pydantic before execution; gather context with READ 
 |---|---|---|
 | POST | `/threads` | New conversation |
 | POST | `/threads/{id}/messages` | Send a message; responds with an SSE stream |
-| GET | `/threads/{id}` | History |
+| GET | `/threads/{id}` | History, as role and content |
+| GET | `/threads/{id}/turns` | History turn by turn: route, citations, approval and cost — what a reloaded chat page restores from |
 | GET | `/approvals?status=pending` | Approvals inbox |
 | POST | `/approvals/{id}` | `{decision: "approve" or "reject", note}`; resumes the graph |
 | POST | `/ingest` | Re-index documents |

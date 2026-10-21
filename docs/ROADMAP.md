@@ -499,6 +499,15 @@ record that cannot answer the question.*
       call writes to is locked for the whole migration. Milliseconds at this
       size and correct as written; the shape to demonstrate is `NOT VALID`
       then a batched backfill then `VALIDATE CONSTRAINT`
+- [ ] **Give a `usage` row the turn it belongs to.** `thread_id` is the only
+      key `usage` and the checkpointer share, so the turn-level history matches
+      a row to a turn by time window — correct, and a heuristic over two
+      clocks. The fix is a column naming the turn (the checkpoint id the turn
+      ended on, or a per-thread ordinal) written by `stream_turn`, after which
+      `app/history.py:attach_usage` becomes a join and `created_at` stops
+      carrying meaning it was never meant to. A migration plus a backfill that
+      can only be approximate for existing rows, which is why it is not part
+      of the history endpoint. Recorded 2026-10-21
 - [x] **The thread binding is anchored to the run, not to state.** The gate
       passed `state["thread_id"]` and the approval had been written from the
       same field, so the check was self-consistent rather than true — safe
@@ -691,6 +700,15 @@ of the credit.*
       `user_id` comes from the request. See ROADMAP Phase 9" — and the bullet
       it points at names only `/usage` and `/approvals`. `user_id` must come
       from the authenticated principal there too
+- [ ] **A thread has to belong to someone, and `GET /threads/{id}/turns` has
+      to check it.** The turn-level history returns a thread's questions,
+      answers, citations, cost and — new since the inbox work — who approved
+      each action and what it did. A thread id is therefore now a read on
+      approval provenance, which previously needed `/approvals`. The data is
+      no wider than what `/approvals` already serves unauthenticated, so this
+      is not a regression; it is the point at which "any thread id" stops
+      being an acceptable authorisation rule. Needs an owner on the thread,
+      which nothing records today
 - [ ] **`audit_log.approver` now reads as provenance and is still
       self-asserted.** It is populated from `DecisionRequest.decided_by` in the
       request body. The gap is the one above; what changed is the stakes — an

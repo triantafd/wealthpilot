@@ -129,7 +129,13 @@ class DecisionResponse(BaseModel):
     )
 
 
-def _public(record: ApprovalRecord, execution: ExecutionRecord | None = None) -> Approval:
+def public_approval(record: ApprovalRecord, execution: ExecutionRecord | None = None) -> Approval:
+    """One approval in the shape every endpoint returns it.
+
+    Public because the turn-level thread history returns the same object: the
+    approval a turn raised is the same fact the inbox shows, and the frontend
+    renders both with one component. A second shape for it would drift.
+    """
     approval = Approval.model_validate(record, from_attributes=True)
     if execution is not None:
         approval.execution = Execution.model_validate(execution, from_attributes=True)
@@ -158,7 +164,7 @@ async def get_approvals(
     records = await list_approvals(session, status=status_filter, limit=limit)
     # One query for the page, not one per row.
     executions = await executions_for(session, [r.id for r in records])
-    return [_public(r, executions.get(r.id)) for r in records]
+    return [public_approval(r, executions.get(r.id)) for r in records]
 
 
 @router.post("/approvals/{approval_id}", summary="Decide an approval and resume the graph")
@@ -218,7 +224,9 @@ async def post_decision(
     # registry has just used.
     record = await get_approval(session, approval_id)
     executions = await executions_for(session, [record.id])
-    return DecisionResponse(approval=_public(record, executions.get(record.id)), resumed=resumed)
+    return DecisionResponse(
+        approval=public_approval(record, executions.get(record.id)), resumed=resumed
+    )
 
 
 async def _resume(
