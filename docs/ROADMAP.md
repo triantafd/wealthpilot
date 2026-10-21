@@ -528,12 +528,22 @@ record that cannot answer the question.*
 
 - [ ] Read-only documents page: `GET /documents` with name, chunk count and
       last ingested
-- [ ] Re-run the full eval baseline before and after the streaming change, and
+- [x] Re-run the full eval baseline before and after the streaming change, and
       record the result in `docs/EXPERIMENTS.md`.
       **Ignore `answer.refusal_correct` movement on `refusal-poa-policy-01`:**
       it is bistable — 1 correct run in 5 on one commit, measured 2026-10-13 —
       so it will appear to regress or improve for no reason and waste a day.
-      Phase 6 fixes it; until then it is not evidence about a streaming change
+      Phase 6 fixes it; until then it is not evidence about a streaming change.
+      **Result:** every gated metric holds except one case. Retrieval is
+      identical, `must_include` loses no case (0.942 ±0.006 → 0.933 ±0.000,
+      one case recovered and one broke), `citations.validity` 0.978 sits
+      inside the before spread [0.973–1.000], and `answer.refusal_correct`
+      1.000 → 0.987 is `refusal-cyber-01` alone — *not* the bistable case this
+      item warned about. Streaming is ruled out as the cause: five streamed
+      and five invoked calls on that question and those chunks refused 0/5
+      either way, and the prompt is unchanged by `git diff`. The remaining
+      variable is `LLM_MODEL`, an unpinned alias — see `docs/EXPERIMENTS.md`
+      and the Phase 8 pinning item
 
 **Done when:** a 60-second recording shows a question answered with citations,
 streamed token by token, a rebalance proposed, a human approving it in the
@@ -633,10 +643,22 @@ the thresholds are set once the answer path, including streaming, is stable.*
 - [ ] **Do not gate on `answer.refusal_correct` until Phase 6 fixes it.**
       Measured 2026-10-13, `refusal-poa-policy-01` refused correctly 1 run in
       5 on the same commit, so the baseline's 1.000 is luck rather than a
-      measurement and a threshold on it fails at random. `GATEABLE` in
+      measurement and a threshold on it fails at random. `refusal-cyber-01` is
+      the second one, found on 2026-10-19: it refused in three runs on
+      `33e7026` and in none of three on `0abe814` with retrieval byte-identical
+      — so two of the suite's five refusal cases are coin-flips. `GATEABLE` in
       `app/evals/report.py` is a label that enforces nothing today, which is
       the only reason this has not already bitten. Either Phase 6 lands first
       or this metric starts report-only, stated in `thresholds.yaml`
+- [ ] **Pin `LLM_MODEL` to a dated snapshot, before setting any threshold.**
+      It is the alias `openai:gpt-4o-mini` in `app/config.py` and
+      `.env.example`, and the provider moves what it serves: the full-suite
+      re-baseline of 2026-10-19 lost `refusal-cyber-01` on both the streamed
+      and the non-streaming path with the prompt, retrieval and request body
+      unchanged since 2026-10-13. A threshold measured against a moving alias
+      cannot tell this project's regression from someone else's retrain, which
+      is a day already spent once. Pinning is itself a behaviour change, so it
+      gets its own before/after run
 - [ ] **Set every threshold from several runs, not one.** Three runs of a
       suite are cheap and the project has now been wrong twice by trusting a
       single sample

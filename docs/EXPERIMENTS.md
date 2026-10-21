@@ -878,3 +878,67 @@ asserts they match apart from the stream flags, naming `response_format` in
 particular, because a forced tool call instead of a JSON schema is exactly what
 option (c) changed. A langchain upgrade that reshapes the chain fails that test
 instead of quietly costing seven answers.
+
+
+## Phase 5 — The streaming re-baseline: the one drop is not streaming
+
+Required by the roadmap: the full suite before and after token streaming, not
+the smoke subset the task shipped with. Three runs each, 75 cases, identical
+config (`openai:gpt-4o-mini`, `text-embedding-3-small`, vector, top-k 6, no
+reranker). Reports: `20261013-154820.json` (before, `33e7026`) and
+`20261019-142323.json` (after, `0abe814`).
+
+| metric | before | after | |
+|---|---|---|---|
+| answer.refusal_correct | **1.000** ±0.000 | **0.987** ±0.000 | −1 case |
+| answer.must_include | 0.942 ±0.006 | 0.933 ±0.000 | composition, see below |
+| citations.validity | 0.987 ±0.011 | 0.978 ±0.006 | inside the before spread |
+| answer.no_prose_refs | 1.000 | 1.000 | |
+| answer.faithfulness | 0.881 ±0.003 | 0.902 ±0.005 | report-only |
+| answer.relevancy | 0.609 ±0.014 | 0.608 ±0.015 | report-only |
+| answer.prose_refs_written | 14.3 | 12.3 | report-only, noisy |
+| retrieval.mrr / hit@1 / hit@6 | 0.747 / 0.629 / 0.971 | identical | deterministic |
+| ops.p50 / p95 latency_ms | 1577 / 2112 | 1790 / 2751 | |
+| ops.cost_usd_total | 0.0242 | 0.0242 | |
+| ops.errors | 0 | 0 | |
+
+**The refusal drop is one case, and streaming did not cause it.**
+`refusal-cyber-01` ("the firm's cyber security requirements for advisers
+working remotely" — the corpus has no cyber policy) refused in all three
+before-runs and in none of the three after-runs, where it answers correctly
+*about advisory fees*, which is the failure the case was written to catch. Its
+retrieved chunk ids are byte-identical across the two sets of runs. Ten direct
+calls on that question and those chunks — five through the streamed path, five
+through `ainvoke` — refused **0 of 5 either way**, so the behaviour is on the
+non-streaming path too. `git diff 33e7026..HEAD` leaves
+`agents/prompts/research_answer.md`, `build_messages`, `NO_ANSWER` and the
+passage formatting untouched, and the streamed request body is asserted equal
+to the invoked one in `tests/test_generate_streaming.py`.
+
+What is left is the model: `LLM_MODEL` is the alias `openai:gpt-4o-mini`, not
+a dated snapshot, and the provider moves what it serves. Same inputs, six days
+apart, a consistent flip on both code paths. **Recorded as provider drift, not
+as a streaming regression** — and as a Phase 8 item, because thresholds set
+against a moving alias cannot distinguish this project's regressions from
+someone else's retrain, which is what this cost to find out.
+
+Three things not to read into the table:
+
+- **`must_include` lost no case.** Five cases fail either side —
+  `fee-etf-trade-01` recovered, `rebalance-eo-02` broke — and the after is
+  ±0.000 across three runs against the before's ±0.006, so part of the gap is
+  the before run's own spread rather than a change.
+- **`faithfulness` improved and that is not a result.** +0.021 on a
+  report-only ragas metric with no mechanism behind it; the request did not
+  change.
+- **Latency rose per case** (p50 +213ms) because the eval harness measures the
+  whole call and the streamed path adds per-chunk work. Time to first
+  readable character, which is the entire point of the change, is not a metric
+  this suite has.
+
+`baseline.json` is unchanged, and so is the dataset: `refusal-cyber-01` is a
+correct case that the system now gets wrong, which is worth more as a failure
+than as an edit. It is the suite's **second** knife-edge refusal case beside
+the bistable `refusal-poa-policy-01`, i.e. two of five refusal cases are
+coin-flips — direct evidence for the Phase 8 decision not to gate on
+`answer.refusal_correct` before Phase 6.
