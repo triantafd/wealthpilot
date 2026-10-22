@@ -516,12 +516,21 @@ record that cannot answer the question.*
 *The two that are still work. Everything else left in this phase is recorded
 below as a follow-up, deliberately.*
 
-- [ ] **Restart safety: a HIGH action interrupted before a server restart
-      resumes after it.** The checkpointer has the paused run, so this is
+- [x] **Restart safety: a HIGH action interrupted before a server restart
+      resumes after it.** The checkpointer has the paused run, so this was
       about the server coming back able to continue it rather than about
       storing anything new — the approval is already durable and the inbox
-      already shows it. What has never been exercised is deciding an approval
-      whose interrupt was written by a process that no longer exists
+      already shows it. What had never been exercised is deciding an approval
+      whose interrupt was written by a process that no longer exists.
+      **Result:** it already worked, and now there is a test that fails when
+      it stops. `tests/test_restart_safety.py` writes the interrupt through
+      one checkpointer, closes it, and decides the approval through a second
+      one that has never seen it — so nothing but Postgres crosses the line a
+      restart draws. Also seen for real: a 9 October interrupt resumed and
+      raised task 104 on 22 October, through a process started minutes
+      earlier. What the restart depends on is the gate reading `approval_id`
+      back out of the checkpoint; losing it makes the gate refuse, which the
+      tests catch. No production code changed
 - [ ] **Read-only documents page: `GET /documents` with name, chunk count and
       last ingested.** The corpus the answers cite, visible. Read-only on
       purpose: ingestion is a command, not a button
