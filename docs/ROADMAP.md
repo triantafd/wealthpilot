@@ -404,15 +404,24 @@ record that cannot answer the question.*
       existed ran something no row can name. All three are visible in the dev
       data — the 9 October approval says exactly the third, today's says
       "raised task 103"
-- [ ] **Make the conversation survive a refresh.** History lives in the
-      component, so reloading loses it even though the checkpointer has every
+- [x] **Make the conversation survive a refresh.** History lived in the
+      component, so reloading lost it even though the checkpointer had every
       turn. `GET /threads/{id}` returns messages as role and content only — no
-      citations, no per-turn route, no cost — so restoring from it today would
-      redraw the questions and answers with the evidence missing, which is
-      worse than an honest empty page. Needs that endpoint to return the whole
-      turn, which overlaps with "show what an approved action actually did", so
-      it goes after the inbox. The thread id also has to outlive the page: it
-      is a `useRef` today
+      citations, no per-turn route, no cost — so restoring from it would have
+      redrawn the questions and answers with the evidence missing, which is
+      worse than an honest empty page. Built in three pieces: a
+      `GET /threads/{id}/turns` that folds a thread's checkpoints back into
+      turns and joins each one to its approval and its `usage` row
+      (`app/history.py`); the thread id moved out of its `useRef` and into the
+      URL as `/chat/:threadId`; and the page restoring the transcript from
+      that endpoint into the same `Turn` the stream builds, so one component
+      draws both and a restored approval is decided by the same call.
+      **Result:** a reload returns the conversation with its routes,
+      citations, costs and any approval still waiting at the gate. Two things
+      the fold had to get right, both probed on a real thread rather than
+      assumed: an `input` checkpoint's own values are the *previous* turn's,
+      and `Command(resume=...)` continues a run — so a turn that paused for an
+      approval is one turn, not two
 - [x] **The audit log says who authorised an execution.** Both columns
       existed from Phase 0 and neither insert ever wrote them, so "who
       approved this task?" meant correlating by thread and timestamp —
@@ -635,6 +644,14 @@ owed from Phase 3 is fixed.*
       `checkpoints` has the threads but nothing names them, so the first
       question has to come out of the earliest checkpoint or a column of its
       own
+- [ ] **Abort the stream when the conversation changes.** Opening another
+      thread mid-answer clears the transcript but leaves the `ask()` loop
+      running: `busy` stays true until it finishes, and its events land on a
+      turn id that is no longer in the list, so they are silently dropped.
+      Nothing breaks — which is why this is polish and not a Phase 5 fix — but
+      the composer is disabled for an answer nobody will read. An
+      `AbortController` kept beside `driving`, aborted in the same effect that
+      clears the turns
 - [ ] Agent timeline: tool calls as they run, each tagged with its risk tier
 - [ ] Put `retrieval` back in front of the answer in the timeline. Token
       streaming left it behind: the deltas come from the research node while it

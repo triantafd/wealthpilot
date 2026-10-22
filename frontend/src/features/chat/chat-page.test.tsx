@@ -6,6 +6,7 @@
  * are all exercised, which is where a blank screen would come from.
  */
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -36,22 +37,29 @@ function Address() {
  * The two links are the two ways an adviser leaves a conversation without the
  * component unmounting, which is the case the page has to tell apart from its
  * own navigation.
+ *
+ * A fresh `QueryClient` per test, so one test's restored thread is not still
+ * in the cache for the next one. `retry: false` because a test that stubs a
+ * 404 should see it once, not after three backed-off attempts.
  */
 function renderChat(route = "/chat") {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <TooltipProvider>
-      <SidebarProvider>
-        <MemoryRouter initialEntries={[route]}>
-          <Routes>
-            <Route path="/chat" element={<ChatPage />} />
-            <Route path="/chat/:threadId" element={<ChatPage />} />
-          </Routes>
-          <Address />
-          <Link to="/chat/t-elsewhere">another thread</Link>
-          <Link to="/chat">new chat</Link>
-        </MemoryRouter>
-      </SidebarProvider>
-    </TooltipProvider>,
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <SidebarProvider>
+          <MemoryRouter initialEntries={[route]}>
+            <Routes>
+              <Route path="/chat" element={<ChatPage />} />
+              <Route path="/chat/:threadId" element={<ChatPage />} />
+            </Routes>
+            <Address />
+            <Link to="/chat/t-elsewhere">another thread</Link>
+            <Link to="/chat">new chat</Link>
+          </MemoryRouter>
+        </SidebarProvider>
+      </TooltipProvider>
+    </QueryClientProvider>,
   );
 }
 
@@ -93,15 +101,88 @@ const DECIDED_APPROVAL = {
   execution: RAN,
 };
 
-function stubFetch(
-  events: object[],
-  options: { decideOk?: boolean; execution?: Record<string, unknown> | null } = {},
-) {
+/** A research turn as `GET /threads/{id}/turns` sends it: snake_case, with
+ *  `cost_usd` a string because the column is NUMERIC. */
+const RESTORED_ANSWER = {
+  question: "what did we charge last year?",
+  answer: "The minimum annual advisory fee is **£1,500**.",
+  route: "research",
+  route_confidence: 0.91,
+  retrieved_count: 1,
+  citations: [{ documentId: "fee-schedule", page: 1, quote: "a minimum annual fee of £1,500" }],
+  action_outcome: null,
+  approval: null,
+  awaiting: [],
+  started_at: "2026-10-19T10:00:00Z",
+  usage: { input_tokens: 2612, output_tokens: 48, cost_usd: "0.000421", latency_ms: 2814 },
+};
+
+/** A turn reloaded while its approval is still waiting at the gate. */
+const RESTORED_WAITING = {
+  ...RESTORED_ANSWER,
+  question: "rebalance AC-0042",
+  answer: null,
+  route: "action",
+  route_confidence: 0.88,
+  retrieved_count: 0,
+  citations: [],
+  action_outcome: "propose",
+  approval: {
+    ...DECIDED_APPROVAL,
+    status: "pending",
+    decided_by: null,
+    decided_at: null,
+    consumed_at: null,
+    execution: null,
+  },
+  awaiting: ["approval_gate"],
+};
+
+/** The same turn after the approval was decided and the tool ran. */
+const RESTORED_DECIDED = {
+  ...RESTORED_WAITING,
+  approval: DECIDED_APPROVAL,
+  awaiting: [],
+};
+
+interface StubOptions {
+  decideOk?: boolean;
+  execution?: Record<string, unknown> | null;
+  /** Restored turns per thread id. A thread not named here has none, which is
+   *  what every test about streaming wants. */
+  turns?: Record<string, object[]>;
+  /** For the thread that cannot be restored: the endpoint 404s an id the
+   *  checkpointer has never seen. */
+  turnsStatus?: number;
+  truncated?: boolean;
+  /** Held until the test resolves it, to pin what happens to a question asked
+   *  while the history is still in flight. */
+  turnsGate?: Promise<void>;
+}
+
+function stubFetch(events: object[], options: StubOptions = {}) {
   return vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const path = typeof url === "string" ? url : url.toString();
 
     if (path === "/api/threads" && init?.method === "POST") {
       return new Response(JSON.stringify({ thread_id: "t-1" }), { status: 201 });
+    }
+    if (path.endsWith("/turns")) {
+      await options.turnsGate;
+      const thread = path.replace("/api/threads/", "").replace("/turns", "");
+      if (options.turnsStatus) {
+        return new Response(JSON.stringify({ detail: `no thread '${thread}'` }), {
+          status: options.turnsStatus,
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          thread_id: thread,
+          turns: options.turns?.[thread] ?? [],
+          truncated: options.truncated ?? false,
+        }),
+        { status: 200 },
+      );
     }
     if (path.includes("/messages")) {
       return new Response(sseBody(events), {
@@ -396,6 +477,7 @@ describe("ChatPage", () => {
       .filter((url) => url.includes("/approvals/"));
     expect(decided).toHaveLength(1);
   });
+
   describe("the thread id in the URL", () => {
     it("puts the new thread's id in the address, so a reload can find it again", async () => {
       vi.stubGlobal("fetch", stubFetch(RESEARCH_TURN));
@@ -468,6 +550,175 @@ describe("ChatPage", () => {
       const calls = fetchMock.mock.calls.map(([url]) => String(url));
       expect(calls.filter((url) => url === "/api/threads")).toHaveLength(1);
       expect(calls).toContain("/api/threads/t-1/messages");
+    });
+  });
+  describe("restoring a conversation", () => {
+    it("brings back the questions, answers, citations and cost of a reloaded thread", async () => {
+      // The refresh case, end to end: nothing is typed, and the conversation
+      // is on screen with the evidence that makes a restored answer
+      // trustworthy rather than merely present.
+      vi.stubGlobal(
+        "fetch",
+        stubFetch(RESEARCH_TURN, { turns: { "t-restored": [RESTORED_ANSWER] } }),
+      );
+      renderChat("/chat/t-restored");
+
+      await waitFor(() => expect(screen.getByTestId("answer")).toBeInTheDocument());
+      expect(screen.getByText("what did we charge last year?")).toBeInTheDocument();
+      expect(screen.getByTestId("route")).toHaveTextContent("research");
+      expect(screen.getByTestId("route")).toHaveTextContent("0.91");
+      // Restored through the same renderer as a streamed answer, so the
+      // emphasis is rendered and no asterisks reach the reader.
+      expect(screen.getByTestId("answer").querySelector("strong")).toHaveTextContent("£1,500");
+      expect(screen.getByTestId("citations")).toHaveTextContent("fee-schedule");
+      expect(screen.getByTestId("done")).toHaveTextContent("2814ms");
+      expect(screen.getByTestId("done")).toHaveTextContent("$0.000421");
+      expect(screen.queryByTestId("restoring")).not.toBeInTheDocument();
+    });
+
+    it("lets a restored approval be decided, since the gate is still waiting", async () => {
+      // The reason the endpoint returns `awaiting`. Reloading mid-approval has
+      // to leave a card an adviser can act on, not a decision nobody took.
+      vi.stubGlobal(
+        "fetch",
+        stubFetch(ACTION_TURN, { turns: { "t-restored": [RESTORED_WAITING] } }),
+      );
+      renderChat("/chat/t-restored");
+
+      await waitFor(() => expect(screen.getByTestId("approval")).toBeInTheDocument());
+      expect(screen.getByTestId("approval")).toHaveTextContent("HIGH");
+      expect(screen.getByTestId("approval")).toHaveTextContent("propose_rebalance");
+
+      await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+      await waitFor(() => expect(screen.getByTestId("decision")).toBeInTheDocument());
+      expect(screen.getByTestId("decision")).toHaveTextContent(/raised task 103/i);
+    });
+
+    it("says what a decided turn did rather than offering it again", async () => {
+      // A second decision is a 409, so buttons here are a dead end — and the
+      // adviser needs the task number, not the question a second time.
+      vi.stubGlobal(
+        "fetch",
+        stubFetch(ACTION_TURN, { turns: { "t-restored": [RESTORED_DECIDED] } }),
+      );
+      renderChat("/chat/t-restored");
+
+      await waitFor(() => expect(screen.getByTestId("decision")).toBeInTheDocument());
+      expect(screen.getByTestId("decision")).toHaveTextContent(/raised task 103/i);
+      expect(screen.queryByTestId("approval")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    });
+
+    it("says a conversation could not be restored instead of showing an empty one", async () => {
+      // An empty chat reads as a conversation nobody ever had. The id in the
+      // URL says otherwise, and the difference matters: one invites a
+      // question, the other says the history is missing.
+      vi.stubGlobal("fetch", stubFetch(RESEARCH_TURN, { turnsStatus: 404 }));
+      renderChat("/chat/t-gone");
+
+      await waitFor(() => expect(screen.getByTestId("restore-failed")).toBeInTheDocument());
+      expect(screen.getByTestId("restore-failed")).toHaveTextContent("could not be restored");
+      // The server's own words, which name the thread it could not find.
+      expect(screen.getByTestId("restore-failed")).toHaveTextContent("no thread 't-gone'");
+      expect(screen.queryByText(/Ask a question about the firm/i)).not.toBeInTheDocument();
+      // Still usable: the composer is how an adviser carries on from here.
+      expect(screen.getByLabelText("Message")).toBeEnabled();
+    });
+
+    it("asks for no history for a conversation it has just started", async () => {
+      // There is nothing to restore, and the request would race the stream
+      // writing the very turn it would be asking about.
+      const fetchMock = stubFetch(RESEARCH_TURN);
+      vi.stubGlobal("fetch", fetchMock);
+      renderChat();
+
+      await ask("a question in a brand new conversation");
+      await waitFor(() => expect(screen.getByTestId("address")).toHaveTextContent("/chat/t-1"));
+      await waitFor(() => expect(screen.getByTestId("answer")).toBeInTheDocument());
+
+      const calls = fetchMock.mock.calls.map(([url]) => String(url));
+      expect(calls.filter((url) => url.endsWith("/turns"))).toHaveLength(0);
+    });
+
+    it("keeps a question asked while the history was still arriving", async () => {
+      // Why the restored turns are prepended rather than assigned: they are
+      // older than anything typed here, and assigning would delete the answer
+      // the adviser is reading at the moment the fetch lands.
+      let open = () => {};
+      const gate = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      vi.stubGlobal(
+        "fetch",
+        stubFetch(RESEARCH_TURN, { turns: { "t-restored": [RESTORED_ANSWER] }, turnsGate: gate }),
+      );
+      renderChat("/chat/t-restored");
+
+      await ask("asked before the history came back");
+      await waitFor(() => expect(screen.getByTestId("answer")).toBeInTheDocument());
+      open();
+
+      await waitFor(() => expect(screen.getAllByTestId("turn")).toHaveLength(2));
+      // Oldest first, as the conversation happened.
+      const asked = screen.getAllByTestId("turn").map((turn) => turn.textContent);
+      expect(asked[0]).toContain("what did we charge last year?");
+      expect(asked[1]).toContain("asked before the history came back");
+    });
+
+    it("restores the other thread's history when another conversation is opened", async () => {
+      vi.stubGlobal(
+        "fetch",
+        stubFetch(RESEARCH_TURN, {
+          turns: { "t-restored": [RESTORED_ANSWER], "t-elsewhere": [RESTORED_WAITING] },
+        }),
+      );
+      renderChat("/chat/t-restored");
+      await waitFor(() => expect(screen.getByTestId("answer")).toBeInTheDocument());
+
+      await userEvent.click(screen.getByRole("link", { name: "another thread" }));
+
+      await waitFor(() => expect(screen.getByTestId("approval")).toBeInTheDocument());
+      expect(screen.getByText("rebalance AC-0042")).toBeInTheDocument();
+      // The thread that was open is gone, not merged into the new one.
+      expect(screen.queryByText("what did we charge last year?")).not.toBeInTheDocument();
+      expect(screen.getAllByTestId("turn")).toHaveLength(1);
+    });
+
+    it("restores a thread again after the Chat link was used", async () => {
+      // The history is cached, so the guard against restoring twice has to be
+      // cleared when the transcript is. Otherwise going back to a thread
+      // leaves it blank with its own history sitting in the cache.
+      vi.stubGlobal(
+        "fetch",
+        stubFetch(RESEARCH_TURN, { turns: { "t-elsewhere": [RESTORED_ANSWER] } }),
+      );
+      renderChat("/chat/t-elsewhere");
+      await waitFor(() => expect(screen.getByTestId("answer")).toBeInTheDocument());
+
+      await userEvent.click(screen.getByRole("link", { name: "new chat" }));
+      await waitFor(() => expect(screen.queryByTestId("turn")).not.toBeInTheDocument());
+      await userEvent.click(screen.getByRole("link", { name: "another thread" }));
+
+      await waitFor(() => expect(screen.getByTestId("answer")).toBeInTheDocument());
+      expect(screen.getAllByTestId("turn")).toHaveLength(1);
+    });
+
+    it("says when a conversation is too long to restore in full", async () => {
+      // The endpoint stops at a bound. A transcript silently missing its
+      // start would have the adviser reading a conversation that begins in
+      // the middle without knowing it.
+      vi.stubGlobal(
+        "fetch",
+        stubFetch(RESEARCH_TURN, {
+          turns: { "t-restored": [RESTORED_ANSWER] },
+          truncated: true,
+        }),
+      );
+      renderChat("/chat/t-restored");
+
+      await waitFor(() => expect(screen.getByTestId("truncated")).toBeInTheDocument());
+      expect(screen.getByTestId("truncated")).toHaveTextContent(/oldest turns are not shown/i);
     });
   });
 });

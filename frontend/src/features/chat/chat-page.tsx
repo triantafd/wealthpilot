@@ -11,7 +11,8 @@ import { Inline } from "@/lib/inline-markdown";
 import { ask, createThread, decideApproval } from "@/lib/stream";
 import type { ActionOutcome } from "@shared/stream-events";
 
-import { applyEvent, newTurn, type Turn, updateTurn } from "./turn";
+import { useThreadTurns } from "./history";
+import { applyEvent, newTurn, restore, type Turn, updateTurn } from "./turn";
 
 /**
  * The chat screen.
@@ -35,12 +36,17 @@ import { applyEvent, newTurn, type Turn, updateTurn } from "./turn";
  * the page's address, so a reload lands back on the same thread and a
  * follow-up continues it.
  *
- * The transcript itself is still only in this component, so a reload shows an
- * empty one. That is the next step and not this one: it needs
- * `GET /threads/{id}/turns`, which exists now, mapped back into `Turn`. What is
- * deliberately not done is restoring from `GET /threads/{id}` — it returns
- * messages as role and content only, so the answers would come back with their
- * citations, route and cost missing, which is worse than an honest empty page.
+ * **The transcript comes back with it.** A page that arrives with an id in its
+ * URL fetches `GET /threads/{id}/turns` and maps each turn into the same
+ * `Turn` the stream builds, so one component draws both and a restored
+ * approval is decided by the same `decide()`. Only an id the page *arrived*
+ * with is fetched: one it created itself has no history, and asking for it
+ * would race the stream writing the turn.
+ *
+ * What is deliberately not used is `GET /threads/{id}`, which returns messages
+ * as role and content only. Restoring from it would redraw the answers with
+ * their citations, route and cost missing, and a reader cannot tell a citation
+ * that was never there from one dropped on the way back.
  */
 
 /** Until there is authentication, the decider is a placeholder. Phase 9. */
@@ -66,14 +72,39 @@ export function ChatPage() {
   // clicked (a new one). Comparing against what we are driving separates them.
   const driving = useRef<string | null>(inUrl ?? null);
 
+  // The thread whose history to restore. Initialised from the URL, because
+  // this is the reload case and the effect below does not run on mount: the
+  // page is already driving the id it was mounted with. A query keyed on the
+  // id does run on mount, which is why the fetch hangs off this and not off
+  // the effect.
+  const [restoring, setRestoring] = useState<string | null>(inUrl ?? null);
+  // The thread whose history has already been put on screen, so neither a
+  // re-render nor a refetch can prepend it twice.
+  const restored = useRef<string | null>(null);
+
   const address = inUrl ?? null;
   useEffect(() => {
     if (address === driving.current) return;
     driving.current = address;
-    // A different conversation, so nothing on screen belongs to it. The
-    // transcript is not refetched here — see the module docstring.
+    // A different conversation, so nothing on screen belongs to it.
     setTurns([]);
+    setRestoring(address);
+    // Nothing is restored any more, which matters for coming *back* to a
+    // thread: its history is cached, so without this the guard below would
+    // recognise it as already on screen and leave the transcript empty.
+    restored.current = null;
   }, [address]);
+
+  const history = useThreadTurns(restoring);
+  useEffect(() => {
+    const thread = history.data;
+    if (!thread || thread.thread_id === restored.current) return;
+    restored.current = thread.thread_id;
+    // Prepended rather than assigned. Everything restored is older than
+    // anything this page has streamed, by construction — so a question typed
+    // while the fetch was still in flight survives it arriving.
+    setTurns((current) => [...thread.turns.map(restore), ...current]);
+  }, [history.data]);
 
   const submit = useCallback(
     async (event: React.FormEvent) => {
@@ -156,10 +187,22 @@ export function ChatPage() {
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-2xl space-y-4 px-4 pb-12">
+          {history.data?.truncated ? (
+            <p className="pt-2 text-xs text-muted-foreground" data-testid="truncated">
+              This conversation is long enough that its oldest turns are not shown.
+            </p>
+          ) : null}
+
           {turns.length > 0 ? (
             turns.map((item) => (
               <TurnView key={item.id} turn={item} busy={busy} onDecide={decide} />
             ))
+          ) : history.isLoading ? (
+            // `isLoading`, not `isPending`: a disabled query is pending
+            // forever, so on `/chat` that would never show the invitation.
+            <Restoring />
+          ) : history.isError ? (
+            <RestoreFailed message={history.error.message} />
           ) : (
             <Empty />
           )}
@@ -182,6 +225,35 @@ export function ChatPage() {
         </div>
       </form>
     </>
+  );
+}
+
+/** While a reloaded page waits for its transcript.
+ *
+ *  Not the invitation below: a conversation that is about to reappear must not
+ *  be announced as an empty one, however briefly. */
+function Restoring() {
+  return (
+    <div className="pt-10 text-center text-sm text-muted-foreground" data-testid="restoring">
+      <p>Restoring this conversation…</p>
+    </div>
+  );
+}
+
+/** When it cannot be restored.
+ *
+ *  Said out loud, because the alternative is an empty chat that reads as a
+ *  conversation nobody ever had. The server's own message is kept: for a
+ *  reload after the first turn failed, "no thread …" is the truth. */
+function RestoreFailed({ message }: { message: string }) {
+  return (
+    <div className="pt-10 text-center text-sm" data-testid="restore-failed">
+      <p className="text-destructive">This conversation could not be restored.</p>
+      <p className="mt-1 text-xs text-muted-foreground">{message}</p>
+      <p className="mt-3 text-xs text-muted-foreground">
+        Anything asked from here starts the thread again with no earlier context.
+      </p>
+    </div>
   );
 }
 
@@ -330,9 +402,13 @@ function TurnView({
         </p>
       ) : null}
 
-      {turn.cost !== undefined ? (
+      {turn.ms !== undefined ? (
         <p className="text-xs text-muted-foreground" data-testid="done">
-          {turn.ms}ms · ${turn.cost.toFixed(6)}
+          {turn.ms}ms
+          {/* A restored turn can have a latency and no price: the model had
+              none on file, and the `usage` table keeps an honest NULL for it.
+              Hiding the whole line there would lose the latency as well. */}
+          {turn.cost !== undefined ? ` · $${turn.cost.toFixed(6)}` : null}
         </p>
       ) : null}
     </div>

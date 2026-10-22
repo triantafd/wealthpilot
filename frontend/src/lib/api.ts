@@ -14,6 +14,8 @@
  * needs to read, not a status code to decode.
  */
 
+import type { Citation } from "@shared/stream-events";
+
 export class ApiError extends Error {
   readonly status: number;
 
@@ -137,4 +139,58 @@ export interface Approval {
 export interface Decision {
   approval: Approval;
   resumed: boolean;
+}
+
+/** What one turn spent, as `GET /threads/{id}/turns` reports it. */
+export interface RestoredUsage {
+  input_tokens: number;
+  output_tokens: number;
+  /**
+   * A string on the wire, not a number.
+   *
+   * The column is `NUMERIC` and Pydantic serialises `Decimal` as a string, so
+   * no precision is lost on the way out — verified against the running
+   * endpoint rather than assumed. Typed honestly here and converted once, in
+   * `restore()`: declaring it `number` compiles and then throws at
+   * `cost.toFixed(6)` with a blank turn where the price should be.
+   *
+   * Null for a model with no price on file, which is not the same statement as
+   * zero. See `TurnUsageOut` in app/api/threads.py.
+   */
+  cost_usd: string | null;
+  latency_ms: number | null;
+}
+
+/**
+ * One turn of a thread, restored from the server.
+ *
+ * snake_case and hand-written for the same reason `Approval` is: these are
+ * REST models, not the SSE contract. `citations` is the exception and a
+ * deliberate one — it carries the contract's camelCase `Citation`, so a
+ * restored turn and a streamed turn hold the same object by the time anything
+ * renders them. The backend's `Turn` model says so from the other side.
+ */
+export interface RestoredTurn {
+  question: string;
+  answer: string | null;
+  route: string | null;
+  route_confidence: number | null;
+  retrieved_count: number;
+  citations: Citation[];
+  action_outcome: string | null;
+  approval: Approval | null;
+  /** Nodes the turn is still paused at. Non-empty means its approval is live
+   *  and can still be decided, rather than a decision already taken. */
+  awaiting: string[];
+  started_at: string | null;
+  usage: RestoredUsage | null;
+}
+
+/** A thread, turn by turn. */
+export interface ThreadTurns {
+  thread_id: string;
+  turns: RestoredTurn[];
+  /** True when the thread was too long to walk and its oldest turns are
+   *  missing. The newest are always present. */
+  truncated: boolean;
 }
