@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/page-shell";
 import { TierBadge } from "@/components/tier-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ApiError } from "@/lib/api";
 import { Inline } from "@/lib/inline-markdown";
 import { ask, createThread, decideApproval } from "@/lib/stream";
 import type { ActionOutcome } from "@shared/stream-events";
@@ -202,7 +203,7 @@ export function ChatPage() {
             // forever, so on `/chat` that would never show the invitation.
             <Restoring />
           ) : history.isError ? (
-            <RestoreFailed message={history.error.message} />
+            <RestoreFailed error={history.error} />
           ) : (
             <Empty />
           )}
@@ -243,15 +244,28 @@ function Restoring() {
 /** When it cannot be restored.
  *
  *  Said out loud, because the alternative is an empty chat that reads as a
- *  conversation nobody ever had. The server's own message is kept: for a
- *  reload after the first turn failed, "no thread …" is the truth. */
-function RestoreFailed({ message }: { message: string }) {
+ *  conversation nobody ever had.
+ *
+ *  Two different failures, and telling an adviser the wrong one wastes their
+ *  time. A 404 is the thread itself: nothing was ever checkpointed under that
+ *  id, or it is gone, and there is nothing to wait for — so it is said in
+ *  plain words with no status code. Anything else is this app or its backend
+ *  failing, where the conversation is probably fine and the server's own
+ *  message is the only clue about why, so it is kept. */
+function RestoreFailed({ error }: { error: Error }) {
+  const missing = error instanceof ApiError && error.status === 404;
   return (
     <div className="pt-10 text-center text-sm" data-testid="restore-failed">
-      <p className="text-destructive">This conversation could not be restored.</p>
-      <p className="mt-1 text-xs text-muted-foreground">{message}</p>
+      <p className="text-destructive">
+        {missing
+          ? "This conversation is no longer available."
+          : "This conversation could not be restored."}
+      </p>
+      {missing ? null : <p className="mt-1 text-xs text-muted-foreground">{error.message}</p>}
       <p className="mt-3 text-xs text-muted-foreground">
-        Anything asked from here starts the thread again with no earlier context.
+        {missing
+          ? "Anything asked from here starts a new conversation."
+          : "Anything asked from here starts the thread again with no earlier context."}
       </p>
     </div>
   );

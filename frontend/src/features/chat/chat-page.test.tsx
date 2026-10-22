@@ -171,9 +171,13 @@ function stubFetch(events: object[], options: StubOptions = {}) {
       await options.turnsGate;
       const thread = path.replace("/api/threads/", "").replace("/turns", "");
       if (options.turnsStatus) {
-        return new Response(JSON.stringify({ detail: `no thread '${thread}'` }), {
-          status: options.turnsStatus,
-        });
+        // The endpoint's own two messages: a 404 names the thread it cannot
+        // find, and the 503 is the checkpointer being absent.
+        const detail =
+          options.turnsStatus === 404
+            ? `no thread '${thread}'`
+            : "the graph's checkpointer is not available";
+        return new Response(JSON.stringify({ detail }), { status: options.turnsStatus });
       }
       return new Response(
         JSON.stringify({
@@ -610,20 +614,34 @@ describe("ChatPage", () => {
       expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
     });
 
-    it("says a conversation could not be restored instead of showing an empty one", async () => {
+    it("says a thread that is not there is gone, in an adviser's words", async () => {
       // An empty chat reads as a conversation nobody ever had. The id in the
       // URL says otherwise, and the difference matters: one invites a
-      // question, the other says the history is missing.
+      // question, the other says the history is missing. A 404 is the thread
+      // itself, so it is said plainly and the status code stays out of it.
       vi.stubGlobal("fetch", stubFetch(RESEARCH_TURN, { turnsStatus: 404 }));
       renderChat("/chat/t-gone");
 
       await waitFor(() => expect(screen.getByTestId("restore-failed")).toBeInTheDocument());
-      expect(screen.getByTestId("restore-failed")).toHaveTextContent("could not be restored");
-      // The server's own words, which name the thread it could not find.
-      expect(screen.getByTestId("restore-failed")).toHaveTextContent("no thread 't-gone'");
+      expect(screen.getByTestId("restore-failed")).toHaveTextContent("no longer available");
+      expect(screen.getByTestId("restore-failed")).not.toHaveTextContent("no thread");
+      expect(screen.getByTestId("restore-failed")).not.toHaveTextContent("404");
       expect(screen.queryByText(/Ask a question about the firm/i)).not.toBeInTheDocument();
       // Still usable: the composer is how an adviser carries on from here.
       expect(screen.getByLabelText("Message")).toBeEnabled();
+    });
+
+    it("keeps the server's message when the failure is not a missing thread", async () => {
+      // "No longer available" would be a false statement about a thread that
+      // is fine behind a backend that is not, and it hides the one clue
+      // anybody debugging it has.
+      vi.stubGlobal("fetch", stubFetch(RESEARCH_TURN, { turnsStatus: 503 }));
+      renderChat("/chat/t-restored");
+
+      await waitFor(() => expect(screen.getByTestId("restore-failed")).toBeInTheDocument());
+      expect(screen.getByTestId("restore-failed")).toHaveTextContent("could not be restored");
+      expect(screen.getByTestId("restore-failed")).toHaveTextContent("checkpointer is not available");
+      expect(screen.getByTestId("restore-failed")).not.toHaveTextContent("no longer available");
     });
 
     it("asks for no history for a conversation it has just started", async () => {
