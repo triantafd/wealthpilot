@@ -488,35 +488,6 @@ record that cannot answer the question.*
       back is `consumed_at` and whatever the tool half-wrote, which is
       correct: the action did not run, and nothing can replay it because the
       thread is past its interrupt
-- [ ] **A cancelled request still writes no audit row.** A client
-      disconnecting mid-tool raises `CancelledError`, which is not an
-      `Exception` and so never reaches the audit in `execute`. The savepoint
-      is released correctly; only the row is missing. Fixing it needs
-      `asyncio.shield` around the write, which is a change to make
-      deliberately rather than in passing. Recorded 2026-10-19
-- [ ] **Redact bound parameters out of `audit_log.error`.** The string is
-      `f"{type(exc).__name__}: {exc}"`, and a SQLAlchemy `DBAPIError` embeds
-      `[SQL: ...] [parameters: ...]`. It is clamped and NUL-stripped but not
-      redacted, so when the text-to-SQL tool lands the log will carry
-      model-generated SQL (wanted) together with the client values bound into
-      it (not wanted, and the table has no redaction or retention policy).
-      Log the statement plus a parameter count or hashed parameters
-- [ ] **Shape the `audit_log` migrations for a table that is being written
-      to.** `c3e8a1d07b55` adds the column, backfills with one unbatched
-      UPDATE over a sequential scan, and validates the check constraint under
-      `ACCESS EXCLUSIVE`, all in one transaction — so the table every tool
-      call writes to is locked for the whole migration. Milliseconds at this
-      size and correct as written; the shape to demonstrate is `NOT VALID`
-      then a batched backfill then `VALIDATE CONSTRAINT`
-- [ ] **Give a `usage` row the turn it belongs to.** `thread_id` is the only
-      key `usage` and the checkpointer share, so the turn-level history matches
-      a row to a turn by time window — correct, and a heuristic over two
-      clocks. The fix is a column naming the turn (the checkpoint id the turn
-      ended on, or a per-thread ordinal) written by `stream_turn`, after which
-      `app/history.py:attach_usage` becomes a join and `created_at` stops
-      carrying meaning it was never meant to. A migration plus a backfill that
-      can only be approximate for existing rows, which is why it is not part
-      of the history endpoint. Recorded 2026-10-21
 - [x] **The thread binding is anchored to the run, not to state.** The gate
       passed `state["thread_id"]` and the approval had been written from the
       same field, so the check was self-consistent rather than true — safe
@@ -539,13 +510,24 @@ record that cannot answer the question.*
       with the inbox: it has four cases to keep apart, and two copies would
       have drifted within a week. The REST types moved to `lib/api.ts`, since
       chat reading another feature's types is the wrong direction
-- [ ] Restart safety: a HIGH action interrupted before a server restart
-      resumes after it
+
+### Before the PR
+
+*The two that are still work. Everything else left in this phase is recorded
+below as a follow-up, deliberately.*
+
+- [ ] **Restart safety: a HIGH action interrupted before a server restart
+      resumes after it.** The checkpointer has the paused run, so this is
+      about the server coming back able to continue it rather than about
+      storing anything new — the approval is already durable and the inbox
+      already shows it. What has never been exercised is deciding an approval
+      whose interrupt was written by a process that no longer exists
+- [ ] **Read-only documents page: `GET /documents` with name, chunk count and
+      last ingested.** The corpus the answers cite, visible. Read-only on
+      purpose: ingestion is a command, not a button
 
 ### Last
 
-- [ ] Read-only documents page: `GET /documents` with name, chunk count and
-      last ingested
 - [x] Re-run the full eval baseline before and after the streaming change, and
       record the result in `docs/EXPERIMENTS.md`.
       **Ignore `answer.refusal_correct` movement on `refusal-poa-policy-01`:**
@@ -562,6 +544,58 @@ record that cannot answer the question.*
       either way, and the prompt is unchanged by `git diff`. The remaining
       variable is `LLM_MODEL`, an unpinned alias — see `docs/EXPERIMENTS.md`
       and the Phase 8 pinning item
+
+### Known follow-ups
+
+*Recorded, not scheduled. None of them blocks this phase's PR; each says
+when it stops being acceptable, so the decision to defer is a decision and
+not a thing that was forgotten.*
+
+- [ ] **A cancelled request still writes no audit row.** A client
+      disconnecting mid-tool raises `CancelledError`, which is not an
+      `Exception` and so never reaches the audit in `execute`. The savepoint
+      is released correctly; only the row is missing. Fixing it needs
+      `asyncio.shield` around the write, which is a change to make
+      deliberately rather than in passing. Recorded 2026-10-19.
+      **Matters when:** anything can actually cancel a run — a stop button,
+      a proxy timeout, a deploy draining connections. Today nothing does, so
+      the missing row describes an event that does not happen; Phase 9 is
+      where it becomes a real hole in the record
+- [ ] **Redact bound parameters out of `audit_log.error`.** The string is
+      `f"{type(exc).__name__}: {exc}"`, and a SQLAlchemy `DBAPIError` embeds
+      `[SQL: ...] [parameters: ...]`. It is clamped and NUL-stripped but not
+      redacted, so when the text-to-SQL tool lands the log will carry
+      model-generated SQL (wanted) together with the client values bound into
+      it (not wanted, and the table has no redaction or retention policy).
+      Log the statement plus a parameter count or hashed parameters.
+      **Matters when:** the text-to-SQL tool lands, which is the first tool
+      that binds values into a statement that can fail. Before that there is
+      nothing in the log to redact; after it, every failed query writes the
+      bound values to a table with no retention policy
+- [ ] **Shape the `audit_log` migrations for a table that is being written
+      to.** `c3e8a1d07b55` adds the column, backfills with one unbatched
+      UPDATE over a sequential scan, and validates the check constraint under
+      `ACCESS EXCLUSIVE`, all in one transaction — so the table every tool
+      call writes to is locked for the whole migration. Milliseconds at this
+      size and correct as written; the shape to demonstrate is `NOT VALID`
+      then a batched backfill then `VALIDATE CONSTRAINT`.
+      **Matters when:** the table is big enough or busy enough for an
+      `ACCESS EXCLUSIVE` lock to be felt — so, a deployed Phase 9 rather than
+      a dev database. It is also the shape worth *showing*, which is its own
+      reason to do it before the repo is read by anyone
+- [ ] **Give a `usage` row the turn it belongs to.** `thread_id` is the only
+      key `usage` and the checkpointer share, so the turn-level history matches
+      a row to a turn by time window — correct, and a heuristic over two
+      clocks. The fix is a column naming the turn (the checkpoint id the turn
+      ended on, or a per-thread ordinal) written by `stream_turn`, after which
+      `app/history.py:attach_usage` becomes a join and `created_at` stops
+      carrying meaning it was never meant to. A migration plus a backfill that
+      can only be approximate for existing rows, which is why it is not part
+      of the history endpoint. Recorded 2026-10-21.
+      **Matters when:** a turn's cost has to be exact rather than attributed —
+      anything billed, or an eval that reports cost per turn. It breaks
+      outright the day one thread can run two turns at once, because the
+      window stops naming a single turn
 
 **Done when:** a 60-second recording shows a question answered with citations,
 streamed token by token, a rebalance proposed, a human approving it in the
@@ -644,6 +678,14 @@ owed from Phase 3 is fixed.*
       `checkpoints` has the threads but nothing names them, so the first
       question has to come out of the earliest checkpoint or a column of its
       own
+- [ ] **A turn that failed leaves no trace to restore.** An `error` event is
+      sent over the stream and never written anywhere, so a reloaded turn that
+      blew up comes back as a question with no answer and no error — it reads
+      as an answer that went missing rather than one that failed, which is the
+      one place a restored turn says less than the stream did. The honest fix
+      is for the turn to record that it failed: either a column the fold can
+      read, or the error as a message in the state so it is in the checkpoint
+      like everything else the page draws
 - [ ] **Abort the stream when the conversation changes.** Opening another
       thread mid-answer clears the transcript but leaves the `ask()` loop
       running: `busy` stays true until it finishes, and its events land on a
