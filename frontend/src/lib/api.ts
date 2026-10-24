@@ -194,3 +194,16 @@ export interface ThreadTurns {
    *  missing. The newest are always present. */
   truncated: boolean;
 }
+
+/** One indexed document, as `GET /documents` returns it.
+ *
+ *  `chunk_count` is the number of embedded passages. Zero is the row worth
+ *  looking at: the document is on file and the agent can never cite it. */
+export interface IndexedDocument {
+  id: string;
+  title: string | null;
+  chunk_count: number;
+  page_count: number | null;
+  version: number;
+  ingested_at: string;
+}

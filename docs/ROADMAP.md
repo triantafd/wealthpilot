@@ -531,9 +531,20 @@ below as a follow-up, deliberately.*
       earlier. What the restart depends on is the gate reading `approval_id`
       back out of the checkpoint; losing it makes the gate refuse, which the
       tests catch. No production code changed
-- [ ] **Read-only documents page: `GET /documents` with name, chunk count and
+- [x] **Read-only documents page: `GET /documents` with name, chunk count and
       last ingested.** The corpus the answers cite, visible. Read-only on
-      purpose: ingestion is a command, not a button
+      purpose: ingestion is a command, not a button — it rewrites what every
+      citation points at, and a button would be an unapproved mutation of the
+      evidence in an app built around approving mutations. **Result:** one
+      query (documents LEFT JOIN chunks) and a table. The join is left, not
+      inner, because the row worth building the page for is a document with
+      no passages: on file, impossible to cite, and until now visible only in
+      psql — the page says "0 · not searchable" rather than a quiet zero.
+      Each row carries the slug a citation prints, not just the title, since
+      matching an answer's source to this list is the reason to be here.
+      Dates are formatted in UTC with a fixed locale: the timestamps are UTC,
+      and a date that moves with the reader's clock cannot be compared
+      against a file on disk
 
 ### Last
 
