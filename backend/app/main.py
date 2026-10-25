@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from app import __version__
 from app.agents.checkpointer import checkpointer
 from app.api.approvals import router as approvals_router
+from app.api.documents import router as documents_router
 from app.api.threads import router as threads_router
 from app.api.usage import router as usage_router
 from app.config import get_settings
@@ -58,6 +59,7 @@ app = FastAPI(
 )
 
 app.include_router(approvals_router)
+app.include_router(documents_router)
 app.include_router(threads_router)
 app.include_router(usage_router)
 

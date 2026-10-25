@@ -30,7 +30,10 @@ uv run python -m app.scripts.ingest
 
 # evals (run from repo root)
 uv run --project backend python evals/run.py --suite smoke
-uv run --project backend python evals/run.py --suite all --compare evals/reports/baseline.json
+# --group evals installs the ragas judge, which `rag` and `all` score with and
+# the smoke suite does not. Without it those suites exit before running.
+uv run --project backend --group evals python evals/run.py --suite all \
+    --compare evals/reports/baseline.json
 
 # frontend (run from frontend/)
 pnpm dev

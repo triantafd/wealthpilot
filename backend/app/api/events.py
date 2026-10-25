@@ -21,6 +21,12 @@ from pydantic.alias_generators import to_camel
 
 Tier = Literal["READ", "LOW", "HIGH"]
 
+# What the action agent decided to do about a request. Named for the action
+# route rather than called `outcome`, because a research refusal and an
+# out-of-scope refusal are different facts and a single blurred field is how a
+# UI ends up labelling "how old are you" as a declined action.
+ActionOutcome = Literal["propose", "ask_account", "refuse"]
+
 
 class ContractModel(BaseModel):
     """Base for everything on the wire: camelCase out, either name in."""
@@ -105,14 +111,40 @@ class RetrievalEvent(ContractModel):
 
 
 class TokenEvent(ContractModel):
+    """A piece of the answer, or the whole of it.
+
+    `replace` is how one event type does both jobs. The research agent streams
+    its answer as it is written, so most of these are deltas a client appends.
+    The last one carries the finished text with `replace=True`, because the
+    streamed prose is what the model produced and the finished text is what an
+    adviser should read: page references are stripped out of it afterwards
+    (`strip_prose_references`), and a client that only appended would show the
+    answer with the references still in.
+    """
+
     type: Literal["token"] = "token"
     text: str
+    replace: bool = False
 
 
 class ApprovalRequiredEvent(ContractModel):
     type: Literal["approval_required"] = "approval_required"
     approval_id: str
     action: ProposedAction
+
+
+class ActionOutcomeEvent(ContractModel):
+    """Which of its three outcomes the action agent reached.
+
+    `propose` and `refuse` are visible already — one raises an approval card,
+    the other does not — but `ask_account` and `refuse` both arrive as a
+    paragraph of prose, and they are opposites: one is a question that a reply
+    carries forward, the other is a dead end. The agent has recorded the
+    distinction in state since Phase 4a; this is what carries it to the screen.
+    """
+
+    type: Literal["action_outcome"] = "action_outcome"
+    outcome: ActionOutcome
 
 
 class CitationsEvent(ContractModel):
@@ -142,6 +174,7 @@ StreamEvent = Annotated[
     | RetrievalEvent
     | TokenEvent
     | ApprovalRequiredEvent
+    | ActionOutcomeEvent
     | CitationsEvent
     | GuardrailEvent
     | DoneEvent
@@ -158,6 +191,7 @@ EVENT_MODELS: tuple[type[ContractModel], ...] = (
     RetrievalEvent,
     TokenEvent,
     ApprovalRequiredEvent,
+    ActionOutcomeEvent,
     CitationsEvent,
     GuardrailEvent,
     DoneEvent,

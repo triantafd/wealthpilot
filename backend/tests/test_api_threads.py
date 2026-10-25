@@ -15,6 +15,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.events import (
+    ActionOutcomeEvent,
     ApprovalRequiredEvent,
     CitationsEvent,
     DoneEvent,
@@ -94,6 +95,48 @@ def test_the_answer_and_its_citations_become_two_events_in_reading_order() -> No
     )
 
     assert [type(e) for e in events] == [TokenEvent, CitationsEvent]
+    token = events[0]
+    assert isinstance(token, TokenEvent)
+    assert token.replace, "a node's finished text replaces whatever it streamed"
+
+
+def test_the_action_agent_reports_which_outcome_it_reached() -> None:
+    """`ask_account` and `refuse` both arrive as prose. Without this event the
+    screen cannot tell a question that a reply carries forward from a dead
+    end."""
+    events = events_for(
+        "action",
+        {
+            "action_outcome": "ask_account",
+            "messages": [type("M", (), {"content": "Which account?"})()],
+        },
+    )
+
+    assert [type(e) for e in events] == [ActionOutcomeEvent, TokenEvent]
+    outcome = events[0]
+    assert isinstance(outcome, ActionOutcomeEvent)
+    assert outcome.outcome == "ask_account"
+
+
+def test_the_outcome_is_reported_before_the_message_it_explains() -> None:
+    """A label after the paragraph explains text already read."""
+    events = events_for(
+        "action",
+        {
+            "action_outcome": "refuse",
+            "messages": [type("M", (), {"content": "there is no account AC-99999"})()],
+        },
+    )
+
+    assert [e.type for e in events] == ["action_outcome", "token"]  # type: ignore[attr-defined]
+
+
+def test_a_node_that_is_not_the_action_agent_reports_no_outcome() -> None:
+    """Every other update carries no `action_outcome`, and a turn that labelled
+    a research answer `refuse` would be worse than no label at all."""
+    events = events_for("research", {"messages": [type("M", (), {"content": "£1,500."})()]})
+
+    assert not [e for e in events if isinstance(e, ActionOutcomeEvent)]
 
 
 def test_an_interrupt_becomes_an_approval_required_event() -> None:
@@ -184,6 +227,101 @@ async def test_a_research_turn_streams_route_then_answer_then_done(
     assert "token" in kinds
     assert "citations" in kinds
     assert kinds[-1] == "done"
+
+
+async def test_an_answer_streams_in_pieces_then_the_cleaned_text_replaces_it(
+    db_session: AsyncSession,
+) -> None:
+    """The whole of token streaming, end to end.
+
+    The deltas arrive on LangGraph's `custom` stream while the research node is
+    still running; the last `token` event comes from the node's update once it
+    has finished. They differ on purpose: the streamed text is what the model
+    wrote, and the final one has had its page reference stripped out, which is
+    why it replaces rather than appends.
+    """
+    embedder = await _seed(db_session)
+
+    events = [
+        e
+        async for e in stream_turn(
+            db_session,
+            InMemorySaver(),
+            thread_id=f"t-{uuid.uuid4()}",
+            question="what does a trade cost?",
+            embedder=embedder,
+            chat_model=fake_graph_model(
+                route="research",
+                answer="A trade costs £9.95 (page 1).",
+                stream_answer=True,
+            ),
+        )
+    ]
+
+    tokens = [e for e in events if isinstance(e, TokenEvent)]
+    deltas = [t for t in tokens if not t.replace]
+    assert len(deltas) > 1, "the answer should arrive in pieces, not one event"
+    assert "".join(t.text for t in deltas) == "A trade costs £9.95 (page 1)."
+    assert [t.replace for t in tokens] == [False] * len(deltas) + [True]
+    assert tokens[-1].text == "A trade costs £9.95."
+
+
+async def test_a_streamed_turn_still_records_the_tokens_it_spent(
+    db_session: AsyncSession,
+) -> None:
+    """Usage used to come from the raw message beside the parsed object. On the
+    streaming path it rides the last chunk, and `/usage` and the eval's cost
+    per query both read it."""
+    embedder = await _seed(db_session)
+
+    events = [
+        e
+        async for e in stream_turn(
+            db_session,
+            InMemorySaver(),
+            thread_id=f"t-{uuid.uuid4()}",
+            question="what does a trade cost?",
+            embedder=embedder,
+            chat_model=fake_graph_model(route="research", answer="£9.95.", stream_answer=True),
+        )
+    ]
+
+    done = events[-1]
+    assert isinstance(done, DoneEvent)
+    assert done.usage.input_tokens == 11
+    assert done.usage.output_tokens == 7
+
+
+async def test_an_asking_turn_streams_its_outcome_before_the_question(
+    db_session: AsyncSession,
+) -> None:
+    """End to end on the wire, not just through the mapper: a turn that asks
+    which account must reach the browser labelled as a question, because the
+    prose is indistinguishable from a refusal."""
+    embedder = await _seed(db_session)
+
+    events = [
+        e
+        async for e in stream_turn(
+            db_session,
+            InMemorySaver(),
+            thread_id=f"t-{uuid.uuid4()}",
+            question="rebalance the account, it has drifted",
+            embedder=embedder,
+            chat_model=fake_graph_model(
+                route="action",
+                outcome="ask_account",
+                detail="Which account should I raise the rebalance for?",
+            ),
+        )
+    ]
+
+    kinds = [e.type for e in events]  # type: ignore[attr-defined]
+    assert "action_outcome" in kinds
+    assert kinds.index("action_outcome") < kinds.index("token")
+    outcome = next(e for e in events if isinstance(e, ActionOutcomeEvent))
+    assert outcome.outcome == "ask_account"
+    assert "approval_required" not in kinds, "asking is not proposing"
 
 
 async def test_the_done_event_closes_every_stream(db_session: AsyncSession) -> None:

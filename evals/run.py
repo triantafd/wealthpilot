@@ -18,6 +18,7 @@ import asyncio
 import os
 import sys
 from dataclasses import asdict
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
@@ -117,8 +118,20 @@ async def _run(args: argparse.Namespace) -> int:
         return 1 if errors else 0
 
     cases = load_cases(args.suite)
-    embedder = OpenAIEmbedder()
     use_ragas = args.ragas if args.ragas is not None else args.suite != "smoke"
+    if use_ragas and find_spec("ragas") is None:
+        # Checked before the run, for the same reason --save-baseline is above:
+        # ragas is not a default dependency, so a suite scored with the judge
+        # used to spend all 75 cases and then die on the import.
+        print(
+            "ragas is not installed, and the judge is on for this suite. Either\n"
+            "  uv run --project backend --group evals python evals/run.py ...\n"
+            "or pass --no-ragas to run without faithfulness and relevancy.",
+            file=sys.stderr,
+        )
+        return 2
+
+    embedder = OpenAIEmbedder()
 
     runs: list[dict[str, float]] = []
     results: list = []

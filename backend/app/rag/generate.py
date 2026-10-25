@@ -12,13 +12,19 @@ do not hold up. Checking something an LLM produced with another LLM would make
 the metric as unreliable as the thing it measures.
 """
 
+import json
 import re
+import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import Runnable
+from langchain_core.utils.json import parse_partial_json
 from langfuse import observe
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.prompts import load_prompt
@@ -277,12 +283,187 @@ def build_messages(
     ]
 
 
+# A reader gets the answer as it is written. The callback takes a *delta* —
+# the text added since the last call — because the stream event appends.
+ProseCallback = Callable[[str], None]
+
+# Streaming structured output warns once per answer, from inside
+# langchain-openai: it calls `chunk.model_dump()` on the provider's chunk
+# (chat_models/base.py), and the OpenAI SDK has already parsed our schema onto
+# a field that the chunk type declares as None. Nothing is lost — the object it
+# cannot serialise is the one we rebuild from the JSON ourselves — but a smoke
+# run printed 27 of these, one per case, and a log that noisy is a log nobody
+# reads.
+#
+# The pattern names the field, so a serialisation warning about anything else
+# still surfaces. Registered at import rather than around the call: the eval
+# runner answers several questions at once, and `catch_warnings` mutates
+# process-global state.
+warnings.filterwarnings(
+    "ignore",
+    message=r"(?s)Pydantic serializer warnings.*field_name='parsed'",
+    category=UserWarning,
+)
+
+
+def chunk_text(content: Any) -> str:
+    """The text of one streamed chunk, whatever shape the provider sends.
+
+    OpenAI sends a string. The list form is content blocks, which arrive when
+    a model or a langchain version reports text alongside other parts; reading
+    it here costs five lines and means a provider change degrades to no
+    streaming rather than to a crash.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            str(part.get("text", ""))
+            for part in content
+            if isinstance(part, dict) and part.get("type") in (None, "text")
+        )
+    return ""
+
+
+class ProseAccumulator:
+    """Grows the `answer` field out of a JSON object arriving in fragments.
+
+    Structured output means the model streams JSON, not prose: the opening
+    chunks are `{"`, `answer`, `":"`. Each fragment is appended to a buffer and
+    the whole buffer re-parsed with `parse_partial_json`, which closes the open
+    string and hands back the answer as far as it has been written. The
+    difference between that and what was already emitted is prose a person can
+    read.
+
+    Re-parsing the whole buffer per chunk, rather than tracking the parser's
+    position, is deliberate: an answer is a few hundred tokens, and the simple
+    version cannot drift out of step with the JSON.
+
+    A delta is only ever an extension. If a re-parse comes back shorter, or no
+    longer starts with what was sent — an escape sequence arriving half
+    written — nothing is emitted until it grows past that point, and the
+    `replace` the stream sends at the end of the turn is the backstop that
+    makes the displayed text exact either way.
+    """
+
+    def __init__(self) -> None:
+        self._raw = ""
+        self._emitted = ""
+
+    @property
+    def json_text(self) -> str:
+        """Everything received so far, unparsed. Used in the error message."""
+        return self._raw
+
+    @property
+    def prose(self) -> str:
+        """The answer as far as it has been emitted."""
+        return self._emitted
+
+    def feed(self, fragment: str) -> str:
+        """Take one chunk's text; return the prose to emit, possibly nothing."""
+        self._raw += fragment
+        answer = self._answer_so_far()
+        if len(answer) <= len(self._emitted) or not answer.startswith(self._emitted):
+            return ""
+        delta = answer[len(self._emitted) :]
+        self._emitted = answer
+        return delta
+
+    def _answer_so_far(self) -> str:
+        if not self._raw.strip():
+            return ""
+        try:
+            parsed = parse_partial_json(self._raw)
+        except (ValueError, IndexError):
+            # Too little to parse yet — a lone `{` or a bare quote.
+            return ""
+        if not isinstance(parsed, dict):
+            return ""
+        answer = parsed.get("answer")
+        return answer if isinstance(answer, str) else ""
+
+    def final(self) -> "GeneratedAnswer | None":
+        """The completed object, or None if the stream never finished one.
+
+        Strict JSON here, deliberately — `parse_partial_json` is for reading
+        prose mid-flight and nothing else. It closes an open string and fills
+        in a missing `citations` from the field's default, so a stream cut off
+        after `{"answer": "The minimum annual` would validate: a half sentence,
+        no citations, and nothing to say it was truncated. An answer that ends
+        mid-word with no references is exactly the kind of output this codebase
+        checks for, so it is an error instead.
+
+        None rather than raising, because the caller holds the raw text and
+        reports the same unparseable-output error for every way this fails.
+        """
+        try:
+            return GeneratedAnswer.model_validate(json.loads(self._raw))
+        except (ValidationError, ValueError):
+            return None
+
+
+def streaming_step(structured: Runnable[Any, Any]) -> Runnable[Any, Any] | None:
+    """The provider-facing step of a `with_structured_output` chain.
+
+    `with_structured_output` returns model-then-parser, and the parser emits
+    only once the JSON is complete, so streaming the chain yields one chunk at
+    the end. Streaming its first step gives the raw fragments instead, which is
+    what `ProseAccumulator` needs — and since that step is what builds the
+    request, the bytes sent are the ones the non-streaming call sends, bar the
+    stream flags. `tests/test_generate_streaming.py` holds that to be true
+    against a stubbed transport, so a library change that reshapes the chain is
+    a failing test rather than a silent re-baseline of the evals.
+
+    None when the chain is not a sequence: the fake chat model in the unit
+    tests returns itself from `with_structured_output`.
+    """
+    first = getattr(structured, "first", None)
+    if first is not None and hasattr(first, "astream"):
+        return first  # type: ignore[no-any-return]
+    return None
+
+
+async def _stream_answer(
+    step: Runnable[Any, Any],
+    messages: list[SystemMessage | HumanMessage],
+    on_prose: ProseCallback | None,
+) -> tuple["GeneratedAnswer | None", TokenUsage, str]:
+    """Stream one structured answer, reporting prose as it arrives."""
+    accumulator = ProseAccumulator()
+    usage = TokenUsage()
+
+    # The handler turns this into a generation span carrying the rendered
+    # prompt, the model's raw output and the token counts. Empty list when
+    # tracing is off.
+    async for chunk in step.astream(messages, config={"callbacks": langchain_callbacks()}):
+        delta = accumulator.feed(chunk_text(getattr(chunk, "content", "")))
+        if delta and on_prose is not None:
+            on_prose(delta)
+        # Usage rides on the final chunk. It survives streaming by default, so
+        # this is where the eval's cost per query now comes from — Phase 1 took
+        # it from the raw message that `include_raw=True` kept alongside the
+        # parsed object, which no longer exists on this path.
+        if getattr(chunk, "usage_metadata", None):
+            usage = TokenUsage.from_message(chunk)
+
+    return accumulator.final(), usage, accumulator.json_text
+
+
 async def generate_answer(
     chat_model: BaseChatModel,
     question: str,
     chunks: list[RetrievedChunk],
+    *,
+    on_prose: ProseCallback | None = None,
 ) -> AnswerResult:
-    """Answer from passages already retrieved."""
+    """Answer from passages already retrieved.
+
+    `on_prose` is called with each piece of the answer as it is generated. It
+    is optional, but the streaming is not: the request is the same either way
+    (see `streaming_step`), so there is one code path, and the eval measures
+    exactly what the graph runs rather than a quieter sibling of it.
+    """
     if not chunks:
         # Calling the model with nothing to cite invites it to answer from
         # memory, which is the one thing the prompt forbids.
@@ -290,29 +471,21 @@ async def generate_answer(
             question=question, answer=NO_ANSWER, citations=[], retrieved=[], checks=[]
         )
 
-    # include_raw keeps the underlying message alongside the parsed object. It
-    # is the only place token usage survives structured output, and the eval
-    # runner reports cost per query.
-    structured = chat_model.with_structured_output(GeneratedAnswer, include_raw=True)
-    # The handler turns this into a generation span carrying the rendered
-    # prompt, the model's raw output and the token counts. Empty list when
-    # tracing is off.
-    response = await structured.ainvoke(
-        build_messages(question, chunks), config={"callbacks": langchain_callbacks()}
-    )
+    messages = build_messages(question, chunks)
+    structured = chat_model.with_structured_output(GeneratedAnswer)
+    step = streaming_step(structured)
 
-    if isinstance(response, GeneratedAnswer):  # a fake that ignores include_raw
-        generated: GeneratedAnswer | None = response
-        usage = TokenUsage()
-    elif isinstance(response, dict):
-        parsed = response.get("parsed")
-        generated = parsed if isinstance(parsed, GeneratedAnswer) else None
-        usage = TokenUsage.from_message(response.get("raw"))
+    if step is None:
+        # A fake chat model, which answers in one piece and has no usage to
+        # report. The real chain always streams.
+        response = await structured.ainvoke(messages, config={"callbacks": langchain_callbacks()})
+        generated = response if isinstance(response, GeneratedAnswer) else None
+        usage, raw = TokenUsage(), repr(response)
     else:
-        generated, usage = None, TokenUsage()
+        generated, usage, raw = await _stream_answer(step, messages, on_prose)
 
     if generated is None:
-        raise ValueError(f"model returned unparseable output: {response!r}")
+        raise ValueError(f"model returned unparseable output: {raw}")
 
     return AnswerResult(
         question=question,
@@ -335,7 +508,8 @@ async def answer_question(
     *,
     top_k: int | None = None,
     document_id: str | None = None,
+    on_prose: ProseCallback | None = None,
 ) -> AnswerResult:
     """Retrieve, then answer. The whole Phase 1 pipeline in one call."""
     chunks = await search(session, embedder, question, top_k=top_k, document_id=document_id)
-    return await generate_answer(chat_model, question, chunks)
+    return await generate_answer(chat_model, question, chunks, on_prose=on_prose)

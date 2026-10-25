@@ -735,3 +735,210 @@ have been a migration that drops LangGraph's tables.
 
 About twenty minutes, one throwaway file, and the spike's test thread was
 deleted from the checkpointer tables afterwards.
+
+## Phase 5 — Prose with trailing citations (option (c)): measured, and it costs refusals
+
+The streaming half of the task was split off deliberately, so that a change to
+the answer prompt could be measured before the SSE layer was rebuilt on top of
+it. It was the right split: the generation change regresses the suite, and the
+cause is not the prompt wording.
+
+**What changed.** `generate_answer` stopped asking for
+`with_structured_output(GeneratedAnswer)` and asked for prose instead, with
+citations as `<citation document="…" page="N">quote</citation>` tags parsed and
+verified afterwards. Nothing else moved: same retrieval, same model, same
+corpus, same cases.
+
+### Before and after, three runs each, 75 cases, `gpt-4o-mini`
+
+| metric | before (`33e7026`) | after | |
+|---|---|---|---|
+| answer.refusal_correct | **1.000** ±0.000 | **0.902** ±0.006 | −9.8 pts |
+| answer.must_include | 0.942 ±0.006 | 0.880 ±0.000 | −6.2 pts |
+| citations.validity | 0.987 ±0.011 | 0.960 ±0.000 | −2.7 pts (2 cases) |
+| answer.faithfulness | 0.881 ±0.003 | 0.861 ±0.009 | report-only |
+| answer.relevancy | 0.609 ±0.014 | 0.616 ±0.004 | report-only |
+| answer.prose_refs_written | 14.3 | 5.0 | **better** |
+| citations.malformed | — | 0.0 | the format is followed |
+| ops.p50_latency_ms | 1577 | 1501 | |
+| retrieval.* | unchanged | unchanged | deterministic |
+
+Reports: `20261013-154820.json` (before), `20261013-160027.json` (after).
+
+**The regression is one behaviour.** Refusals went from 5 of 75 to 12 of 75.
+Seven questions the structured model answered correctly — and answered in all
+three before-runs, since `refusal_correct` was 1.000 ±0.000 — now get
+*"The documents provided do not answer this question."*:
+`fee-etf-trade-01`, `mandate-consent-01`, `restriction-not-a-restriction-01`,
+`partial-isa-death-01`, `vague-drawdown-age-01`, `id-ticker-ocf-01`,
+`id-ticker-risk-01`. They also fail `must_include`, which is the whole of that
+metric's drop. `citations.validity` moved on two unrelated cases
+(`alloc-aggressive-equity-01`, `breach-report-time-01`, 1.00 → 0.00 each) —
+within the before-run's own spread, and not the same fault.
+
+The five cases that *should* refuse still refuse, in every variant below. The
+model has not become more cautious in general; it takes the escape hatch on the
+hard questions — synthesis, a table lookup, a vaguely worded one.
+
+### Two guesses, both wrong
+
+Twelve cases (the seven that broke, the five that must refuse), one run per
+variant. Cheaper than a suite per guess, and it rules a cause in or out.
+
+| prompt variant | correct |
+|---|---|
+| as written | 5/12 |
+| the new citation section's refusal bullet removed | 7/12 |
+| the whole new citation section removed | 5/12 |
+
+Removing the section entirely leaves the prompt byte-identical to the one the
+before-run used, and it still over-refuses. **So the new prompt text is not the
+cause.**
+
+Second guess: the refusal sentence is the last line of the human message, and
+the last line is the loudest. Same words, three positions:
+
+| escape-hatch position | correct |
+|---|---|
+| after the question (today) | 5/12 |
+| before the passages | 7/12 |
+| before the question | 8/12 |
+
+Position moves it, but does not fix it, and single runs of 12 cases cannot tell
+7 from 8. The over-refusal survives every framing.
+
+### What is left, and what it means
+
+The remaining difference is the shape of the request. Under
+`with_structured_output` the provider is given a schema and the model emits a
+function call it has to fill: writing nothing in `answer` is not available, so
+refusing costs it an explicit sentence in a field whose description said *"The
+answer, written for an adviser."* In free prose, refusing is the cheapest
+output there is. That is a property of option (c) itself, not of this
+implementation of it.
+
+So the cost of streamable prose, as decided, is about ten points of refusal
+accuracy — on a metric whose gate in `evals/thresholds.yaml` is 1.00 and whose
+whole point is that the assistant does not decline questions the documents
+answer. Chasing it with a stronger anti-refusal rule in the prompt is available
+and is not being done: the only judge of such a rule would be these same
+cases, which is teaching to the test with extra steps.
+
+**Rejected and reverted**, along with the `citations.malformed` metric that
+only existed to watch the tags — so nothing in the tree now reads as if this
+shipped. The alternative is option (a): keep the forced function call and
+stream the `answer` field out of the arriving JSON with an incremental parser.
+It pays a few tokens of `{"answer":"` before the first readable character and
+keeps the refusal behaviour measured here, and whether LangChain will do it for
+this provider and schema is the next thing to find out — a spike, not a build.
+If it will not, Phase 5 ships a "thinking…" state and token streaming moves to
+Phase 7.
+
+What this experiment bought: the regression was found for the price of two
+prompt-sized diffs and about twenty cents of model calls, before the SSE layer
+had been rebuilt on top of it. Splitting the task was worth more than the task.
+
+
+### What shipped instead: option (a), and why it needed no re-baseline
+
+Option (a) keeps the forced schema and streams the JSON it arrives in, growing
+the `answer` field with a partial parser. A spike established the two facts it
+depends on before any of it was built: langchain-openai's
+`with_structured_output` chain is model-then-parser, so streaming the model
+step gives the raw fragments the parser would otherwise swallow; and the
+request body of that streamed call is identical to the non-streaming one apart
+from `stream: true`. The spike read the second one off the wire, by patching
+`openai._base_client.AsyncAPIClient.post` rather than the resource class —
+langchain reaches the provider through `with_raw_response.create`, which walks
+straight past a patch on `AsyncCompletions.create`.
+
+An identical request means the baseline still describes what runs, so there was
+nothing to re-measure. The smoke suite was run anyway, because a claim like
+that is worth one minute and nine tenths of a cent:
+
+| metric | before | after | after (2nd run) |
+|---|---|---|---|
+| `citations.validity` | 0.963 | 0.963 | 0.963 |
+| `answer.must_include` | 0.889 | 0.889 | 0.889 |
+| `answer.refusal_correct` | 1.000 | 1.000 | 1.000 |
+| `answer.no_prose_refs` | 1.000 | 1.000 | 1.000 |
+| `retrieval.mrr` | 0.693 | 0.693 | 0.693 |
+| `ops.errors` | 0 | 0 | 0 |
+| `answer.prose_refs_written` (report-only) | 8.0 | 11.0 | 11.0 |
+
+The last row is the only movement, and it is noise rather than a finding: a
+second run of the *old* code gave 13.0. It counts page references the model
+wrote into its prose, all of which are stripped, which is why
+`answer.no_prose_refs` stays at 1.000 either way.
+
+The equality that makes all of this true is now a test rather than a result.
+`tests/test_generate_streaming.py` builds the configured model twice against a
+stubbed httpx transport — no network, no key — records both request bodies and
+asserts they match apart from the stream flags, naming `response_format` in
+particular, because a forced tool call instead of a JSON schema is exactly what
+option (c) changed. A langchain upgrade that reshapes the chain fails that test
+instead of quietly costing seven answers.
+
+
+## Phase 5 — The streaming re-baseline: the one drop is not streaming
+
+Required by the roadmap: the full suite before and after token streaming, not
+the smoke subset the task shipped with. Three runs each, 75 cases, identical
+config (`openai:gpt-4o-mini`, `text-embedding-3-small`, vector, top-k 6, no
+reranker). Reports: `20261013-154820.json` (before, `33e7026`) and
+`20261019-142323.json` (after, `0abe814`).
+
+| metric | before | after | |
+|---|---|---|---|
+| answer.refusal_correct | **1.000** ±0.000 | **0.987** ±0.000 | −1 case |
+| answer.must_include | 0.942 ±0.006 | 0.933 ±0.000 | composition, see below |
+| citations.validity | 0.987 ±0.011 | 0.978 ±0.006 | inside the before spread |
+| answer.no_prose_refs | 1.000 | 1.000 | |
+| answer.faithfulness | 0.881 ±0.003 | 0.902 ±0.005 | report-only |
+| answer.relevancy | 0.609 ±0.014 | 0.608 ±0.015 | report-only |
+| answer.prose_refs_written | 14.3 | 12.3 | report-only, noisy |
+| retrieval.mrr / hit@1 / hit@6 | 0.747 / 0.629 / 0.971 | identical | deterministic |
+| ops.p50 / p95 latency_ms | 1577 / 2112 | 1790 / 2751 | |
+| ops.cost_usd_total | 0.0242 | 0.0242 | |
+| ops.errors | 0 | 0 | |
+
+**The refusal drop is one case, and streaming did not cause it.**
+`refusal-cyber-01` ("the firm's cyber security requirements for advisers
+working remotely" — the corpus has no cyber policy) refused in all three
+before-runs and in none of the three after-runs, where it answers correctly
+*about advisory fees*, which is the failure the case was written to catch. Its
+retrieved chunk ids are byte-identical across the two sets of runs. Ten direct
+calls on that question and those chunks — five through the streamed path, five
+through `ainvoke` — refused **0 of 5 either way**, so the behaviour is on the
+non-streaming path too. `git diff 33e7026..HEAD` leaves
+`agents/prompts/research_answer.md`, `build_messages`, `NO_ANSWER` and the
+passage formatting untouched, and the streamed request body is asserted equal
+to the invoked one in `tests/test_generate_streaming.py`.
+
+What is left is the model: `LLM_MODEL` is the alias `openai:gpt-4o-mini`, not
+a dated snapshot, and the provider moves what it serves. Same inputs, six days
+apart, a consistent flip on both code paths. **Recorded as provider drift, not
+as a streaming regression** — and as a Phase 8 item, because thresholds set
+against a moving alias cannot distinguish this project's regressions from
+someone else's retrain, which is what this cost to find out.
+
+Three things not to read into the table:
+
+- **`must_include` lost no case.** Five cases fail either side —
+  `fee-etf-trade-01` recovered, `rebalance-eo-02` broke — and the after is
+  ±0.000 across three runs against the before's ±0.006, so part of the gap is
+  the before run's own spread rather than a change.
+- **`faithfulness` improved and that is not a result.** +0.021 on a
+  report-only ragas metric with no mechanism behind it; the request did not
+  change.
+- **Latency rose per case** (p50 +213ms) because the eval harness measures the
+  whole call and the streamed path adds per-chunk work. Time to first
+  readable character, which is the entire point of the change, is not a metric
+  this suite has.
+
+`baseline.json` is unchanged, and so is the dataset: `refusal-cyber-01` is a
+correct case that the system now gets wrong, which is worth more as a failure
+than as an edit. It is the suite's **second** knife-edge refusal case beside
+the bistable `refusal-poa-policy-01`, i.e. two of five refusal cases are
+coin-flips — direct evidence for the Phase 8 decision not to gate on
+`answer.refusal_correct` before Phase 6.

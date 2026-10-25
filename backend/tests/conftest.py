@@ -22,7 +22,7 @@ import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import psycopg
 import pytest
@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from app import observability
+from app import audit, observability
 from app.agents.checkpointer import setup_checkpointer
 from app.config import get_settings
 from app.db.session import get_session
@@ -153,6 +153,48 @@ async def db(test_database: str) -> AsyncIterator[AsyncConnection]:
         await engine.dispose()
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _development_database_is_off_limits() -> Iterator[None]:
+    """Fail the moment anything in the suite opens the *development* database.
+
+    Three times now, code under test has reached `get_sessionmaker()` — which
+    reads `DATABASE_URL` and therefore points at development data — while the
+    fixtures were busy being careful with a throwaway one. The last time it
+    wrote two audit rows about tools that do not exist into a database whose
+    whole purpose is to demonstrate an audit trail. Care is not a mechanism.
+
+    `get_engine` is the chokepoint rather than `get_sessionmaker`, because a
+    module that did `from app.db.session import get_sessionmaker` holds its
+    own reference to that function and a patch on the name would miss it —
+    but the function body still looks `get_engine` up in this module's
+    globals when it runs. Both caches are cleared so a factory built before
+    the guard cannot outlive it.
+
+    Anything in the suite that needs a database gets one from `db_session`,
+    or builds its own engine against `_test_database_name()`.
+    """
+    import app.db.session as session_module
+
+    def refuse() -> Any:
+        raise RuntimeError(
+            "a test opened the development database. Use the `db_session` "
+            "fixture, or build an engine for `_test_database_name()`. If this "
+            "is application code reaching `get_sessionmaker()` on its own, it "
+            "needs a seam the suite can point somewhere safe — see "
+            "`app.audit.failure_session_factory`."
+        )
+
+    real_get_engine = session_module.get_engine
+    session_module.get_engine.cache_clear()
+    session_module.get_sessionmaker.cache_clear()
+    session_module.get_engine = refuse  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        session_module.get_engine = real_get_engine
+        session_module.get_sessionmaker.cache_clear()
+
+
 @pytest.fixture
 async def migrated_db(db: AsyncConnection) -> AsyncConnection:
     """As `db`. The schema is guaranteed by the session fixture's migration run.
@@ -179,9 +221,28 @@ async def db_session(migrated_db: AsyncConnection) -> AsyncIterator[AsyncSession
     commits — ingestion does — would leave rows behind for the next test.
     """
     session = AsyncSession(bind=migrated_db, join_transaction_mode="create_savepoint")
+
+    def _on_this_tests_connection() -> AsyncSession:
+        """Where `app/audit.py` writes a failure row during a test.
+
+        In production that row goes on its own connection and commits there,
+        so it survives the caller's rollback. A test cannot have that: a real
+        second connection would neither see this test's uncommitted rows —
+        every approval it writes — nor roll back with it, so the rows would
+        leak into whatever ran next. Binding it to the same connection keeps
+        the code path under test and the isolation intact; `commit()` here
+        releases a savepoint, exactly as it does for the session above.
+
+        `tests/test_audit.py` covers the real factory, with its own cleanup.
+        """
+        return AsyncSession(bind=migrated_db, join_transaction_mode="create_savepoint")
+
+    original_factory = audit.failure_session_factory
+    audit.failure_session_factory = _on_this_tests_connection
     try:
         yield session
     finally:
+        audit.failure_session_factory = original_factory
         await session.close()
 
 
@@ -271,15 +332,26 @@ class FakeChatModel:
     whichever node ran first and break the other.
 
     Implements only `with_structured_output`, which is all either node uses.
+
+    A value may be a **list**, for a thread where the same node is asked twice
+    and should answer differently — the clarifying turn asks which account and
+    then proposes. Responses are taken in order and the last one repeats, so a
+    test states only as many as it cares about.
     """
 
-    def __init__(self, by_schema: dict[type, Any]) -> None:
+    def __init__(
+        self, by_schema: dict[type, Any], *, stream_schemas: tuple[type, ...] = ()
+    ) -> None:
         self._by_schema = by_schema
+        self._stream_schemas = stream_schemas
         self.schema: type | None = None
         self.messages: list[Any] = []
+        self.calls: dict[type, int] = {}
 
-    def with_structured_output(self, schema: type, **_: object) -> "FakeChatModel":
+    def with_structured_output(self, schema: type, **_: object) -> Any:
         self.schema = schema
+        if schema in self._stream_schemas:
+            return FragmentedChain(self, schema)
         return self
 
     async def ainvoke(self, messages: Any, **_: object) -> Any:
@@ -289,7 +361,64 @@ class FakeChatModel:
                 f"FakeChatModel was not given a response for {self.schema!r}; "
                 f"it has {list(self._by_schema)}"
             )
-        return self._by_schema[self.schema]
+        prepared = self._by_schema[self.schema]
+        if not isinstance(prepared, list):
+            return prepared
+
+        assert self.schema is not None
+        index = self.calls.get(self.schema, 0)
+        self.calls[self.schema] = index + 1
+        # The last response repeats rather than raising: a node called once
+        # more than a test anticipated should not fail on the fake.
+        return prepared[min(index, len(prepared) - 1)]
+
+
+class FragmentedChain:
+    """What `with_structured_output` returns, in miniature: model then parser.
+
+    `app/rag/generate.py:streaming_step` reaches past the parser for `.first`
+    and streams that, so a fake whose `with_structured_output` returns itself
+    never exercises the streaming path — and streaming is the path the graph
+    runs in production. A test that wants the real shape asks `FakeChatModel`
+    for it with `stream_schemas`.
+
+    Only `first` exists, because that is all `streaming_step` and
+    `_stream_answer` touch. The parser is not modelled at all: on this path
+    `generate.py` parses the accumulated JSON itself.
+    """
+
+    def __init__(self, model: "FakeChatModel", schema: type) -> None:
+        self.first = FragmentedModel(model, schema)
+
+
+class FragmentedModel:
+    """Streams a prepared object's JSON in pieces, with usage at the end.
+
+    Four pieces, split by length rather than at field boundaries, so a test
+    sees what the provider actually does: the first chunk is `{"ans`, and no
+    prose can be read out of it.
+    """
+
+    PIECES = 4
+    USAGE: ClassVar[dict[str, int]] = {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18}
+
+    def __init__(self, model: "FakeChatModel", schema: type) -> None:
+        self._model = model
+        self._schema = schema
+
+    async def astream(self, messages: Any, **_: object) -> Any:
+        from langchain_core.messages import AIMessageChunk
+
+        self._model.messages = messages
+        prepared = await self._model.ainvoke(messages)
+        text = prepared.model_dump_json()
+        width = max(1, len(text) // self.PIECES + 1)
+        fragments = [text[i : i + width] for i in range(0, len(text), width)]
+
+        for index, fragment in enumerate(fragments):
+            last = index == len(fragments) - 1
+            # Usage rides on the final chunk, as the provider sends it.
+            yield AIMessageChunk(content=fragment, usage_metadata=self.USAGE if last else None)
 
 
 def fake_model(answer: str, *citations: "Citation") -> Any:
@@ -309,6 +438,7 @@ def fake_graph_model(
     reason: str = "drift",
     outcome: str = "propose",
     detail: str = "",
+    stream_answer: bool = False,
 ) -> Any:
     """A chat model for a whole graph run: routes, then answers.
 
@@ -330,7 +460,11 @@ def fake_graph_model(
                 detail=detail,
             ),
             GeneratedAnswer: GeneratedAnswer(answer=answer, citations=list(citations)),
-        }
+        },
+        # Off by default: most graph tests care what the turn produced, not how
+        # it arrived, and one streaming fake for every test would make each of
+        # them depend on the chain's shape.
+        stream_schemas=(GeneratedAnswer,) if stream_answer else (),
     )
 
 

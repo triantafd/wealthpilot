@@ -21,6 +21,12 @@
 
 export type Tier = "READ" | "LOW" | "HIGH";
 
+/** What the action agent decided. `ask_account` and `refuse` both arrive as
+ *  prose and are opposites: one is a question a reply carries forward, the
+ *  other is a dead end. Named for the action route, because a research refusal
+ *  and an out-of-scope refusal are different facts. */
+export type ActionOutcome = "propose" | "ask_account" | "refuse";
+
 /** A retrieved passage, as the timeline shows it. Content is deliberately
  *  absent: the UI shows provenance and a score, and the full text would make
  *  every retrieval event the size of the corpus. */
@@ -65,8 +71,11 @@ export type StreamEvent =
   | { type: "tool_start"; tool: string; tier: Tier; args: Record<string, unknown> }
   | { type: "tool_end"; tool: string; ms: number }
   | { type: "retrieval"; chunks: RetrievedChunkRef[] }
-  | { type: "token"; text: string }
+  /** A piece of the answer to append — or, with `replace`, the finished text
+   *  to show instead of what was streamed. See `TokenEvent` in events.py. */
+  | { type: "token"; text: string; replace: boolean }
   | { type: "approval_required"; approvalId: string; action: ProposedAction }
+  | { type: "action_outcome"; outcome: ActionOutcome }
   | { type: "citations"; items: Citation[] }
   | { type: "guardrail"; flag: string }
   | { type: "done"; usage: Usage }

@@ -17,6 +17,7 @@ from statistics import median
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 from app.agents.nodes.supervisor import supervise
@@ -41,6 +42,12 @@ class RoutingCase(BaseModel):
     why: str
     tags: list[str] = Field(default_factory=list)
     style: str = "informal"
+    # Earlier messages, oldest first, as (role, content) with role "human" or
+    # "ai". Empty for a single-message case, which is most of them. A case
+    # cannot otherwise express a clarifying reply — "AC-00042" means nothing
+    # on its own, and a suite of single messages is exactly why `ask_account`
+    # scored 100% while being impossible end to end.
+    history: list[tuple[str, str]] = Field(default_factory=list)
 
 
 @dataclass
@@ -88,6 +95,7 @@ async def run_routing_case(
         # dict(), as the graph nodes do: AgentState is a TypedDict and the
         # node signatures take a plain dict.
         state = dict(initial_state(case.message, thread_id=f"eval-{case.id}"))
+        state["messages"] = _thread(case)
         update = await supervise(state, chat_model)
     except Exception as exc:
         return RoutingResult(
@@ -119,6 +127,15 @@ async def run_routing_case(
         output_tokens=tokens_out,
         cost_usd=cost_usd(model, tokens_in, tokens_out),
     )
+
+
+def _thread(case: RoutingCase) -> list[BaseMessage]:
+    """The case's prior messages, then the message being routed."""
+    prior: list[BaseMessage] = [
+        HumanMessage(content=text) if role == "human" else AIMessage(content=text)
+        for role, text in case.history
+    ]
+    return [*prior, HumanMessage(content=case.message)]
 
 
 def aggregate_routing(results: list[RoutingResult]) -> dict[str, Any]:

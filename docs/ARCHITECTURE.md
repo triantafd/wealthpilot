@@ -112,7 +112,8 @@ Rules: validate inputs with Pydantic before execution; gather context with READ 
 |---|---|---|
 | POST | `/threads` | New conversation |
 | POST | `/threads/{id}/messages` | Send a message; responds with an SSE stream |
-| GET | `/threads/{id}` | History |
+| GET | `/threads/{id}` | History, as role and content |
+| GET | `/threads/{id}/turns` | History turn by turn: route, citations, approval and cost — what a reloaded chat page restores from |
 | GET | `/approvals?status=pending` | Approvals inbox |
 | POST | `/approvals/{id}` | `{decision: "approve" or "reject", note}`; resumes the graph |
 | POST | `/ingest` | Re-index documents |
@@ -128,8 +129,9 @@ type StreamEvent =
   | { type: "tool_start"; tool: string; tier: "READ" | "LOW" | "HIGH"; args: unknown }
   | { type: "tool_end"; tool: string; ms: number }
   | { type: "retrieval"; chunks: { id: number; documentId: string; page: number; score: number }[] }
-  | { type: "token"; text: string }
+  | { type: "token"; text: string; replace: boolean }
   | { type: "approval_required"; approvalId: string; action: ProposedAction }
+  | { type: "action_outcome"; outcome: "propose" | "ask_account" | "refuse" }
   | { type: "citations"; items: { documentId: string; page: number; quote: string }[] }
   | { type: "guardrail"; flag: string }
   | { type: "done"; usage: { inputTokens: number; outputTokens: number; costUsd: number; ms: number } }
@@ -137,6 +139,12 @@ type StreamEvent =
 ```
 
 Keep this in `shared/stream-events.ts` with a matching Pydantic model in `backend/app/api/events.py`. A contract test checks that both stay in sync.
+
+`token` arrives many times per turn. The research agent streams the answer as
+it is written, so most of these carry a delta to append; the last one of a turn
+sets `replace` and carries the finished text, which is the answer after its
+prose page references have been stripped. A client appends unless `replace` is
+set. `backend/app/api/stream.py` documents where each form comes from.
 
 ## 7. Frontend
 
@@ -154,6 +162,14 @@ Vite, React, TypeScript, Tailwind, shadcn/ui, TanStack Query, Recharts.
 
 - Langfuse callback on every graph run: one trace per request, with spans per node and tool.
 - `usage` table written at the end of each run (tokens, cost, latency, route, user).
+- `audit_log` rows carry `event_type` (`call` or `decision`), plus `approval_id` and `approver`,
+  so a decision and the execution it authorised join on the approval rather than on a thread and
+  a timestamp. Every row is written by `app/audit.py:write_audit` — one INSERT site, so a column
+  added to the table cannot be remembered in one caller and forgotten in the other. Two caveats a reader
+  of that table needs: `approver` is whatever the decision request supplied and is **not verified
+  until authentication lands** (Phase 9 — it must come from the authenticated principal, not the
+  body); and `tier` admits a fourth value, `UNKNOWN`, for a call to a tool name nobody
+  registered, so a query filtering on the three real tiers silently drops those rows.
 - Structured JSON logs; in AWS they go to CloudWatch.
 
 ## 9. Repository layout

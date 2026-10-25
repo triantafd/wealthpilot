@@ -33,7 +33,9 @@ from app.approvals import (
     ApprovalNotFoundError,
     ApprovalRecord,
     Decision,
+    ExecutionRecord,
     decide,
+    executions_for,
     get_approval,
     list_approvals,
 )
@@ -41,6 +43,27 @@ from app.db.models.ops import APPROVAL_STATUSES
 from app.db.session import get_session
 
 router = APIRouter(tags=["approvals"])
+
+
+class Execution(BaseModel):
+    """What the approval authorised, once it was spent.
+
+    Absent while an approval is pending, and absent after a decision that
+    never ran — a rejection, or an approval whose execution failed before the
+    tool did anything. "Approved, never ran" is a real state and the inbox
+    says so rather than implying the action happened.
+    """
+
+    outcome: str = Field(description="ok, error or denied — the audit row's own vocabulary.")
+    at: Any
+    duration_ms: int | None = None
+    result: dict[str, Any] | None = Field(
+        None, description="What the tool returned. For a rebalance, the task it raised."
+    )
+    error: str | None = None
+    attempts: int = Field(
+        1, description="How many times this approval was offered. More than one is worth seeing."
+    )
 
 
 class Approval(BaseModel):
@@ -58,8 +81,18 @@ class Approval(BaseModel):
     requested_by: str | None
     decided_by: str | None
     decision_note: str | None
+    created_at: Any
+    decided_at: Any | None = Field(
+        None, description="When a human decided it. Null while it is waiting."
+    )
     consumed_at: Any | None = Field(
         None, description="Set once the approval has been spent. An approval is single-use."
+    )
+    execution: Execution | None = Field(
+        None,
+        description=(
+            "The call this approval authorised, from the audit log. Null when nothing ran under it."
+        ),
     )
 
 
@@ -96,8 +129,17 @@ class DecisionResponse(BaseModel):
     )
 
 
-def _public(record: ApprovalRecord) -> Approval:
-    return Approval.model_validate(record, from_attributes=True)
+def public_approval(record: ApprovalRecord, execution: ExecutionRecord | None = None) -> Approval:
+    """One approval in the shape every endpoint returns it.
+
+    Public because the turn-level thread history returns the same object: the
+    approval a turn raised is the same fact the inbox shows, and the frontend
+    renders both with one component. A second shape for it would drift.
+    """
+    approval = Approval.model_validate(record, from_attributes=True)
+    if execution is not None:
+        approval.execution = Execution.model_validate(execution, from_attributes=True)
+    return approval
 
 
 @router.get("/approvals", summary="Approvals inbox")
@@ -119,7 +161,10 @@ async def get_approvals(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"status must be one of {', '.join(APPROVAL_STATUSES)}",
         )
-    return [_public(r) for r in await list_approvals(session, status=status_filter, limit=limit)]
+    records = await list_approvals(session, status=status_filter, limit=limit)
+    # One query for the page, not one per row.
+    executions = await executions_for(session, [r.id for r in records])
+    return [public_approval(r, executions.get(r.id)) for r in records]
 
 
 @router.post("/approvals/{approval_id}", summary="Decide an approval and resume the graph")
@@ -129,12 +174,27 @@ async def post_decision(
     body: DecisionRequest,
     approval_id: Annotated[str, Path(description="The approval's id.")],
 ) -> DecisionResponse:
-    """Record the decision, then resume the thread that is waiting on it.
+    """Record the decision, commit it, then resume the thread waiting on it.
 
-    The decision is written first and committed with the resume in one
-    transaction. The registry re-reads the approval when the gate runs, so a
-    resume cannot authorise anything the decision did not — the ordering is
-    what makes the gate's own check meaningful rather than decorative.
+    The decision is written first. The registry re-reads the approval when the
+    gate runs, so a resume cannot authorise anything the decision did not —
+    the ordering is what makes the gate's own check meaningful rather than
+    decorative.
+
+    **The decision is committed before the resume**, and that is the whole
+    point of the commit sitting here rather than being left to `get_session`.
+    A tool failing during the resume raises past this handler, `get_session`
+    rolls back, and until now that rollback took the decision with it: an
+    adviser's approval silently un-made by a failure that happened after it,
+    while the checkpointer — which has its own connection — had already
+    committed the resumed state. A decision is a human's act and a fact on its
+    own; what the execution then does is a separate fact. The failure row is
+    durable for the same reason, written out of band by `app/audit.py`.
+
+    What stays rolled back on a failure is `consumed_at` and whatever the tool
+    half-wrote, which is correct: the action did not run. The approval is left
+    approved and unspent, and nothing can replay it — the thread is past its
+    interrupt, so `_resume` finds nothing waiting.
     """
     try:
         record = await decide(
@@ -146,13 +206,26 @@ async def post_decision(
         # 409: the request is well-formed, the resource is in the wrong state.
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
-    resumed = await _resume(request, session, record.thread_id, body.decision)
+    await session.commit()
+
+    try:
+        resumed = await _resume(request, session, record.thread_id, body.decision)
+    except Exception as exc:
+        # The decision and the audit row are already durable; the tool's own
+        # writes are not. 500 rather than a success the caller would believe:
+        # the approval was recorded, the action was not performed.
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"the decision was recorded, but the action failed: {type(exc).__name__}",
+        ) from exc
 
     # Re-read: the resume spends the approval, so the record from `decide` is
     # already stale and would report consumed_at as null for an approval the
     # registry has just used.
+    record = await get_approval(session, approval_id)
+    executions = await executions_for(session, [record.id])
     return DecisionResponse(
-        approval=_public(await get_approval(session, approval_id)), resumed=resumed
+        approval=public_approval(record, executions.get(record.id)), resumed=resumed
     )
 
 

@@ -40,3 +40,11 @@ Object.defineProperty(window, "ResizeObserver", {
 afterEach(() => {
   cleanup();
 });
+
+/**
+ * jsdom implements no scrolling, so `scrollIntoView` is simply absent and
+ * calling it throws. The chat page follows the newest turn, which is behaviour
+ * worth having and not worth guarding with an optional call in the component —
+ * that would hide a real break behind the same `?.` that silences this.
+ */
+Element.prototype.scrollIntoView = (): void => {};

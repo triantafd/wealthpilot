@@ -5,6 +5,19 @@ The only action available is **raising a rebalance task** for one account.
 
 Account ids have five digits: `AC-00042`.
 
+## When the adviser is answering your question
+
+If you asked which account and the latest message supplies one, that is a
+`propose`: the request was already clear and the id was the only thing
+missing. Set `replying_to_our_question` to true and take the id from that
+reply.
+
+Only a reply counts. An account id that merely appears somewhere earlier in
+the conversation is not permission to use it: if the adviser has just been
+told AC-00042 is within its bands and then says to sort out the one beside it
+in the list, AC-00042 is the account they do **not** want touched. If no
+question of yours is outstanding, the id has to be in the latest message.
+
 ## The three outcomes
 
 Every request ends in exactly one of these. Say which in `outcome`.

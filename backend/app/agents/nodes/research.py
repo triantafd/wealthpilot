@@ -16,10 +16,12 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.config import get_stream_writer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.conversation import has_prior_turn
 from app.rag.embeddings import Embedder
-from app.rag.generate import AnswerResult, answer_question
+from app.rag.generate import AnswerResult, ProseCallback, answer_question
 
 
 class NoQuestionError(ValueError):
@@ -43,6 +45,28 @@ def last_question(state: dict[str, Any]) -> str:
             if text.strip():
                 return text
     raise NoQuestionError("no human message in state to answer")
+
+
+def question_to_answer(state: dict[str, Any]) -> str:
+    """What to retrieve and answer with.
+
+    The supervisor's standalone rewrite when there is a conversation to resolve
+    against, and the raw message otherwise.
+
+    **The first-turn rule is enforced here, not asked of the prompt.** With no
+    prior turn there is nothing to resolve, so a rewrite can only paraphrase a
+    question that already stood alone — and a paraphrase changes retrieval for
+    every question ever asked, moving the whole baseline for no reason. The
+    prompt does say to repeat such a message verbatim; this makes it true
+    regardless, on the same principle as the action agent's downgrades: code
+    may make the behaviour safer, and the model cannot override it.
+    """
+    message = last_question(state)
+    if not has_prior_turn(state):
+        return message
+
+    rewritten = (state.get("standalone_question") or "").strip()
+    return rewritten or message
 
 
 def _chunk_refs(result: AnswerResult) -> list[dict[str, Any]]:
@@ -81,6 +105,25 @@ def _citations(result: AnswerResult) -> list[dict[str, Any]]:
     ]
 
 
+def prose_writer() -> ProseCallback | None:
+    """LangGraph's custom-stream writer, as a prose callback.
+
+    This is how a node reaches the SSE layer while it is still running. The
+    `updates` stream reports a node only once it has returned, and the
+    `messages` stream would carry the raw JSON fragments of structured output
+    rather than prose, so neither can show an answer being written.
+    `app/api/stream.py` turns each payload back into a `token` event.
+
+    None outside a graph run: the node's unit tests call it directly, and a
+    test should not have to stand up a stream to check what the node returns.
+    """
+    try:
+        writer = get_stream_writer()
+    except RuntimeError:
+        return None
+    return lambda delta: writer({"token": delta})
+
+
 async def research_agent(
     state: dict[str, Any],
     session: AsyncSession,
@@ -88,9 +131,9 @@ async def research_agent(
     chat_model: BaseChatModel,
 ) -> dict[str, Any]:
     """Answer the thread's latest question from the documents."""
-    question = last_question(state)
+    question = question_to_answer(state)
 
-    result = await answer_question(session, embedder, chat_model, question)
+    result = await answer_question(session, embedder, chat_model, question, on_prose=prose_writer())
 
     return {
         "messages": [AIMessage(content=result.answer)],

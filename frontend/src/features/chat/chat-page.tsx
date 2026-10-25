@@ -1,11 +1,19 @@
-import { useCallback, useRef, useState } from "react";
+import { cn } from "cn";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 
+import { ExecutionOutcome } from "@/components/execution-outcome";
 import { PageHeader } from "@/components/page-shell";
 import { TierBadge } from "@/components/tier-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ApiError } from "@/lib/api";
+import { Inline } from "@/lib/inline-markdown";
 import { ask, createThread, decideApproval } from "@/lib/stream";
-import { applyEvent, newTurn, type Turn } from "./turn";
+import type { ActionOutcome } from "@shared/stream-events";
+
+import { useThreadTurns } from "./history";
+import { applyEvent, newTurn, restore, type Turn, updateTurn } from "./turn";
 
 /**
  * The chat screen.
@@ -15,10 +23,31 @@ import { applyEvent, newTurn, type Turn } from "./turn";
  * verified citations, and an inline approve/reject when the graph pauses on a
  * HIGH-risk action.
  *
- * The answer arrives as one event rather than token by token. The research
- * agent uses structured output, so the model streams JSON fragments and the
- * usable prose only exists once the object closes — Phase 7 parses that
- * incrementally. Nothing here fakes a reveal from the finished string.
+ * The answer arrives in pieces, and nothing here fakes a reveal from a
+ * finished string. The research agent uses structured output, so the model
+ * streams JSON fragments; the backend grows the answer out of them with a
+ * partial parser and sends each piece as a `token` event. `applyEvent` appends
+ * them, and replaces the lot with the finished text when the turn ends — see
+ * `turn.ts`.
+ *
+ * **The thread id lives in the URL**, as `/chat/:threadId`. It used to be a
+ * `useRef`, which meant a reload started a conversation the checkpointer knew
+ * nothing about — the adviser's own history, their pending approvals and the
+ * context behind "and for a junior account?" all silently gone. The id is now
+ * the page's address, so a reload lands back on the same thread and a
+ * follow-up continues it.
+ *
+ * **The transcript comes back with it.** A page that arrives with an id in its
+ * URL fetches `GET /threads/{id}/turns` and maps each turn into the same
+ * `Turn` the stream builds, so one component draws both and a restored
+ * approval is decided by the same `decide()`. Only an id the page *arrived*
+ * with is fetched: one it created itself has no history, and asking for it
+ * would race the stream writing the turn.
+ *
+ * What is deliberately not used is `GET /threads/{id}`, which returns messages
+ * as role and content only. Restoring from it would redraw the answers with
+ * their citations, route and cost missing, and a reader cannot tell a citation
+ * that was never there from one dropped on the way back.
  */
 
 /** Until there is authentication, the decider is a placeholder. Phase 9. */
@@ -26,11 +55,57 @@ const DECIDED_BY = "adviser-7";
 
 export function ChatPage() {
   const [message, setMessage] = useState("");
-  const [turn, setTurn] = useState<Turn | null>(null);
+  const [turns, setTurns] = useState<Turn[]>([]);
   const [busy, setBusy] = useState(false);
-  // One thread for the page's life, so a follow-up continues the conversation
-  // rather than starting a new one the checkpointer knows nothing about.
-  const threadId = useRef<string | null>(null);
+  const bottom = useRef<HTMLDivElement | null>(null);
+
+  const { threadId: inUrl } = useParams<{ threadId: string }>();
+  const navigate = useNavigate();
+  // The thread this page is currently driving. The URL is the source of truth;
+  // this is how the page tells its own navigation apart from someone else's.
+  //
+  // It has to, because React Router keeps this component mounted across
+  // `/chat` -> `/chat/abc`, so "the id changed" cannot simply mean "start
+  // again". Three cases, wanting different things: the id appearing because we
+  // just created it (keep going — the first question is still streaming), the
+  // id changing to another thread or the Back button (a different
+  // conversation), and the id disappearing because the sidebar's Chat link was
+  // clicked (a new one). Comparing against what we are driving separates them.
+  const driving = useRef<string | null>(inUrl ?? null);
+
+  // The thread whose history to restore. Initialised from the URL, because
+  // this is the reload case and the effect below does not run on mount: the
+  // page is already driving the id it was mounted with. A query keyed on the
+  // id does run on mount, which is why the fetch hangs off this and not off
+  // the effect.
+  const [restoring, setRestoring] = useState<string | null>(inUrl ?? null);
+  // The thread whose history has already been put on screen, so neither a
+  // re-render nor a refetch can prepend it twice.
+  const restored = useRef<string | null>(null);
+
+  const address = inUrl ?? null;
+  useEffect(() => {
+    if (address === driving.current) return;
+    driving.current = address;
+    // A different conversation, so nothing on screen belongs to it.
+    setTurns([]);
+    setRestoring(address);
+    // Nothing is restored any more, which matters for coming *back* to a
+    // thread: its history is cached, so without this the guard below would
+    // recognise it as already on screen and leave the transcript empty.
+    restored.current = null;
+  }, [address]);
+
+  const history = useThreadTurns(restoring);
+  useEffect(() => {
+    const thread = history.data;
+    if (!thread || thread.thread_id === restored.current) return;
+    restored.current = thread.thread_id;
+    // Prepended rather than assigned. Everything restored is older than
+    // anything this page has streamed, by construction — so a question typed
+    // while the fetch was still in flight survives it arriving.
+    setTurns((current) => [...thread.turns.map(restore), ...current]);
+  }, [history.data]);
 
   const submit = useCallback(
     async (event: React.FormEvent) => {
@@ -40,37 +115,69 @@ export function ChatPage() {
 
       setBusy(true);
       setMessage("");
-      setTurn(newTurn(question));
+      const asked = newTurn(question);
+      setTurns((current) => [...current, asked]);
 
       try {
-        threadId.current ??= await createThread();
-        for await (const streamed of ask({ threadId: threadId.current, message: question })) {
-          setTurn((current) => (current ? applyEvent(current, streamed) : current));
+        if (driving.current === null) {
+          const started = await createThread();
+          driving.current = started;
+          // `replace`, not a push: the URL is gaining the identity of the
+          // conversation already on screen rather than moving somewhere new,
+          // and an empty `/chat` is not a place the Back button should return
+          // to mid-answer.
+          navigate(`/chat/${started}`, { replace: true });
+        }
+        for await (const streamed of ask({ threadId: driving.current, message: question })) {
+          setTurns((current) =>
+            updateTurn(current, asked.id, (turn) => applyEvent(turn, streamed)),
+          );
         }
       } catch (error) {
         const text = error instanceof Error ? error.message : "the request failed";
-        setTurn((current) => (current ? { ...current, error: text } : current));
+        setTurns((current) => updateTurn(current, asked.id, (turn) => ({ ...turn, error: text })));
       } finally {
         setBusy(false);
       }
     },
-    [busy, message],
+    [busy, message, navigate],
   );
 
-  const decide = useCallback(async (decision: "approve" | "reject") => {
-    setBusy(true);
-    try {
-      const approvalId = turn?.approval?.approvalId;
-      if (!approvalId) return;
-      await decideApproval(approvalId, decision, { decidedBy: DECIDED_BY });
-      setTurn((current) => (current ? { ...current, decision, approval: undefined } : current));
-    } catch (error) {
-      const text = error instanceof Error ? error.message : "the decision failed";
-      setTurn((current) => (current ? { ...current, error: text } : current));
-    } finally {
-      setBusy(false);
-    }
-  }, [turn]);
+  const decide = useCallback(
+    async (turnId: string, approvalId: string, decision: "approve" | "reject") => {
+      // The turn is named by the caller rather than looked up as "the latest":
+      // an approval belongs to the turn that raised it, and an adviser can
+      // have asked something else since.
+      setBusy(true);
+      try {
+        const decided = await decideApproval(approvalId, decision, { decidedBy: DECIDED_BY });
+        setTurns((current) =>
+          updateTurn(current, turnId, (turn) => ({
+            ...turn,
+            decision,
+            approval: undefined,
+            // What it actually did, rather than the assurance that it did
+            // something. `null` is a fact too — see `ExecutionOutcome`.
+            executed: decided.approval.execution,
+            executionSpent: decided.approval.consumed_at !== null,
+          })),
+        );
+      } catch (error) {
+        const text = error instanceof Error ? error.message : "the decision failed";
+        setTurns((current) => updateTurn(current, turnId, (turn) => ({ ...turn, error: text })));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [],
+  );
+
+  // Follow the newest turn. A chat that leaves the answer below the fold reads
+  // as broken; `turns.length` rather than `turns` so this fires when a turn is
+  // added, not on every streamed event.
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [turns.length]);
 
   return (
     <>
@@ -81,7 +188,26 @@ export function ChatPage() {
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-2xl space-y-4 px-4 pb-12">
-          {turn ? <TurnView turn={turn} busy={busy} onDecide={decide} /> : <Empty />}
+          {history.data?.truncated ? (
+            <p className="pt-2 text-xs text-muted-foreground" data-testid="truncated">
+              This conversation is long enough that its oldest turns are not shown.
+            </p>
+          ) : null}
+
+          {turns.length > 0 ? (
+            turns.map((item) => (
+              <TurnView key={item.id} turn={item} busy={busy} onDecide={decide} />
+            ))
+          ) : history.isLoading ? (
+            // `isLoading`, not `isPending`: a disabled query is pending
+            // forever, so on `/chat` that would never show the invitation.
+            <Restoring />
+          ) : history.isError ? (
+            <RestoreFailed error={history.error} />
+          ) : (
+            <Empty />
+          )}
+          <div ref={bottom} />
         </div>
       </div>
 
@@ -103,6 +229,48 @@ export function ChatPage() {
   );
 }
 
+/** While a reloaded page waits for its transcript.
+ *
+ *  Not the invitation below: a conversation that is about to reappear must not
+ *  be announced as an empty one, however briefly. */
+function Restoring() {
+  return (
+    <div className="pt-10 text-center text-sm text-muted-foreground" data-testid="restoring">
+      <p>Restoring this conversation…</p>
+    </div>
+  );
+}
+
+/** When it cannot be restored.
+ *
+ *  Said out loud, because the alternative is an empty chat that reads as a
+ *  conversation nobody ever had.
+ *
+ *  Two different failures, and telling an adviser the wrong one wastes their
+ *  time. A 404 is the thread itself: nothing was ever checkpointed under that
+ *  id, or it is gone, and there is nothing to wait for — so it is said in
+ *  plain words with no status code. Anything else is this app or its backend
+ *  failing, where the conversation is probably fine and the server's own
+ *  message is the only clue about why, so it is kept. */
+function RestoreFailed({ error }: { error: Error }) {
+  const missing = error instanceof ApiError && error.status === 404;
+  return (
+    <div className="pt-10 text-center text-sm" data-testid="restore-failed">
+      <p className="text-destructive">
+        {missing
+          ? "This conversation is no longer available."
+          : "This conversation could not be restored."}
+      </p>
+      {missing ? null : <p className="mt-1 text-xs text-muted-foreground">{error.message}</p>}
+      <p className="mt-3 text-xs text-muted-foreground">
+        {missing
+          ? "Anything asked from here starts a new conversation."
+          : "Anything asked from here starts the thread again with no earlier context."}
+      </p>
+    </div>
+  );
+}
+
 function Empty() {
   return (
     <div className="pt-10 text-center text-sm text-muted-foreground">
@@ -114,6 +282,38 @@ function Empty() {
   );
 }
 
+/** Asking, as distinct from refusing.
+
+ *  Both reach the screen as a paragraph, and they are opposites: one is a
+ *  question a reply carries forward, the other is a dead end the adviser
+ *  should stop pushing at. `propose` renders nothing — the approval card
+ *  below, with its HIGH tier badge, says it louder than a label would.
+ *
+ *  Local to this file rather than a component beside `TierBadge`, which earns
+ *  its place by appearing in the timeline, the inbox and the audit view. This
+ *  appears once. */
+function OutcomeNotice({ outcome }: { outcome?: ActionOutcome }) {
+  if (outcome !== "ask_account" && outcome !== "refuse") return null;
+
+  const asking = outcome === "ask_account";
+  return (
+    <p
+      data-testid="outcome"
+      title={
+        asking
+          ? "The agent needs one more detail. Reply and it will carry on."
+          : "The agent will not propose this action."
+      }
+      className={cn(
+        "inline-flex items-center rounded-sm px-1.5 py-0.5 text-[10px] font-medium",
+        asking ? "bg-accent text-accent-foreground" : "bg-muted text-muted-foreground",
+      )}
+    >
+      {asking ? "needs your answer" : "declined"}
+    </p>
+  );
+}
+
 function TurnView({
   turn,
   busy,
@@ -121,10 +321,11 @@ function TurnView({
 }: {
   turn: Turn;
   busy: boolean;
-  onDecide: (decision: "approve" | "reject") => void;
+  onDecide: (turnId: string, approvalId: string, decision: "approve" | "reject") => void;
 }) {
+  const approvalId = turn.approval?.approvalId;
   return (
-    <div className="space-y-3 pt-4">
+    <div className="space-y-3 border-t pt-4 first:border-t-0" data-testid="turn">
       <p className="text-sm font-medium">{turn.question}</p>
 
       {turn.route ? (
@@ -136,9 +337,13 @@ function TurnView({
         </p>
       ) : null}
 
+      <OutcomeNotice outcome={turn.outcome} />
+
       {turn.answer ? (
         <p className="text-sm leading-relaxed whitespace-pre-wrap" data-testid="answer">
-          {turn.answer}
+          {/* The model emphasises figures: `**£1,500**`. `whitespace-pre-wrap`
+              stays, so a newline still shows the day an answer has one. */}
+          <Inline text={turn.answer} />
         </p>
       ) : null}
 
@@ -153,7 +358,11 @@ function TurnView({
                 {citation.documentId} · page {citation.page}
               </span>
               <br />
-              &ldquo;{citation.quote}&rdquo;
+              {/* Quotes are verbatim from the same markdown corpus, so they
+                  carry the same `**` a reader should not have to see. */}
+              &ldquo;
+              <Inline text={citation.quote} />
+              &rdquo;
             </li>
           ))}
         </ul>
@@ -170,10 +379,19 @@ function TurnView({
             Nothing has happened yet. This runs only if you approve it.
           </p>
           <div className="mt-3 flex gap-2">
-            <Button size="sm" disabled={busy} onClick={() => onDecide("approve")}>
+            <Button
+              size="sm"
+              disabled={busy}
+              onClick={() => approvalId && onDecide(turn.id, approvalId, "approve")}
+            >
               Approve
             </Button>
-            <Button size="sm" variant="outline" disabled={busy} onClick={() => onDecide("reject")}>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => approvalId && onDecide(turn.id, approvalId, "reject")}
+            >
               Reject
             </Button>
           </div>
@@ -182,7 +400,13 @@ function TurnView({
 
       {turn.decision ? (
         <p className="text-xs text-muted-foreground" data-testid="decision">
-          {turn.decision === "approve" ? "Approved — the action has run." : "Rejected — nothing ran."}
+          {turn.decision === "approve" ? "Approved" : "Rejected"}
+          {" — "}
+          <ExecutionOutcome
+            execution={turn.executed ?? null}
+            status={turn.decision === "approve" ? "approved" : "rejected"}
+            spent={turn.executionSpent ?? false}
+          />
         </p>
       ) : null}
 
@@ -192,9 +416,13 @@ function TurnView({
         </p>
       ) : null}
 
-      {turn.cost !== undefined ? (
+      {turn.ms !== undefined ? (
         <p className="text-xs text-muted-foreground" data-testid="done">
-          {turn.ms}ms · ${turn.cost.toFixed(6)}
+          {turn.ms}ms
+          {/* A restored turn can have a latency and no price: the model had
+              none on file, and the `usage` table keeps an honest NULL for it.
+              Hiding the whole line there would lose the latency as well. */}
+          {turn.cost !== undefined ? ` · $${turn.cost.toFixed(6)}` : null}
         </p>
       ) : null}
     </div>

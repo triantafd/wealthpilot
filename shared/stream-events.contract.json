@@ -45,6 +45,10 @@
       "text": {
         "kind": "string",
         "required": true
+      },
+      "replace": {
+        "kind": "boolean",
+        "required": true
       }
     },
     "approval_required": {
@@ -54,6 +58,12 @@
       },
       "action": {
         "kind": "object",
+        "required": true
+      }
+    },
+    "action_outcome": {
+      "outcome": {
+        "kind": "string",
         "required": true
       }
     },

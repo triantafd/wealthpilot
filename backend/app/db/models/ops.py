@@ -27,9 +27,15 @@ from app.db.base import Base, TimestampMixin
 
 # Mirrors app/tools/registry.py. Kept as TEXT + CHECK for the same reason as
 # the firm enums: a new tier should be a one-line alter.
+#
+# `audit_log.tier` admits one more value, `UNKNOWN`, which is not a tier — it
+# is what a call to an unregistered name is recorded as. A review query that
+# filters on these three therefore excludes exactly the attempts most worth
+# looking at. See `app/audit.py`.
 RISK_TIERS = ("READ", "LOW", "HIGH")
 APPROVAL_STATUSES = ("pending", "approved", "rejected", "expired")
 AUDIT_OUTCOMES = ("ok", "error", "denied")
+AUDIT_EVENT_TYPES = ("call", "decision")
 
 
 class Approval(Base, TimestampMixin):
@@ -106,15 +112,34 @@ class AuditLogEntry(Base, TimestampMixin):
 
     __tablename__ = "audit_log"
     __table_args__ = (
-        CheckConstraint("tier IN ('READ', 'LOW', 'HIGH')", name="tier"),
+        # `UNKNOWN` is not a risk tier. It is what a call to a name nobody
+        # registered is recorded as — see `app/audit.py`. Writing one
+        # of the three real tiers to make such a row fit would be an invented
+        # fact in the audit log, and the log is the thing an investigation
+        # trusts.
+        CheckConstraint("tier IN ('READ', 'LOW', 'HIGH', 'UNKNOWN')", name="tier"),
         CheckConstraint("outcome IN ('ok', 'error', 'denied')", name="outcome"),
+        CheckConstraint("event_type IN ('call', 'decision')", name="event_type"),
         Index("ix_audit_log_thread_id_created_at", "thread_id", "created_at"),
         Index("ix_audit_log_tool_name", "tool_name"),
+        # The join key: a decision row and the execution it authorised share
+        # an approval id, which is how "who approved this?" is answered
+        # without correlating by timestamp.
+        Index("ix_audit_log_approval_id", "approval_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     thread_id: Mapped[str | None] = mapped_column(Text)
     user_id: Mapped[str | None] = mapped_column(Text)
+
+    # Which kind of event this row is. Three different things write a `denied`
+    # row — a human rejecting, the registry refusing a call, the gate refusing
+    # before the registry — and without this the only way to tell a decision
+    # from a call is to guess from which of `result` and `error` is populated.
+    # No server default: an INSERT that forgets this should fail, not quietly
+    # record a decision as a call. The migration sets one for the backfill and
+    # drops it again.
+    event_type: Mapped[str] = mapped_column(String(16), nullable=False)
 
     tool_name: Mapped[str] = mapped_column(Text, nullable=False)
     tier: Mapped[str] = mapped_column(String(8), nullable=False)

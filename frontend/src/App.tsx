@@ -33,6 +33,9 @@ export function App() {
               dashboard nobody asked for. `replace` keeps "/" out of history. */}
           <Route path="/" element={<Navigate to="/chat" replace />} />
           <Route path="/chat" element={<ChatPage />} />
+          {/* The same page: a thread id in the URL is what lets a reload land
+              back on the conversation instead of a blank one. */}
+          <Route path="/chat/:threadId" element={<ChatPage />} />
           <Route path="/approvals" element={<ApprovalsPage />} />
           <Route path="/documents" element={<DocumentsPage />} />
           <Route path="/usage" element={<UsagePage />} />

@@ -104,6 +104,20 @@ class AgentState(TypedDict, total=False):
     # because asking and refusing look alike in prose and mean opposite things
     # to the adviser. Replaced only, never accumulated: one turn, one outcome.
     action_outcome: str | None
+    # True when the action agent asked which account and is waiting for a
+    # reply. Its own field rather than inferred from `action_outcome`, which
+    # survives into later turns: a research turn followed by a bare account id
+    # would otherwise look like a reply to a question nobody asked.
+    #
+    # It never survives more than one turn. The action agent clears it on every
+    # pass, so a message that is not a reply ends the clarification rather than
+    # leaving it open for something later to resolve against.
+    awaiting_account: bool
+    # The latest message restated to stand on its own, from the supervisor.
+    # Retrieval uses it, because searching with "and for a junior account?"
+    # matches nothing useful. Only ever consulted when there *is* a prior
+    # turn — see `research_agent`.
+    standalone_question: str | None
     guardrail_flags: Annotated[list[str], operator.add]
 
     # The approval the gate created, kept in the state because LangGraph re-runs
@@ -137,6 +151,8 @@ def initial_state(question: str, *, thread_id: str, user_id: str | None = None) 
         sql_queries=[],
         pending_action=None,
         action_outcome=None,
+        awaiting_account=False,
+        standalone_question=None,
         guardrail_flags=[],
         approval_id=None,
         action_result=None,
@@ -156,3 +172,21 @@ def thread_config(thread_id: str) -> RunnableConfig:
     and drifting later.
     """
     return {"configurable": {"thread_id": thread_id}}
+
+
+def thread_of(config: RunnableConfig) -> str:
+    """The thread a run is *actually* on, read back out of its config.
+
+    The inverse of `thread_config`, and the anchor for anything that must not
+    be fooled by state. `AgentState` carries a `thread_id` too, but it is a
+    value some earlier call put there — on the paths that exist today the two
+    always agree, because `initial_state` and `thread_config` are built from
+    the same request, and a check comparing state against something derived
+    from state is self-consistent rather than true. This one comes from
+    LangGraph's own run config, which is what decides which checkpoint the
+    turn reads and writes.
+    """
+    thread_id = (config.get("configurable") or {}).get("thread_id")
+    if not isinstance(thread_id, str) or not thread_id:
+        raise ValueError("the run config carries no thread_id")
+    return thread_id

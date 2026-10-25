@@ -24,6 +24,7 @@ binding the model is what lets a test inject a fake without monkeypatching.
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -33,7 +34,7 @@ from app.agents.nodes.action import propose_action
 from app.agents.nodes.approval_gate import approval_gate, request_approval
 from app.agents.nodes.research import research_agent
 from app.agents.nodes.supervisor import refuse_out_of_scope, supervise
-from app.agents.state import AgentState
+from app.agents.state import AgentState, thread_of
 from app.rag.embeddings import Embedder
 
 # Node names, in one place: a typo in an edge is a graph that silently never
@@ -106,11 +107,14 @@ def build_graph(
     async def propose_node(state: AgentState) -> dict[str, Any]:
         return await propose_action(dict(state), session, _chat_model())
 
-    async def request_node(state: AgentState) -> dict[str, Any]:
-        return await request_approval(dict(state), session)
+    # These two take the run config as well as the state: an approval is bound
+    # to a thread, and the thread it is bound to has to be the one the run is
+    # actually on rather than the one a state field claims.
+    async def request_node(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+        return await request_approval(dict(state), session, thread_id=thread_of(config))
 
-    async def gate_node(state: AgentState) -> dict[str, Any]:
-        return await approval_gate(dict(state), session)
+    async def gate_node(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+        return await approval_gate(dict(state), session, thread_id=thread_of(config))
 
     async def out_of_scope_node(state: AgentState) -> dict[str, Any]:
         return await refuse_out_of_scope(dict(state))

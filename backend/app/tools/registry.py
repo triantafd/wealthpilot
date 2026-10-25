@@ -32,19 +32,27 @@ Three tiers, and what they mean here:
 
 import json
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.events import ProposedAction, Tier
-from app.db.models.ops import AUDIT_OUTCOMES, Approval, AuditLogEntry
+from app.audit import UNKNOWN_TIER, AuditTier, Outcome, write_audit
+from app.db.models.ops import AUDIT_OUTCOMES, Approval
 
-# Spelled from the schema's own constant, so an outcome the check
-# constraint rejects fails at import rather than at the first denied call.
-OK, ERROR, DENIED = AUDIT_OUTCOMES
+# Typed, and checked against the schema's own constant, so an outcome the
+# check constraint rejects fails at import rather than while writing the row
+# that was supposed to survive a failure.
+OK: Outcome = "ok"
+ERROR: Outcome = "error"
+DENIED: Outcome = "denied"
+if (OK, ERROR, DENIED) != AUDIT_OUTCOMES:
+    raise RuntimeError(f"outcomes {(OK, ERROR, DENIED)} != schema {AUDIT_OUTCOMES}")
+
 
 # The body of a tool: takes the session and its arguments, returns a JSON-able
 # result for the audit log and the stream.
@@ -138,16 +146,47 @@ def _canonical(args: dict[str, Any]) -> str:
     return json.dumps(args, sort_keys=True, separators=(",", ":"), default=str)
 
 
+@dataclass(frozen=True)
+class _Claim:
+    """The outcome of trying to spend an approval.
+
+    Carries what the audit row needs either way. `refusal` is None when the
+    approval was spent; `approver` is who decided it, and `exists` says whether
+    there is a row to point the audit log's foreign key at — a denied attempt
+    quoting an id that was never issued has nothing to reference.
+    """
+
+    refusal: str | None
+    approver: str | None = None
+    exists: bool = False
+
+    @property
+    def authorised(self) -> bool:
+        """True only for a claim that actually spent an approval.
+
+        `refusal is None` alone would be enough today, and is one careless
+        edit away from not being: a `_Claim(None)` built anywhere else —
+        a refusal whose reason came back empty, an early return added in good
+        faith — would read as authorisation. Authorisation requires a row that
+        was found and claimed, so it is spelled that way.
+        """
+        return self.refusal is None and self.exists
+
+
 async def _claim_approval(
-    session: AsyncSession, approval_id: str | None, tool: str, args: dict[str, Any]
-) -> str | None:
+    session: AsyncSession,
+    approval_id: str | None,
+    tool: str,
+    args: dict[str, Any],
+    thread_id: str | None,
+) -> _Claim:
     """Spend an approval, or explain why it cannot be spent.
 
-    Returns None when the approval is valid and now consumed; otherwise a
-    reason, for the audit row and the exception.
+    Returns a claim whose `refusal` is None when the approval is valid and now
+    consumed; otherwise a reason, for the audit row and the exception.
 
-    Three things are checked, and the second and third are the ones a tool name
-    alone would miss:
+    Four things are checked, and only the first is one a tool name alone would
+    catch:
 
     * **status** — only `approved` authorises anything. Pending means no human
       has decided yet.
@@ -155,6 +194,13 @@ async def _claim_approval(
       dangerous one.
     * **the arguments** — an approval for account A must not authorise account
       B. The approval is for a specific act, not for a capability.
+    * **the thread** — an approval belongs to the conversation it was raised
+      in. Not an escalation on its own, since tool and arguments must still
+      match exactly and the claim is single-use: the worst case it prevents is
+      the right action running in the wrong thread's audit context, which is
+      precisely the ambiguity the provenance columns exist to remove. Defence
+      in depth, and it fails closed — `create_approval` requires a thread, so a
+      caller that supplies none cannot be in the thread the approval names.
 
     Consumption is a conditional UPDATE rather than a read followed by a write.
     Two concurrent resumes of the same approval would both pass a read, and
@@ -165,26 +211,49 @@ async def _claim_approval(
     rollback un-spends it, which is correct: nothing happened.
     """
     if approval_id is None:
-        return "no approval id supplied"
+        return _Claim("no approval id supplied")
+    try:
+        uuid.UUID(approval_id)
+    except ValueError:
+        # Checked before the query. `approvals.id` is a uuid column, so asyncpg
+        # raises on a malformed value before the "does not exist" branch below
+        # can answer — and that escapes as a driver error, past the gate's
+        # `except ToolError`, with nothing audited.
+        return _Claim("approval id is not a uuid")
 
     row = (
         await session.execute(
-            select(Approval.status, Approval.tool_name, Approval.args, Approval.consumed_at).where(
-                Approval.id == approval_id
-            )
+            select(
+                Approval.status,
+                Approval.tool_name,
+                Approval.args,
+                Approval.consumed_at,
+                Approval.decided_by,
+                Approval.thread_id,
+            ).where(Approval.id == approval_id)
         )
     ).one_or_none()
 
     if row is None:
-        return f"approval {approval_id!r} does not exist"
+        return _Claim(f"approval {approval_id!r} does not exist")
+
+    # From here the row exists, so every refusal can still be filed against it.
+    def denied(reason: str) -> _Claim:
+        return _Claim(reason, approver=row.decided_by, exists=True)
+
     if row.status != "approved":
-        return f"approval is {row.status!r}, not 'approved'"
+        return denied(f"approval is {row.status!r}, not 'approved'")
     if row.tool_name != tool:
-        return f"approval is for {row.tool_name!r}, not {tool!r}"
+        return denied(f"approval is for {row.tool_name!r}, not {tool!r}")
     if _canonical(row.args or {}) != _canonical(args):
-        return "approval was granted for different arguments"
+        return denied("approval was granted for different arguments")
     if row.consumed_at is not None:
-        return "approval has already been used"
+        return denied("approval has already been used")
+    if row.thread_id != thread_id:
+        # Names only the thread that asked. The approval's own thread id is a
+        # handle to someone else's conversation, and this string reaches the
+        # guardrail flags and, through them, eventually a screen.
+        return denied("approval does not belong to this thread")
 
     claimed = (
         await session.execute(
@@ -193,6 +262,10 @@ async def _claim_approval(
                 Approval.id == approval_id,
                 Approval.status == "approved",
                 Approval.consumed_at.is_(None),
+                # Repeated from the check above rather than trusted from it:
+                # the point of a conditional UPDATE is that nothing it relies
+                # on was read in an earlier statement.
+                Approval.thread_id == thread_id,
             )
             .values(consumed_at=func.now())
             .returning(Approval.id)
@@ -201,34 +274,84 @@ async def _claim_approval(
 
     if claimed is None:
         # Lost a race with a concurrent resume of the same approval.
-        return "approval was used concurrently"
-    return None
+        return denied("approval was used concurrently")
+    return _Claim(None, approver=row.decided_by, exists=True)
 
 
 async def _audit(
     session: AsyncSession,
-    spec: ToolSpec,
+    tool_name: str,
+    tier: AuditTier,
     args: dict[str, Any],
     *,
     thread_id: str | None,
     user_id: str | None,
-    outcome: str,
+    outcome: Outcome,
     result: dict[str, Any] | None = None,
     error: str | None = None,
     duration_ms: int | None = None,
+    claim: "_Claim | None" = None,
+    approval_id: str | None = None,
+    out_of_band: bool = False,
 ) -> None:
-    await session.execute(
-        insert(AuditLogEntry).values(
-            thread_id=thread_id,
-            user_id=user_id,
-            tool_name=spec.name,
-            tier=spec.tier,
-            args=args,
-            result=result,
-            outcome=outcome,
-            error=error,
-            duration_ms=duration_ms,
-        )
+    """Write one `call` row, with whatever the gate decided about it.
+
+    Takes a name and a tier rather than a `ToolSpec`, because the rows most
+    worth having are the ones where there is no spec: a call to a tool nobody
+    registered is audited as `UNKNOWN`.
+
+    The approval id is recorded only when the approval row exists: the column
+    is a foreign key, and an attempt quoting an id that was never issued has
+    nothing to point at. The reason is in `error` either way, so that attempt
+    is still on the record — it is the id that cannot be, not the event.
+    """
+    await write_audit(
+        session,
+        event_type="call",
+        tool_name=tool_name,
+        tier=tier,
+        args=args,
+        outcome=outcome,
+        thread_id=thread_id,
+        user_id=user_id,
+        result=result,
+        error=error,
+        duration_ms=duration_ms,
+        approval_id=approval_id if claim is not None and claim.exists else None,
+        approver=claim.approver if claim is not None else None,
+        out_of_band=out_of_band,
+    )
+
+
+async def audit_denied(
+    session: AsyncSession,
+    name: str,
+    args: dict[str, Any],
+    *,
+    reason: str,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> None:
+    """Record an attempt that was stopped before `execute` was ever called.
+
+    The approval gate refuses a proposal that carries no approval id without
+    reaching the registry, so until now that attempt existed only as a string
+    inside a LangGraph checkpoint — invisible to every query an investigation
+    would run. It is written here rather than by the caller so that audit rows
+    keep coming from one place, and so an unregistered tool name still gets a
+    row instead of a foreign-key-free crash.
+    """
+    tier: AuditTier = REGISTRY[name].tier if name in REGISTRY else UNKNOWN_TIER
+    await _audit(
+        session,
+        name,
+        tier,
+        args,
+        thread_id=thread_id,
+        user_id=user_id,
+        outcome=DENIED,
+        error=reason,
+        out_of_band=True,
     )
 
 
@@ -248,48 +371,116 @@ async def execute(
     all — an audited call that rolled back would be a lie, and an unaudited one
     that committed would be worse.
     """
-    spec = get(name)
+    try:
+        spec = get(name)
+    except UnknownToolError as exc:
+        # Audited before it is raised. Harmless while one tool is hard-coded,
+        # a trap the moment a model picks the name: "the model called a tool
+        # that does not exist" is a question the audit log should answer, and
+        # a raise here left no trace of the attempt anywhere.
+        await _audit(
+            session,
+            name,
+            UNKNOWN_TIER,
+            args,
+            thread_id=thread_id,
+            user_id=user_id,
+            outcome=DENIED,
+            error=f"{type(exc).__name__}: {exc}",
+            out_of_band=True,
+        )
+        raise
+
+    claim: _Claim | None = None
 
     if spec.requires_approval:
-        refusal = await _claim_approval(session, approval_id, name, args)
-        if refusal is not None:
+        claim = await _claim_approval(session, approval_id, name, args, thread_id)
+        if not claim.authorised:
             await _audit(
                 session,
-                spec,
+                spec.name,
+                spec.tier,
                 args,
                 thread_id=thread_id,
                 user_id=user_id,
                 outcome=DENIED,
-                error=f"{spec.tier} tool refused: {refusal}",
+                error=f"{spec.tier} tool refused: {claim.refusal or 'unauthorised'}",
+                claim=claim,
+                approval_id=approval_id,
+                # A refusal is true whatever the caller's transaction does
+                # next, and it is the row an investigation starts from.
+                out_of_band=True,
             )
             raise ApprovalRequiredError(
-                f"{name} is {spec.tier}-risk and was not authorised: {refusal}"
+                f"{name} is {spec.tier}-risk and was not authorised: "
+                f"{claim.refusal or 'unauthorised'}"
             )
 
     started = time.perf_counter()
     try:
-        result = await spec.run(session, **args)
+        # Anything the caller left pending is flushed first, so the savepoint
+        # below contains the tool's writes and only the tool's writes.
+        await session.flush()
+        # A savepoint, so a tool that fails with a *database* error leaves the
+        # session usable. Without it the transaction is already aborted by the
+        # time the error row is written, the insert fails with
+        # InFailedSqlTransaction, and the failure this table exists to record
+        # is the one failure it cannot record. The caller still owns the outer
+        # transaction; this rolls back only the tool's own writes.
+        nested = await session.begin_nested()
+        try:
+            result = await spec.run(session, **args)
+            if not nested.is_active:
+                # The tool called commit() or rollback() itself. Both reach
+                # past the savepoint to the root transaction and neither
+                # raises, so without this check a committing tool would make
+                # the audit row non-atomic with the writes it describes, and a
+                # rolling-back tool would hand back its own approval unspent —
+                # `consumed_at` returns to NULL and the action is replayable.
+                # Enforced rather than asserted in a comment, because the
+                # comment above is the invariant this keeps true.
+                raise ToolError(f"{spec.name} committed or rolled back the session")
+            await nested.commit()
+        except BaseException:
+            # BaseException so a cancelled request releases the savepoint too.
+            # Cancellation is the one case that still leaves no row: a client
+            # disconnecting mid-tool raises CancelledError, which is not an
+            # `Exception` and so does not reach the audit below. Auditing
+            # under cancellation needs `asyncio.shield`, which is a change to
+            # make deliberately rather than in passing.
+            if nested.is_active:
+                await nested.rollback()
+            raise
     except Exception as exc:
         await _audit(
             session,
-            spec,
+            spec.name,
+            spec.tier,
             args,
             thread_id=thread_id,
             user_id=user_id,
             outcome=ERROR,
             error=f"{type(exc).__name__}: {exc}",
             duration_ms=int((time.perf_counter() - started) * 1000),
+            claim=claim,
+            approval_id=approval_id,
+            # The tool did not succeed, so this row survives the caller's
+            # rollback — which is what used to eat it.
+            out_of_band=True,
         )
         raise
 
     await _audit(
         session,
-        spec,
+        spec.name,
+        spec.tier,
         args,
         thread_id=thread_id,
         user_id=user_id,
         outcome=OK,
         result=result,
         duration_ms=int((time.perf_counter() - started) * 1000),
+        claim=claim,
+        approval_id=approval_id,
     )
     return result

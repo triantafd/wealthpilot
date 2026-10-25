@@ -278,7 +278,14 @@ async def test_an_empty_index_produces_a_refusal_not_an_invention(
 
 @pytest.mark.llm
 async def test_real_model_answers_with_a_verbatim_citation(db_session: AsyncSession) -> None:
-    """The whole pipeline against the real provider. Opt in: `uv run pytest -m llm`."""
+    """The whole pipeline against the real provider. Opt in: `uv run pytest -m llm`.
+
+    Also the only place the streaming is checked against OpenAI rather than a
+    fake: the unit tests prove `ProseAccumulator` can grow prose out of
+    fragmented JSON, but not that the provider sends fragments at all, or that
+    token usage survives streaming. Both are assertions below, and both were
+    things the spike had to measure before this was built.
+    """
     from app.llm import get_chat_model
     from app.rag.documents import load_documents
     from app.rag.embeddings import OpenAIEmbedder
@@ -287,11 +294,13 @@ async def test_real_model_answers_with_a_verbatim_citation(db_session: AsyncSess
     embedder = OpenAIEmbedder()
     await run_ingest(docs, db_session, embedder)
 
+    deltas: list[str] = []
     result = await answer_question(
         db_session,
         embedder,
         get_chat_model(),
         "What is the minimum annual advisory fee?",
+        on_prose=deltas.append,
     )
 
     assert "1,500" in result.answer
@@ -299,6 +308,12 @@ async def test_real_model_answers_with_a_verbatim_citation(db_session: AsyncSess
     assert result.citation_validity == 1.0, [
         (c.citation.quote, c.quote_found) for c in result.checks
     ]
+    # The answer arrived in pieces, and every piece was prose: a delta
+    # containing a brace would mean the JSON was leaking to the reader.
+    assert len(deltas) > 3
+    assert "1,500" in "".join(deltas)
+    assert not [delta for delta in deltas if "{" in delta or '"citations"' in delta]
+    assert result.usage.output_tokens > 0, "usage must survive streaming; the eval prices it"
 
 
 # --- Prompt guarantees -------------------------------------------------------

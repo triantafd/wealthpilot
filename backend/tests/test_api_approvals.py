@@ -9,6 +9,7 @@ Without that a test would resume threads in development data.
 """
 
 import uuid
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -20,7 +21,8 @@ from app.agents.graph import compile_graph
 from app.agents.state import initial_state, thread_config
 from app.approvals import create_approval, get_approval, list_approvals
 from app.db.models.firm import Account, Client, Task
-from app.tools.registry import get
+from app.db.models.ops import AuditLogEntry
+from app.tools.registry import REGISTRY, ApprovalRequiredError, execute, get
 from tests.conftest import fake_graph_model
 
 ACCOUNT = "AC-TEST01"
@@ -46,9 +48,18 @@ async def _paused_thread(saver: Any, session: AsyncSession) -> tuple[str, str]:
     thread = f"t-{uuid.uuid4()}"
     # A fake model, or compile_graph builds a real ChatOpenAI and the
     # supervisor calls the API — see fake_graph_model.
-    graph = compile_graph(session, saver, chat_model=fake_graph_model(route="action"))
-    state = initial_state("rebalance it", thread_id=thread, user_id="adviser-7")
-    state["pending_action"] = _action().model_dump(by_alias=True)
+    # The action agent proposes it, rather than the test setting
+    # `pending_action` by hand. It used to be set here, which stopped working
+    # when a non-proposal turn began clearing the field explicitly — and the
+    # hand-set value was never realistic anyway: it skipped the node whose job
+    # this is. The message names the account because a proposal whose id
+    # appears nowhere in it is downgraded to a question.
+    graph = compile_graph(
+        session,
+        saver,
+        chat_model=fake_graph_model(route="action", account_id=ACCOUNT),
+    )
+    state = initial_state(f"rebalance {ACCOUNT}", thread_id=thread, user_id="adviser-7")
     await graph.ainvoke(state, thread_config(thread))
     return thread, (await list_approvals(session, status="pending"))[-1].id
 
@@ -174,6 +185,13 @@ async def test_deciding_twice_is_a_conflict(
     assert second.status_code == 409
     assert (await get_approval(db_session, approval_id)).decided_by == "adviser-7"
 
+    # The message, not just the code. The second reviewer has to be told what
+    # happened and by whom; "failed with 409" is not something to show a
+    # person, and the frontend renders this `detail` verbatim.
+    detail = second.json()["detail"]
+    assert "already" in detail and "approved" in detail
+    assert "adviser-7" in detail, f"the conflict must name who decided it first: {detail!r}"
+
 
 async def test_deciding_an_unknown_approval_is_a_404(client: AsyncClient) -> None:
     response = await client.post(
@@ -241,3 +259,157 @@ async def test_the_response_reports_the_approval_after_the_resume(
     ).json()
 
     assert body["approval"]["consumed_at"] is not None
+
+
+async def test_a_tool_failing_on_resume_keeps_the_decision_and_audits_the_failure(
+    client: AsyncClient, db_session: AsyncSession, saver: Any
+) -> None:
+    """A failure after the decision must not un-make the decision.
+
+    The gate deliberately re-raises anything that is not a `ToolError`, so the
+    exception used to reach `get_session`, which rolled back the decision row,
+    the error row and the approval's status together: 500, an approval back in
+    the inbox as pending, and nothing in `audit_log` — while the checkpointer,
+    on its own connection, had already committed the resumed state.
+
+    What this test can show is the ordering and the rows. It cannot show the
+    rollback itself: the `client` fixture replaces `get_session` with the
+    test's own session, which never rolls back mid-test. That half is
+    `tests/test_audit.py:test_a_failure_row_commits_on_its_own_session`.
+    """
+    await _an_account(db_session)
+    _, approval_id = await _paused_thread(saver, db_session)
+
+    async def explodes(session: AsyncSession, **kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("the task queue is down")
+
+    intact = get("propose_rebalance")
+    REGISTRY["propose_rebalance"] = replace(intact, run=explodes)
+    try:
+        response = await client.post(
+            f"/approvals/{approval_id}",
+            json={"decision": "approve", "decided_by": "adviser-7"},
+        )
+    finally:
+        REGISTRY["propose_rebalance"] = intact
+
+    assert response.status_code == 500
+    assert "the action failed" in response.json()["detail"]
+
+    # The human's decision is a fact of its own, and survives.
+    approval = await get_approval(db_session, approval_id)
+    assert approval.status == "approved"
+    assert approval.decided_by == "adviser-7"
+
+    # And the attempt is on the record, with the approval it was made under.
+    failure = (
+        await db_session.execute(select(AuditLogEntry).where(AuditLogEntry.outcome == "error"))
+    ).scalar_one()
+    assert failure.event_type == "call"
+    assert "the task queue is down" in (failure.error or "")
+    assert str(failure.approval_id) == approval_id
+    assert (await db_session.execute(select(func.count()).select_from(Task))).scalar_one() == 0
+
+
+# --- What the decision authorised --------------------------------------------
+# The half of the inbox that only became answerable once audit rows carried
+# `approval_id`. Before that, "which execution did this approve?" meant
+# correlating by thread and timestamp.
+
+
+async def test_a_decided_approval_carries_the_execution_it_authorised(
+    client: AsyncClient, db_session: AsyncSession, saver: Any
+) -> None:
+    await _an_account(db_session)
+    _, approval_id = await _paused_thread(saver, db_session)
+    await client.post(
+        f"/approvals/{approval_id}",
+        json={"decision": "approve", "decided_by": "adviser-7"},
+    )
+
+    (approval,) = (await client.get("/approvals?status=approved")).json()
+
+    assert approval["decided_by"] == "adviser-7"
+    execution = approval["execution"]
+    assert execution["outcome"] == "ok"
+    assert execution["attempts"] == 1
+    # The task the rebalance raised: what the approval actually authorised.
+    assert execution["result"]["account_id"] == ACCOUNT
+    assert execution["result"]["task_id"] > 0
+
+
+async def test_the_inbox_says_when_as_well_as_who(
+    client: AsyncClient, db_session: AsyncSession, saver: Any
+) -> None:
+    """Half of "who approved this" is when. Both timestamps were on the record
+    and neither reached the response model, so the page rendered nothing where
+    the date goes — and a TypeScript type that declared them happily compiled
+    against a payload that never had them."""
+    await _an_account(db_session)
+    _, approval_id = await _paused_thread(saver, db_session)
+    await client.post(
+        f"/approvals/{approval_id}",
+        json={"decision": "approve", "decided_by": "adviser-7"},
+    )
+
+    (approval,) = (await client.get("/approvals?status=approved")).json()
+
+    assert approval["created_at"] is not None
+    assert approval["decided_at"] is not None
+
+
+async def test_a_pending_approval_has_no_execution(
+    client: AsyncClient, db_session: AsyncSession, saver: Any
+) -> None:
+    """Nothing has run, and the inbox must not imply otherwise."""
+    await _an_account(db_session)
+    await _paused_thread(saver, db_session)
+
+    (approval,) = (await client.get("/approvals?status=pending")).json()
+
+    assert approval["execution"] is None
+
+
+async def test_a_rejected_approval_has_no_execution(
+    client: AsyncClient, db_session: AsyncSession, saver: Any
+) -> None:
+    """A rejection writes a `decision` row, not a `call` row. Counting it as
+    an execution would say the action ran when the whole point is that it did
+    not."""
+    await _an_account(db_session)
+    _, approval_id = await _paused_thread(saver, db_session)
+    await client.post(
+        f"/approvals/{approval_id}",
+        json={"decision": "reject", "decided_by": "adviser-7"},
+    )
+
+    (approval,) = (await client.get("/approvals?status=rejected")).json()
+
+    assert approval["execution"] is None
+
+
+async def test_an_approval_offered_twice_says_so(
+    client: AsyncClient, db_session: AsyncSession, saver: Any
+) -> None:
+    """`attempts` counts calls, not successes. One run and one refused replay
+    is a different story from one run, and the inbox should not flatten it."""
+    await _an_account(db_session)
+    _, approval_id = await _paused_thread(saver, db_session)
+    await client.post(
+        f"/approvals/{approval_id}",
+        json={"decision": "approve", "decided_by": "adviser-7"},
+    )
+    # The same approval offered again: single-use, so refused and audited.
+    with pytest.raises(ApprovalRequiredError):
+        await execute(
+            db_session,
+            "propose_rebalance",
+            {"account_id": ACCOUNT},
+            thread_id=(await get_approval(db_session, approval_id)).thread_id,
+            approval_id=approval_id,
+        )
+
+    (approval,) = (await client.get("/approvals?status=approved")).json()
+
+    assert approval["execution"]["attempts"] == 2
+    assert approval["execution"]["outcome"] == "denied", "the latest attempt, not the happiest"

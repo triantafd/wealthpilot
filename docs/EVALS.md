@@ -65,10 +65,16 @@ size, not as a result.
 ## Running
 
 ```bash
-uv run python evals/run.py --suite all            # full
-uv run python evals/run.py --suite smoke          # ~20 cases, used on every PR
-uv run python evals/run.py --suite rag --compare evals/reports/baseline.json
+uv run --project backend --group evals python evals/run.py --suite all
+uv run --project backend python evals/run.py --suite smoke   # used on every PR
+uv run --project backend --group evals python evals/run.py --suite rag \
+    --repeat 3 --compare evals/reports/baseline.json
 ```
+
+`--group evals` installs ragas, which is deliberately not a runtime dependency
+— the service never scores itself. The smoke suite does not need it (the judge
+is off by default there); `rag` and `all` do, and the runner now says so and
+exits before spending a suite's worth of calls rather than after.
 
 Output: a table in the terminal and `evals/reports/<timestamp>.json` containing per-case results, aggregates, git SHA, model names and config.
 
