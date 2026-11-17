@@ -44,7 +44,18 @@ class Settings(BaseSettings):
     # --- Models -------------------------------------------------------------
     # "provider:model" so every chat model can come from LangChain's
     # init_chat_model(settings.llm_model) and the provider stays swappable.
-    llm_model: str = "openai:gpt-4o-mini"
+    #
+    # A dated snapshot, not the `gpt-4o-mini` alias. An alias is a name, not a
+    # version: the provider decides what runs behind it and changes it without
+    # notice, which is not a theory — Phase 5 watched `refusal-cyber-01` flip
+    # behaviour across six days with the prompt and the retrieved chunks
+    # byte-identical. A threshold in CI set against an alias measures someone
+    # else's release schedule, so Phase 8 pins this before setting any.
+    #
+    # The snapshot is the one the alias resolved to when it was pinned, read
+    # off a real response rather than chosen: see `usage.model_served`.
+    # Changing it is a behaviour change and takes a before/after eval run.
+    llm_model: str = "openai:gpt-4o-mini-2024-07-18"
     embedding_model: str = "text-embedding-3-small"
     # Must match the VECTOR(n) column in the chunks table. Changing this needs a
     # migration and a full re-embed, not just a restart.

@@ -23,11 +23,18 @@ from langchain_core.messages import AIMessage
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings
 from app.db.models.ops import UsageRecord
 from app.rag.generate import TokenUsage
 from app.usage import record_usage
 
 SERVED = "gpt-4o-mini-2024-07-18"
+
+#: Read from the config rather than written out, which these tests originally
+#: got wrong: they hard-coded `openai:gpt-4o-mini` and went red the moment
+#: Phase 8 pinned the model. What the column must hold is "whatever was
+#: configured", and that is what this says.
+CONFIGURED = Settings(_env_file=None).llm_model
 
 
 # --- Reading it off a message ----------------------------------------------
@@ -148,20 +155,22 @@ async def test_the_two_columns_stay_apart(db_session: AsyncSession, saver: Any) 
     """The reason this is two columns and not one, asserted on a path that
     actually writes a row.
 
-    `app/pricing.py` is keyed on the alias, so `model` has to stay as
-    configured or the cost comes out NULL. The next task pins that alias to a
-    dated snapshot, which breaks pricing unless the price table learns the
-    snapshot — and that is only visible if these two are kept apart. An
-    earlier version of this test ran an action-refusal path that writes no
-    usage row at all, so it skipped, and a skipping test caught nothing when
-    the columns were collapsed.
+    `model` is what was asked for and is what `app/pricing.py` prices from;
+    `model_served` is what the provider reported running. Pinning the model in
+    Phase 8 made the two strings nearly identical — the configured value keeps
+    its `openai:` prefix and the reported one does not — so this no longer
+    asserts that they *differ*, which would have been a test of a prefix. It
+    asserts what each one is for.
+
+    An earlier version ran an action-refusal path that writes no usage row at
+    all, so it skipped, and a skipping test caught nothing when the two
+    columns were collapsed into one.
     """
     row = await _one_streamed_turn(db_session, saver, served=SERVED)
 
-    assert row.model == "openai:gpt-4o-mini", "the alias, which is what prices"
-    assert row.model_served == SERVED
-    assert row.model != row.model_served
-    assert row.cost_usd is not None and row.cost_usd > Decimal("0"), "priced from the alias"
+    assert row.model == CONFIGURED, "what was asked for, which is what prices"
+    assert row.model_served == SERVED, "what the provider said it ran"
+    assert row.cost_usd is not None and row.cost_usd > Decimal("0"), "priced from `model`"
 
 
 async def test_a_turn_whose_provider_says_nothing_leaves_it_null(
@@ -172,7 +181,7 @@ async def test_a_turn_whose_provider_says_nothing_leaves_it_null(
     row = await _one_streamed_turn(db_session, saver, served=None)
 
     assert row.model_served is None
-    assert row.model == "openai:gpt-4o-mini"
+    assert row.model == CONFIGURED
 
 
 # --- The column itself ------------------------------------------------------
@@ -183,7 +192,7 @@ async def test_the_column_is_written_and_defaults_to_null(db_session: AsyncSessi
     price against the served name."""
     asked = await record_usage(
         db_session,
-        model="openai:gpt-4o-mini",
+        model=CONFIGURED,
         input_tokens=10,
         output_tokens=5,
         model_served=SERVED,
@@ -191,7 +200,7 @@ async def test_the_column_is_written_and_defaults_to_null(db_session: AsyncSessi
     )
     silent = await record_usage(
         db_session,
-        model="openai:gpt-4o-mini",
+        model=CONFIGURED,
         input_tokens=10,
         output_tokens=5,
         thread_id="t-prov-2",
@@ -200,7 +209,7 @@ async def test_the_column_is_written_and_defaults_to_null(db_session: AsyncSessi
     rows = {row.id: row for row in (await db_session.execute(select(UsageRecord))).scalars().all()}
 
     assert rows[asked].model_served == SERVED
-    assert rows[asked].model == "openai:gpt-4o-mini"
+    assert rows[asked].model == CONFIGURED
     assert rows[silent].model_served is None, "not reported, not guessed"
     # The cost came from the alias either way.
     assert rows[asked].cost_usd == rows[silent].cost_usd
@@ -216,7 +225,7 @@ async def test_an_unattributable_row_is_findable(db_session: AsyncSession) -> No
     )
     await record_usage(
         db_session,
-        model="openai:gpt-4o-mini",
+        model=CONFIGURED,
         input_tokens=1,
         output_tokens=1,
         model_served=SERVED,

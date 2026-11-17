@@ -756,15 +756,28 @@ the thresholds are set once the answer path, including streaming, is stable.*
       answer to what the pin should name. Existing rows stay NULL: we do not
       know what served them. No eval run: the request to the model is
       unchanged, only what is read off the response
-- [ ] **Pin `LLM_MODEL` to a dated snapshot, before setting any threshold.**
-      It is the alias `openai:gpt-4o-mini` in `app/config.py` and
-      `.env.example`, and the provider moves what it serves: the full-suite
-      re-baseline of 2026-10-19 lost `refusal-cyber-01` on both the streamed
-      and the non-streaming path with the prompt, retrieval and request body
-      unchanged since 2026-10-13. A threshold measured against a moving alias
-      cannot tell this project's regression from someone else's retrain, which
-      is a day already spent once. Pinning is itself a behaviour change, so it
-      gets its own before/after run
+- [x] **Pin `LLM_MODEL` to a dated snapshot.** `openai:gpt-4o-mini` is a
+      name, not a version, so a threshold set against it measures the
+      provider's release schedule. **Result:** pinned to
+      `openai:gpt-4o-mini-2024-07-18` — the snapshot the alias already
+      resolved to, read off a real response rather than chosen. `PRICES` gains
+      the snapshot **in the same commit**, because `price_for` is keyed on the
+      model name and a pin without it reports NULL cost on every row and
+      breaks nothing visibly. Snapshots are written out rather than matched by
+      stripping the date: a prefix rule would price an unreleased
+      `gpt-4o-mini-2027-...` at today's rate, and a confident wrong number is
+      worse than an honest NULL. **Smoke, three runs before and three after:**
+      retrieval, `must_include`, `no_prose_refs` and cost all identical;
+      `citations.validity` 0.951 → 0.963, inside the before spread of ±0.074.
+      One gated metric moved — `answer.refusal_correct` 1.000 → 0.988 — and it
+      is `refusal-poa-policy-01` failing in **one of the six runs**, the case
+      already recorded as bistable. The six runs are new evidence rather than
+      a regression: they all ran against the same pinned snapshot, so that
+      case is bistable **at a fixed model**, which rules out provider drift as
+      its cause and points Phase 6 at the prompt or the passage ordering. Also
+      proved the guard works: changing the config alone turned
+      `test_the_configured_default_model_is_priced` red before the price table
+      was touched
 - [ ] Small smoke subset on every PR, full suite nightly
 - [ ] **Pin `sqlglot` exactly, and treat a bump as a security change.**
       Carried from the SQL security review and put here because it is the same

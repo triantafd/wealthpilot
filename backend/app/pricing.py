@@ -48,6 +48,13 @@ class ModelPrice:
 # zero rather than absent — it is priced, and its output genuinely costs
 # nothing.
 PRICES: dict[str, ModelPrice] = {
+    # Snapshots are written out in full rather than matched by stripping the
+    # date. A prefix rule would price an unreleased `gpt-4o-mini-2027-...` at
+    # today's rate, and the paragraph above is the reason that is worse than
+    # refusing: an unknown model reports NULL and somebody asks, a wrongly
+    # priced one reports a number and nobody does. The alias stays listed
+    # because `.env` files and older `usage` rows still carry it.
+    "gpt-4o-mini-2024-07-18": ModelPrice(Decimal("0.15"), Decimal("0.60")),
     "gpt-4o-mini": ModelPrice(Decimal("0.15"), Decimal("0.60")),
     "gpt-4o": ModelPrice(Decimal("2.50"), Decimal("10.00")),
     "text-embedding-3-small": ModelPrice(Decimal("0.02"), Decimal("0")),

@@ -34,7 +34,19 @@ trusting a single run.*
       reproducible number, and **the Phase 8 CI gate must not gate on it until
       this is fixed**, or the gate fails at random. `GATEABLE` in
       `app/evals/report.py` is a label today and enforces nothing, which is the
-      only reason this has not already broken CI
+      only reason this has not already broken CI.
+
+      **Seen again on 2026-11-17, and this time the model was fixed.** The
+      Phase 8 pin ran the smoke suite three times before and three times
+      after, six runs in all against the same snapshot
+      (`gpt-4o-mini-2024-07-18` — the alias already resolved to it, confirmed
+      from a real response). This case failed in exactly one of the six.
+      That rules out the explanation that was still open: it is **not**
+      provider drift. The model did not change between those runs, and the
+      case still flipped, so whatever Phase 6 fixes is in the prompt or in
+      the passage ordering rather than at the provider. Useful because
+      `refusal-cyber-01` in Phase 5 *was* provider drift, and the two were
+      easy to confuse
 
 - **`citations.validity` also varies, and by more than it looks.** Seven
       smoke runs measured 0.926 to 1.000 while `retrieval.mrr` sat at exactly
