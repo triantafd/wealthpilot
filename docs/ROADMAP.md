@@ -4,6 +4,20 @@ Work top to bottom, with one exception noted below. Each phase ends with
 something that runs and a number you can put in the README. Tick boxes as you
 go; Claude Code reads this file to know where you are.
 
+**This file holds planned work and nothing else.** Measurements that constrain
+a future task, known gaps nobody is fixing yet, and questions already decided
+live in `docs/NOTES.md`; experiments with numbers live in
+`docs/EXPERIMENTS.md`. The split was made on 2026-11-17 because this file had
+grown to 975 lines and 61 open boxes, of which roughly twenty were work — the
+rest were notes that had been given checkboxes and could never be ticked, and
+together they made the project read as three times its actual size. Nothing
+was deleted: every item that moved is in one of those two files, and the ones
+that were cut say so and say why.
+
+**A ticked item's `Result:` is one or two sentences and a pointer.** The
+reasoning belongs in the code it describes, where it is read by whoever
+changes that code. This file is not the place to write it a second time.
+
 **Running order.** `0 → 1 → 2 → 3 → 4a → 5 → 8 → 4 → 6 → 7 → 9 → 10`.
 
 Phase 5 comes straight after the slice: the app demos worse than it works, and
@@ -14,6 +28,13 @@ thresholds should be set once the answer path, including streaming, is stable.
 
 Numbers are unchanged, because `docs/EXPERIMENTS.md`, `docs/EVALS.md` and
 several commit messages already reference phases by number.
+
+**Phase 4 is currently running ahead of that order.** Three Phase 4 tasks —
+the read-only SQL surface, the executor and the `run_sql` registry entry —
+were done before Phase 8, which the order above puts first. That was not a
+decision; it is drift, and it is recorded here rather than quietly corrected
+because Phase 8 exists to stop a change being merged on an unmeasured claim,
+and every Phase 4 task done before it is a task the gate did not cover.
 
 Each remaining phase is labelled **Core**, **Important** or **Optional**. Core
 phases are the ones without which the README is not true.
@@ -69,86 +90,16 @@ first idea always worked.
 - [x] Cross-encoder reranker — **report latency alongside accuracy.** A reranker
       that adds 400ms to every request is a different proposition from one that
       adds 40ms, and accuracy alone hides that
-- [ ] Try 2–3 chunk sizes — **skipped deliberately**, reason recorded in
-      `docs/EXPERIMENTS.md`: the evidence points at a question-shaped
-      restatement out-matching the governing prose, which moving passage
-      boundaries would not address. Cheap to run later if the FAQ work does
-      not explain the remaining failures
 - [x] Variant: exclude the repeated title and disclaimer boilerplate from what
       gets embedded, measured on its own, **across all documents and not only
-      the factsheets**. Eight of the 81 chunks — the first chunk of eight
-      documents — open with a `# Title` line and then the identical sentence
-      "**WealthPilot Advisers Ltd** — fictional firm, synthetic document."
-      That makes every first chunk partly similar to every other first chunk
-      and dilutes the content that distinguishes them, which is consistent with
-      a `#p1` chunk being the wrong winner in the Phase 1 failures below.
-      (YAML frontmatter is already stripped at ingestion and is not the issue.)
-
-**Done when:** you have a table of variants vs metrics and a justified default.
-
-**Outcome.** Four retrieval variants measured against the frozen 75-case
-baseline; the default is unchanged, and that is the result rather than a
-failure to get one.
-
-- **Diagnosed the hit@1 ceiling.** 17 of 70 scored cases never reach rank 1
-  under any of six methods. `compliance-faq` is a wrong rank-1 winner in all
-  17, taking 20.8% of retrieved slots but 57.1% of wrong rank-1s — it restates
-  rules from every other document in question-shaped language, so for a
-  question it legitimately out-matches the prose that governs.
-- **Showed the ceiling costs attribution, not accuracy.** Of those 17 cases,
-  14 still answer correctly; the figure is right but cited to the FAQ instead
-  of the governing document. The 2 wrong answers are hit@6 misses, not hit@1
-  misses. hit@6 is 97.1% and no variant moved it.
-- **Full-text search:** MRR 0.665 against 0.747, but +0.229 on `id-lookup` and
-  +0.194 on `multi-hop` — it fails on different cases, which is what justified
-  trying fusion.
-- **Hybrid (RRF):** MRR 0.755, hit@1 61.4%. Rejected — rank 1 was identical to
-  vector's in 73 of 75 cases once reranking was involved, and hit@1 was exactly
-  61.4% across all 20 `rrf_k` x depth combinations, so the regression is
-  structural rather than untuned.
-- **Cross-encoder reranker:** best MRR at 0.759 and solves `id-lookup`
-  outright (0.521 to 1.000), but costs 2.9 points of hit@1, adds ~300 ms per
-  query and an optional torch dependency, and pushes `mandate-consent-01` back
-  out of the top 6. Rejected as a default, kept as an option.
-- **Boilerplate stripping:** the only variant to improve hit@1 (62.9% to
-  64.3%, MRR +0.8). Adopted, then **reverted**: a full-suite run showed
-  `answer.refusal_correct` falling from 1.000 to 0.973 with ±0.000 spread, and
-  that metric is gated at 1.00. Refusal hardening is a Phase 6 follow-up, after
-  which this becomes adoptable.
-
-The transferable lesson: **a retrieval change is not validated by retrieval
-metrics.** Every variant here was measured retrieval-only — cheap, deterministic
-and the right tool for comparing rankers — and the one adopted on that basis
-failed on answer metrics those runs could not see.
-
-### Known failures to track
-
-These are the cases Phase 3 exists to fix. Measure each variant against them by
-name, not only on the aggregate — a change can move MRR a point while leaving
-every one of them broken.
-
-| Case or tag | Problem | Outcome after Phase 3 |
-|---|---|---|
-| `mandate-consent-01` | Loses to a `compliance-faq` chunk that restates the rule; the governing document is never retrieved | **Still broken in the shipped config.** Hybrid fixed it (0.00 to rank 4) and the reranker then pushed it back out of the top 6. One of only 2 of the 17 ceiling cases that produces a genuinely *wrong* answer |
-| `prohibited-no-assessment-01` | Same shape: FAQ phrasing matches a question better than the governing document's prose | **Still broken in the shipped config.** Best result 0.50 under vector+rerank, which is not the default. The other genuinely wrong answer |
-| `fee-etf-trade-01` | Not a retrieval miss. The right chunk **is** retrieved at rank 3 and the model answers from ranks 1–2, quoting "this is a fund, not an ETF" and concluding the opposite | **Still broken, and not a retrieval problem.** No variant helped; reranking made it slightly worse (0.33 to 0.25). It is a comprehension failure and belongs with prompt work |
-| tag `id-lookup` | Exact identifiers and figures that vector search blurs | **Solved — but only with the reranker, which is off by default.** 0.521 to 1.000 with reranking, 0.750 with full-text alone. In the shipped config it stays at 0.521, a deliberate trade: the reranker costs 2.9 points of hit@1, ~300 ms per query and a torch dependency |
-| tag `vague-phrasing` | MRR 0.125, the worst tag in the suite | **Worse under every variant tried** (0.417 vector, 0.367 hybrid, 0.357 reranked). A vague question gives neither term matching nor a cross-encoder anything to work with. Strongest candidate for query rewriting rather than retrieval tuning |
-
-## Phase 4a — Vertical slice, thin (4–6 days) · **Core**
-
-*The only phase that makes the README's central claim true. Without it this is a
-well-measured RAG project with a description promising something else.*
-
-One question, through a real graph, streamed to a real page, with one action a
-human must approve. The point is to make the whole path exist before deepening
-any layer, so every item here is deliberately the smallest version that works.
-
-**Tasks are listed in the order they are done, and the order is deliberate:
-riskiest first.** Sequencing by what is easiest to test would have put the tool
-registry — a dict with an enum — before the checkpointer, which is where the
-actual unknowns live. A spike settled those before any design was locked; see
-`docs/EXPERIMENTS.md`.
+      the factsheets**. **Result:** adopted, then reverted. It is the only
+      change in this phase that moved hit@1 (62.9% → 64.3%), and it cost a
+      reproducible `answer.refusal_correct` failure — 1.000 → 0.973, ±0.000
+      over three runs — which is gated. 1.4 points of rank-1 ordering is not
+      worth a refusal failure in a tool whose job includes declining to
+      answer. The measurements, the diagnostic that ruled out the obvious
+      explanations, and the reason the two metrics move in opposite directions
+      are in `docs/EXPERIMENTS.md`
 
 - [x] **The SSE contract.** `shared/stream-events.ts` from ARCHITECTURE §6,
       Pydantic mirrors in `backend/app/api/events.py`, and the contract test on
@@ -339,13 +290,20 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       (`fee-schedule#p1` fell out of the top 3 and the answer still cited it
       correctly from lower down), which is the known informal-phrasing gap
       rather than anything new
-- [ ] **Decide whether an execution-only account is rebalanceable.** The
-      action agent checks only that the account exists, deliberately matching
-      `propose_rebalance`, which checks the same and nothing more — an agent
-      stricter than its own tool would diverge the two silently. So
-      `AC-00002`, an execution-only GIA, is proposable today and
-      `actions_slice.jsonl` expects that. If the firm's answer is no, the rule
-      belongs in the tool and the agent together, with a case in the dataset
+- [ ] **An execution-only account must never be rebalanced — enforce it.**
+      Settled against the corpus rather than left open: `mandates-and-
+      rebalancing.md` says *"An `execution_only` account must **never** be
+      rebalanced by the firm"* and `complaints-and-breaches.md` lists it under
+      *"Prohibited absolutely"*. So this is not a preference, it is a rule the
+      documents already state and the code does not keep: `AC-00002` is an
+      execution-only GIA and `propose_rebalance` will happily raise a task
+      against it. The rule goes in **both** the tool and the agent — a tool
+      stricter than its agent produces a confusing refusal after the model has
+      already promised the adviser an action, and an agent stricter than its
+      tool diverges the two silently. `actions_slice.jsonl` expects the
+      current behaviour and has to change with it, which is the one case where
+      editing a dataset is correct rather than cheating: the expectation was
+      wrong, not the run
 - [ ] **Revisit `route-vague-cash-01`.** "cash is piling up in AC-00005, is
       that a problem" expects `research` today, because only the documents can
       answer it. Once the portfolio agent can read the account's actual
@@ -353,61 +311,31 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       about this account's data, not about policy in the abstract
 - [ ] `evals/datasets/sql.jsonl` (≥40 cases, compared by **result rows**, not
       SQL text)
-- [ ] **More tools** — at least one further `HIGH` and one `LOW`, so the
-      registry is exercised rather than illustrated and tier handling is
-      tested on more than one row
+- [ ] **Redact bound parameters out of `audit_log.error` — now due.** Carried
+      from Phase 5, where the trigger was "when the text-to-SQL tool lands".
+      It has landed. The string is `f"{type(exc).__name__}: {exc}"`, and a
+      SQLAlchemy `DBAPIError` embeds `[SQL: ...] [parameters: ...]` — so every
+      failed generated query now writes model-authored SQL *together with the
+      client values bound into it* to a table with no redaction and no
+      retention policy. Log the statement plus a parameter count or hashed
+      parameters. Note the executor's own path is already clean — it renders
+      the statement whole from the tree, so it binds nothing — which means
+      what this catches is the `QueryFailed` case and anything else that
+      reaches the audit through SQLAlchemy
 - [ ] **Grow** `actions_slice.jsonl` into `evals/datasets/actions.jsonl`
       (≥30 cases), and retire the slice file
 - [ ] **Extend** the SSE contract with whatever events the portfolio agent needs,
       updating `shared/stream-events.ts` and `backend/app/api/events.py` together
       and keeping the contract test green
 
-### Known follow-ups from the SQL security review (2026-11-17)
+### From the SQL security review (2026-11-17)
 
-*What the review raised and this phase did **not** fix. Each says when
-deferring it stops being acceptable, so it is a decision rather than a
-forgotten note. The two HIGH findings are fixed and are in the executor item
-above; these are the rest.*
+*The two HIGH findings are fixed, in the executor item above. Of the rest: the
+redaction item is now due and is in this phase's list; the parser pin is in
+Phase 8 with the model pin; client scoping is in Phase 9 with authentication,
+which it needs to mean anything; the byte cap is in `docs/NOTES.md` as a known
+gap. This is the one that closed here.*
 
-- [ ] **Cap the result in bytes, not only in rows.** `MAX_ROWS` is 100 and
-      nothing bounds how wide a row is: `repeat(md5(random()::text), 32768)`
-      returned 100MB in 72ms, and `run_select` materialises the whole result
-      with `[dict(row) for row in result.mappings()]` before anything sees it.
-      The function allow-list removed `repeat` and `string_agg` as the levers,
-      so this is no longer reachable *today*, but the property worth having is
-      an octet budget with `yield_per` streaming rather than an allow-list that
-      happens to exclude the wide functions. `temp_file_limit` belongs here
-      too: it is the other half of the resource cap and it is SUSET, so it
-      cannot be set by the role or by a migration running as the owner — it
-      needs `postgresql.conf` or a `GRANT SET ON PARAMETER`.
-      **Matters when:** any function returning a large value is added to the
-      allow-list, or the views grow a wide text column. Until then the
-      allow-list is load-bearing for a property it was not designed for,
-      which is the part that should not be left standing indefinitely
-- [ ] **Scope a query to the client it was asked about.** `v_account_summary`
-      carries `client_name`, `segment` and `adviser` for every client in the
-      firm, and nothing in the boundary ties a query to one of them — so "only
-      this client's data" rests on the prompt, which is precisely what the
-      executor's own docstring argues is not a control. The fix that survives
-      a prompt-injected query is scoping in the data: `WHERE client_id =
-      current_setting('app.client_id', true)` inside the views, with
-      `run_select` requiring a client and issuing `SET LOCAL app.client_id`.
-      Note `v_account_allocation` has no `client_id` column, so it needs a
-      migration either way, and that `set_config` had to be refused first —
-      it was reachable until the function allow-list landed.
-      **Matters when:** the agent is reachable by more than one adviser, or
-      any question is asked on behalf of a named client. A single-tenant demo
-      does not expose it; a second user does, immediately
-- [ ] **Pin the parser, and treat a bump as a security change.** `sqlglot` is
-      `>=27,<28`, and the comment-smuggling case shows that the *renderer's*
-      behaviour is part of this boundary rather than an implementation detail.
-      An exact pin, bumped deliberately with `tests/test_sql_executor.py` as
-      the gate. Related: set-returning functions in `FROM` are refused today
-      only because sqlglot gives those nodes an empty table name — an accident
-      of the library, now pinned by a test, not a decision it made for us.
-      **Matters when:** the first dependency bump after this phase. A patch
-      release that changes how a comment or a function-in-FROM is modelled
-      would move the boundary with no visible diff in this repo
 - [x] **A refusal leaves an audit row.** Closed by the `run_sql` item above,
       in the task it belonged to rather than deferred further. The mechanism
       is cheaper than expected: `execute()` already audits any exception from
@@ -700,57 +628,10 @@ below as a follow-up, deliberately.*
       variable is `LLM_MODEL`, an unpinned alias — see `docs/EXPERIMENTS.md`
       and the Phase 8 pinning item
 
-### Known follow-ups
-
-*Recorded, not scheduled. None of them blocks this phase's PR; each says
-when it stops being acceptable, so the decision to defer is a decision and
-not a thing that was forgotten.*
-
-- [ ] **A cancelled request still writes no audit row.** A client
-      disconnecting mid-tool raises `CancelledError`, which is not an
-      `Exception` and so never reaches the audit in `execute`. The savepoint
-      is released correctly; only the row is missing. Fixing it needs
-      `asyncio.shield` around the write, which is a change to make
-      deliberately rather than in passing. Recorded 2026-10-19.
-      **Matters when:** anything can actually cancel a run — a stop button,
-      a proxy timeout, a deploy draining connections. Today nothing does, so
-      the missing row describes an event that does not happen; Phase 9 is
-      where it becomes a real hole in the record
-- [ ] **Redact bound parameters out of `audit_log.error`.** The string is
-      `f"{type(exc).__name__}: {exc}"`, and a SQLAlchemy `DBAPIError` embeds
-      `[SQL: ...] [parameters: ...]`. It is clamped and NUL-stripped but not
-      redacted, so when the text-to-SQL tool lands the log will carry
-      model-generated SQL (wanted) together with the client values bound into
-      it (not wanted, and the table has no redaction or retention policy).
-      Log the statement plus a parameter count or hashed parameters.
-      **Matters when:** the text-to-SQL tool lands, which is the first tool
-      that binds values into a statement that can fail. Before that there is
-      nothing in the log to redact; after it, every failed query writes the
-      bound values to a table with no retention policy
-- [ ] **Shape the `audit_log` migrations for a table that is being written
-      to.** `c3e8a1d07b55` adds the column, backfills with one unbatched
-      UPDATE over a sequential scan, and validates the check constraint under
-      `ACCESS EXCLUSIVE`, all in one transaction — so the table every tool
-      call writes to is locked for the whole migration. Milliseconds at this
-      size and correct as written; the shape to demonstrate is `NOT VALID`
-      then a batched backfill then `VALIDATE CONSTRAINT`.
-      **Matters when:** the table is big enough or busy enough for an
-      `ACCESS EXCLUSIVE` lock to be felt — so, a deployed Phase 9 rather than
-      a dev database. It is also the shape worth *showing*, which is its own
-      reason to do it before the repo is read by anyone
-- [ ] **Give a `usage` row the turn it belongs to.** `thread_id` is the only
-      key `usage` and the checkpointer share, so the turn-level history matches
-      a row to a turn by time window — correct, and a heuristic over two
-      clocks. The fix is a column naming the turn (the checkpoint id the turn
-      ended on, or a per-thread ordinal) written by `stream_turn`, after which
-      `app/history.py:attach_usage` becomes a join and `created_at` stops
-      carrying meaning it was never meant to. A migration plus a backfill that
-      can only be approximate for existing rows, which is why it is not part
-      of the history endpoint. Recorded 2026-10-21.
-      **Matters when:** a turn's cost has to be exact rather than attributed —
-      anything billed, or an eval that reports cost per turn. It breaks
-      outright the day one thread can run two turns at once, because the
-      window stops naming a single turn
+*This phase's four known follow-ups have moved. The `audit_log.error`
+redaction became due when text-to-SQL landed and is in Phase 4; the other
+three are known gaps in `docs/NOTES.md`, each with the condition that would
+make it matter.*
 
 **Done when:** a 60-second recording shows a question answered with citations,
 streamed token by token, a rebalance proposed, a human approving it in the
@@ -759,7 +640,8 @@ inbox, and the inbox showing afterwards who approved it and what it did.
 **Where the old Phase 5 went.** `audit_log` for every tool call and decision was
 already done in Phase 4a — `execute()` is the single chokepoint and audits
 every attempt, including refusals. Per-tool feature flags are dropped as
-unnecessary here. More tools and growing `actions.jsonl` move to Phase 4.
+unnecessary here. Growing `actions.jsonl` moved to Phase 4; "more tools, so
+the registry is exercised" was cut, and the reasoning is in `docs/NOTES.md`.
 
 ## Phase 6 — Guardrails and safety evals (3–5 days) · **Core**
 
@@ -785,15 +667,6 @@ owed from Phase 3 is fixed.*
       tags under several retrieval configurations, not one. Boilerplate
       stripping (Phase 3) becomes adoptable once this holds — it is worth
       +1.4 hit@1 at no runtime cost and was reverted only for this
-- [ ] **This case is worse than "config-dependent": it is bistable.** Measured
-      2026-10-13, the same question on the same commit refused correctly 1 of
-      5 times, and 3 of the 5 wrong answers asserted "the firm may not act
-      under a power of attorney" — a confident wrong answer, not a paraphrase.
-      So `answer.refusal_correct: 1.000` in `baseline.json` is not a
-      reproducible number, and **the Phase 8 CI gate must not gate on it until
-      this is fixed**, or the gate fails at random. `GATEABLE` in
-      `app/evals/report.py` is a label today and enforces nothing, which is the
-      only reason this has not already broken CI
 - [ ] Indirect injection test: a seeded document containing hidden instructions
 - [ ] `safety.jsonl` (≥40 attacks): must never trigger a HIGH tool without approval, never leak another client's data
 - [ ] **Three attack shapes the Phase 4a review proposed**, none of which
@@ -806,18 +679,17 @@ owed from Phase 3 is fixed.*
       interrupt; and replay plus argument-swap exercised **through the API and
       graph** rather than only as registry unit tests, since that is the layer
       a future node could break
-- [ ] **Decide whether self-approval is acceptable.** Nothing compares
-      `decided_by` against `requested_by`, so the adviser who asked for a
-      rebalance can approve it themselves and the audit trail looks like a
-      complete approval chain with one person at both ends. The gate is a
-      four-eyes control in intent. Unlike the `decided_by` provenance gap this
-      is documented nowhere, so it reads as an omission rather than a
-      decision — either reject `decided_by == requested_by`, or say in
-      `decide()` that self-approval is accepted for this firm model and why
-- [ ] **Expire approvals.** `'expired'` is in `APPROVAL_STATUSES` and is never
-      written. An approval reading "equity 4pp over band" stays spendable
-      after three weeks of market movement, and an approved-but-unconsumed row
-      whose thread was abandoned lives forever
+- [ ] **Expire approvals after five business days.** `'expired'` is in
+      `APPROVAL_STATUSES` and nothing ever writes it, so an approval reading
+      "equity 4pp over band" stays spendable after three weeks, against
+      valuations that have moved. The TTL is not invented: `compliance-faq.md`
+      says *"Internal approval lapses after five business days"* and
+      `mandates-and-rebalancing.md` repeats it for an approved proposal that
+      goes unexecuted. Expiry has to be enforced where the approval is
+      **claimed**, not by a sweep job — a background task that flips rows
+      leaves a window where a stale approval is still spendable, and
+      `_claim_approval` is already the single conditional UPDATE that decides
+      whether an action may run
 
 **Done when:** safety pass rate is in the report and gated in CI.
 
@@ -849,17 +721,12 @@ owed from Phase 3 is fixed.*
       the composer is disabled for an answer nobody will read. An
       `AbortController` kept beside `driving`, aborted in the same effect that
       clears the turns
-- [ ] Agent timeline: tool calls as they run, each tagged with its risk tier
 - [ ] Put `retrieval` back in front of the answer in the timeline. Token
       streaming left it behind: the deltas come from the research node while it
       runs, and `retrieved` only lands with the node's update, so the badge
       appears after the prose it preceded. The fix is to write retrieval to the
       custom stream too, which means stopping the node's update from emitting
       it a second time — the same duplicate-event problem `route` already had
-- [ ] Citations drawer opening the source document at the cited page
-- [ ] Usage dashboard
-- [ ] Evals page (baseline vs latest, failing cases)
-- [ ] Dark mode, responsive, empty and error states
 - [ ] Playwright smoke test: ask → stream → approve
 
 **Done when:** a 2-minute screen recording shows the whole flow. Put it at the top of the README.
@@ -871,16 +738,6 @@ CI; today that is false, and it is two days to make true. It follows Phase 5 so
 the thresholds are set once the answer path, including streaming, is stable.*
 
 - [ ] `evals/thresholds.yaml`; fail CI if a metric drops below threshold or regresses more than X% vs baseline
-- [ ] **Do not gate on `answer.refusal_correct` until Phase 6 fixes it.**
-      Measured 2026-10-13, `refusal-poa-policy-01` refused correctly 1 run in
-      5 on the same commit, so the baseline's 1.000 is luck rather than a
-      measurement and a threshold on it fails at random. `refusal-cyber-01` is
-      the second one, found on 2026-10-19: it refused in three runs on
-      `33e7026` and in none of three on `0abe814` with retrieval byte-identical
-      — so two of the suite's five refusal cases are coin-flips. `GATEABLE` in
-      `app/evals/report.py` is a label that enforces nothing today, which is
-      the only reason this has not already bitten. Either Phase 6 lands first
-      or this metric starts report-only, stated in `thresholds.yaml`
 - [ ] **Pin `LLM_MODEL` to a dated snapshot, before setting any threshold.**
       It is the alias `openai:gpt-4o-mini` in `app/config.py` and
       `.env.example`, and the provider moves what it serves: the full-suite
@@ -890,15 +747,17 @@ the thresholds are set once the answer path, including streaming, is stable.*
       cannot tell this project's regression from someone else's retrain, which
       is a day already spent once. Pinning is itself a behaviour change, so it
       gets its own before/after run
-- [ ] **Set every threshold from several runs, not one.** Three runs of a
-      suite are cheap and the project has now been wrong twice by trusting a
-      single sample
-- [ ] **`citations.validity` also varies, and by more than it looks.** Seven
-      smoke runs measured 0.926 to 1.000 while `retrieval.mrr` sat at exactly
-      0.693 every time, so the movement is the model's quote wording, not
-      retrieval. Any threshold on it has to sit below the observed floor, or
-      be set on the full suite where one case moves it less
 - [ ] Small smoke subset on every PR, full suite nightly
+- [ ] **Pin `sqlglot` exactly, and treat a bump as a security change.**
+      Carried from the SQL security review and put here because it is the same
+      job as pinning the model: a threshold or a boundary set against a moving
+      dependency measures someone else's release. `sqlglot` is `>=27,<28`, and
+      the comment-smuggling case proved the *renderer's* behaviour is part of
+      the SQL boundary rather than an implementation detail. Exact pin, bumped
+      deliberately with `tests/test_sql_executor.py` as the gate. Related: a
+      set-returning function in `FROM` is refused today only because sqlglot
+      gives those nodes an empty table name — an accident of the library that
+      a test now pins, not a decision it made for us
 - [ ] Post the metrics table as a PR comment
 
 ## Phase 9 — AWS deployment (1 week) · **Optional**
@@ -950,6 +809,26 @@ of the credit.*
       account-existence check to accounts the principal may act on, and keep
       the refusal wording identical for "does not exist" and "not yours" so
       the response cannot be used to enumerate account ids
+- [ ] **Scope a SQL query to the client it was asked about.** From the SQL
+      security review, and here rather than in Phase 4 because it needs an
+      authenticated principal to mean anything. `v_account_summary` carries
+      `client_name`, `segment` and `adviser` for every client in the firm, and
+      nothing ties a query to one of them — so "only this client's data" rests
+      on the prompt, which is what the executor's own docstring argues is not
+      a control. Scope in the data, not in the prompt: `WHERE client_id =
+      current_setting('app.client_id', true)` inside the views, with
+      `run_sql` requiring a client and issuing `SET LOCAL app.client_id`.
+      `v_account_allocation` has no `client_id` column, so it needs a
+      migration either way. Note `set_config` had to be refused first — it was
+      reachable until the function allow-list landed, and a scope a query can
+      rewrite is not a scope
+- [ ] **An approval may not be decided by whoever requested it.** The decision
+      is already taken (see `docs/NOTES.md`): self-approval is unacceptable for
+      a firm whose only control is a second pair of eyes. It lands here, with
+      authentication, because both `decided_by` and `requested_by` come from
+      the request body today — a check against them would refuse the honest
+      case and miss the dishonest one, which is worse than no check because it
+      reads like a control
 - [ ] **Rate-limit the turn endpoint.** Independent of auth: every message
       costs at least two real model calls and nothing anywhere limits them.
       The account-existence check added in Phase 4a makes an unauthenticated
@@ -966,10 +845,7 @@ of the credit.*
 
 ## Phase 10 — Stretch modules · **Optional**
 
-*Pick at most one, and only after 4a, 4, 8 and 6. MCP is the cheapest and the
-most topical.*
+*One item, after 4a, 4, 8 and 6. Three others were considered and cut; the
+reasoning is in `docs/NOTES.md`.*
 
 - [ ] **MCP server** exposing `ask`, `search_docs`, `portfolio_query` (read-only tools only)
-- [ ] **LoRA fine-tune** of a small open model for intent routing; compare against the prompted supervisor on accuracy, latency and cost
-- [ ] **Framework-free agent**: the same research flow with a raw tool loop, to explain what LangGraph does for you
-- [ ] **LlamaIndex comparison** for the RAG step

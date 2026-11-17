@@ -36,7 +36,9 @@ per-request token, cost and latency accounting.
 | AWS deployment, MCP server | not built — Phases 9–10 |
 
 The table below describes the intended architecture. Rows marked *not built*
-are planned, not present; `docs/ROADMAP.md` is the current state of play.
+are planned, not present. `docs/ROADMAP.md` is the current state of play, and
+`docs/NOTES.md` carries the known gaps and the decisions behind them — including
+the ones this project chose not to close yet, and why.
 
 ## What it demonstrates
 
