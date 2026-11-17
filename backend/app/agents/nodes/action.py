@@ -104,6 +104,7 @@ async def propose_action(
     decision, raw = _unpack(response)
     usage = TokenUsage.from_message(raw)
     tokens = {"inputTokens": usage.input_tokens, "outputTokens": usage.output_tokens}
+    served = usage.model
 
     outcome: Outcome = decision.outcome
     account_id = decision.account_id.strip()
@@ -159,6 +160,7 @@ async def propose_action(
             "messages": [AIMessage(content=message)],
             "guardrail_flags": [f"action_not_proposed:{outcome}"],
             "usage": tokens,
+            "model_served": served,
         }
 
     args: dict[str, Any] = {"account_id": account_id}
@@ -172,6 +174,7 @@ async def propose_action(
         # A dict, not the model: the checkpointer serialises state.
         "pending_action": action.model_dump(by_alias=True),
         "usage": tokens,
+        "model_served": served,
     }
 
 

@@ -132,6 +132,13 @@ class AgentState(TypedDict, total=False):
     # across nodes by `add_usage`.
     usage: Annotated[dict[str, int], add_usage]
 
+    # The model the provider served, reported by whichever node last called
+    # one. Not inside `usage`, because that dict is summed by `add_usage` and
+    # a string has no sum. Last write wins, which is right while every agent
+    # shares one model; the day they differ this has to become one record per
+    # node rather than one per turn.
+    model_served: str | None
+
 
 def initial_state(question: str, *, thread_id: str, user_id: str | None = None) -> AgentState:
     """A fresh state for one question.

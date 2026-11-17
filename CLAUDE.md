@@ -4,7 +4,9 @@ WealthPilot: a multi-agent AI assistant for a synthetic wealth-management firm. 
 
 Read before starting any task:
 - `docs/ARCHITECTURE.md` — design, schemas, SSE contract, risk tiers
-- `docs/ROADMAP.md` — current phase and open tasks
+- `docs/ROADMAP.md` — current phase and open tasks, and nothing else
+- `docs/NOTES.md` — measurements that constrain a task, known gaps, decisions
+  already taken. Read it before setting a threshold or reopening a question
 - `docs/EVALS.md` — when changing anything that affects model behaviour
 
 ## Commands
@@ -43,12 +45,31 @@ pnpm lint && pnpm typecheck && pnpm test
 ## Working rules
 
 1. **One roadmap task at a time.** Plan briefly, implement, test, then tick the box in `docs/ROADMAP.md`.
+
+   The roadmap holds **planned work**. A measurement, a gap nobody is fixing
+   yet, or a question that has been decided is not work and does not get a
+   checkbox — it goes in `docs/NOTES.md`, or in `docs/EXPERIMENTS.md` if it
+   has numbers. A box that cannot be ticked is a note wearing a task's
+   clothes, and sixty of them make a four-week project look like four months.
 2. **Evals after behaviour changes.** Any change to prompts, retrieval, chunking, routing, tools or models: run the smoke suite before and after and report the numbers. Do not update `baseline.json` unless asked.
 3. **Tools need a risk tier.** Every tool is registered in `app/tools/registry.py` with `READ`, `LOW` or `HIGH`. HIGH tools must go through the approval gate. Never bypass it, including in tests (use the approval API).
 4. **SQL is read-only.** Generated SQL runs only through `app/tools/sql/executor.py` (read-only role, sqlglot validation, LIMIT, timeout). Never run model-generated SQL any other way.
 5. **The SSE contract is shared.** If you change an event, update `shared/stream-events.ts` and `backend/app/api/events.py` together and keep the contract test passing.
 6. **No secrets in code.** Settings come from env via `app/config.py`. Never commit `.env`.
 7. **Synthetic data only.** No real people, accounts or client data anywhere.
+
+8. **Write each thing down once.** Every fact has one home. A code comment says
+   why *that code* is the way it is; a roadmap `Result:` is one or two
+   sentences and a pointer; a commit body is two lines. The same reasoning
+   repeated in the code, the test, the roadmap and the commit message is four
+   places to update and three of them will go stale — measured on one bug in
+   November 2026, it was 629 words for a single finding.
+
+   Comment the surprising, not the descriptive. If a comment restates what the
+   next line plainly does, delete it; if it records something that cost an hour
+   to discover — a library that replaces instead of clamping, a parameter that
+   needs superuser — keep it, because that is the comment nobody can
+   reconstruct from the code.
 
 ## Code style
 

@@ -172,7 +172,16 @@ class UsageRecord(Base, TimestampMixin):
     thread_id: Mapped[str | None] = mapped_column(Text)
     user_id: Mapped[str | None] = mapped_column(Text)
     route: Mapped[str | None] = mapped_column(String(32))
+    #: The model we *asked* for — an alias like `openai:gpt-4o-mini`. This is
+    #: the one `app/pricing.py` prices from, so it stays as configured.
     model: Mapped[str | None] = mapped_column(Text)
+    #: The model the provider *served*, as it reported it. A second column
+    #: rather than a replacement, because the two answer different questions
+    #: and only the first one prices: "what did this cost" needs the alias the
+    #: price table is keyed on, "which model produced this number" needs what
+    #: actually ran. NULL means the provider reported nothing, which is every
+    #: fake model in the test suite — not "unknown model".
+    model_served: Mapped[str | None] = mapped_column(Text)
 
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")

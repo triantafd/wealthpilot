@@ -4,6 +4,20 @@ Work top to bottom, with one exception noted below. Each phase ends with
 something that runs and a number you can put in the README. Tick boxes as you
 go; Claude Code reads this file to know where you are.
 
+**This file holds planned work and nothing else.** Measurements that constrain
+a future task, known gaps nobody is fixing yet, and questions already decided
+live in `docs/NOTES.md`; experiments with numbers live in
+`docs/EXPERIMENTS.md`. The split was made on 2026-11-17 because this file had
+grown to 975 lines and 61 open boxes, of which roughly twenty were work — the
+rest were notes that had been given checkboxes and could never be ticked, and
+together they made the project read as three times its actual size. Nothing
+was deleted: every item that moved is in one of those two files, and the ones
+that were cut say so and say why.
+
+**A ticked item's `Result:` is one or two sentences and a pointer.** The
+reasoning belongs in the code it describes, where it is read by whoever
+changes that code. This file is not the place to write it a second time.
+
 **Running order.** `0 → 1 → 2 → 3 → 4a → 5 → 8 → 4 → 6 → 7 → 9 → 10`.
 
 Phase 5 comes straight after the slice: the app demos worse than it works, and
@@ -14,6 +28,13 @@ thresholds should be set once the answer path, including streaming, is stable.
 
 Numbers are unchanged, because `docs/EXPERIMENTS.md`, `docs/EVALS.md` and
 several commit messages already reference phases by number.
+
+**Phase 4 is currently running ahead of that order.** Three Phase 4 tasks —
+the read-only SQL surface, the executor and the `run_sql` registry entry —
+were done before Phase 8, which the order above puts first. That was not a
+decision; it is drift, and it is recorded here rather than quietly corrected
+because Phase 8 exists to stop a change being merged on an unmeasured claim,
+and every Phase 4 task done before it is a task the gate did not cover.
 
 Each remaining phase is labelled **Core**, **Important** or **Optional**. Core
 phases are the ones without which the README is not true.
@@ -69,86 +90,16 @@ first idea always worked.
 - [x] Cross-encoder reranker — **report latency alongside accuracy.** A reranker
       that adds 400ms to every request is a different proposition from one that
       adds 40ms, and accuracy alone hides that
-- [ ] Try 2–3 chunk sizes — **skipped deliberately**, reason recorded in
-      `docs/EXPERIMENTS.md`: the evidence points at a question-shaped
-      restatement out-matching the governing prose, which moving passage
-      boundaries would not address. Cheap to run later if the FAQ work does
-      not explain the remaining failures
 - [x] Variant: exclude the repeated title and disclaimer boilerplate from what
       gets embedded, measured on its own, **across all documents and not only
-      the factsheets**. Eight of the 81 chunks — the first chunk of eight
-      documents — open with a `# Title` line and then the identical sentence
-      "**WealthPilot Advisers Ltd** — fictional firm, synthetic document."
-      That makes every first chunk partly similar to every other first chunk
-      and dilutes the content that distinguishes them, which is consistent with
-      a `#p1` chunk being the wrong winner in the Phase 1 failures below.
-      (YAML frontmatter is already stripped at ingestion and is not the issue.)
-
-**Done when:** you have a table of variants vs metrics and a justified default.
-
-**Outcome.** Four retrieval variants measured against the frozen 75-case
-baseline; the default is unchanged, and that is the result rather than a
-failure to get one.
-
-- **Diagnosed the hit@1 ceiling.** 17 of 70 scored cases never reach rank 1
-  under any of six methods. `compliance-faq` is a wrong rank-1 winner in all
-  17, taking 20.8% of retrieved slots but 57.1% of wrong rank-1s — it restates
-  rules from every other document in question-shaped language, so for a
-  question it legitimately out-matches the prose that governs.
-- **Showed the ceiling costs attribution, not accuracy.** Of those 17 cases,
-  14 still answer correctly; the figure is right but cited to the FAQ instead
-  of the governing document. The 2 wrong answers are hit@6 misses, not hit@1
-  misses. hit@6 is 97.1% and no variant moved it.
-- **Full-text search:** MRR 0.665 against 0.747, but +0.229 on `id-lookup` and
-  +0.194 on `multi-hop` — it fails on different cases, which is what justified
-  trying fusion.
-- **Hybrid (RRF):** MRR 0.755, hit@1 61.4%. Rejected — rank 1 was identical to
-  vector's in 73 of 75 cases once reranking was involved, and hit@1 was exactly
-  61.4% across all 20 `rrf_k` x depth combinations, so the regression is
-  structural rather than untuned.
-- **Cross-encoder reranker:** best MRR at 0.759 and solves `id-lookup`
-  outright (0.521 to 1.000), but costs 2.9 points of hit@1, adds ~300 ms per
-  query and an optional torch dependency, and pushes `mandate-consent-01` back
-  out of the top 6. Rejected as a default, kept as an option.
-- **Boilerplate stripping:** the only variant to improve hit@1 (62.9% to
-  64.3%, MRR +0.8). Adopted, then **reverted**: a full-suite run showed
-  `answer.refusal_correct` falling from 1.000 to 0.973 with ±0.000 spread, and
-  that metric is gated at 1.00. Refusal hardening is a Phase 6 follow-up, after
-  which this becomes adoptable.
-
-The transferable lesson: **a retrieval change is not validated by retrieval
-metrics.** Every variant here was measured retrieval-only — cheap, deterministic
-and the right tool for comparing rankers — and the one adopted on that basis
-failed on answer metrics those runs could not see.
-
-### Known failures to track
-
-These are the cases Phase 3 exists to fix. Measure each variant against them by
-name, not only on the aggregate — a change can move MRR a point while leaving
-every one of them broken.
-
-| Case or tag | Problem | Outcome after Phase 3 |
-|---|---|---|
-| `mandate-consent-01` | Loses to a `compliance-faq` chunk that restates the rule; the governing document is never retrieved | **Still broken in the shipped config.** Hybrid fixed it (0.00 to rank 4) and the reranker then pushed it back out of the top 6. One of only 2 of the 17 ceiling cases that produces a genuinely *wrong* answer |
-| `prohibited-no-assessment-01` | Same shape: FAQ phrasing matches a question better than the governing document's prose | **Still broken in the shipped config.** Best result 0.50 under vector+rerank, which is not the default. The other genuinely wrong answer |
-| `fee-etf-trade-01` | Not a retrieval miss. The right chunk **is** retrieved at rank 3 and the model answers from ranks 1–2, quoting "this is a fund, not an ETF" and concluding the opposite | **Still broken, and not a retrieval problem.** No variant helped; reranking made it slightly worse (0.33 to 0.25). It is a comprehension failure and belongs with prompt work |
-| tag `id-lookup` | Exact identifiers and figures that vector search blurs | **Solved — but only with the reranker, which is off by default.** 0.521 to 1.000 with reranking, 0.750 with full-text alone. In the shipped config it stays at 0.521, a deliberate trade: the reranker costs 2.9 points of hit@1, ~300 ms per query and a torch dependency |
-| tag `vague-phrasing` | MRR 0.125, the worst tag in the suite | **Worse under every variant tried** (0.417 vector, 0.367 hybrid, 0.357 reranked). A vague question gives neither term matching nor a cross-encoder anything to work with. Strongest candidate for query rewriting rather than retrieval tuning |
-
-## Phase 4a — Vertical slice, thin (4–6 days) · **Core**
-
-*The only phase that makes the README's central claim true. Without it this is a
-well-measured RAG project with a description promising something else.*
-
-One question, through a real graph, streamed to a real page, with one action a
-human must approve. The point is to make the whole path exist before deepening
-any layer, so every item here is deliberately the smallest version that works.
-
-**Tasks are listed in the order they are done, and the order is deliberate:
-riskiest first.** Sequencing by what is easiest to test would have put the tool
-registry — a dict with an enum — before the checkpointer, which is where the
-actual unknowns live. A spike settled those before any design was locked; see
-`docs/EXPERIMENTS.md`.
+      the factsheets**. **Result:** adopted, then reverted. It is the only
+      change in this phase that moved hit@1 (62.9% → 64.3%), and it cost a
+      reproducible `answer.refusal_correct` failure — 1.000 → 0.973, ±0.000
+      over three runs — which is gated. 1.4 points of rank-1 ordering is not
+      worth a refusal failure in a tool whose job includes declining to
+      answer. The measurements, the diagnostic that ruled out the obvious
+      explanations, and the reason the two metrics move in opposite directions
+      are in `docs/EXPERIMENTS.md`
 
 - [x] **The SSE contract.** `shared/stream-events.ts` from ARCHITECTURE §6,
       Pydantic mirrors in `backend/app/api/events.py`, and the contract test on
@@ -227,9 +178,89 @@ second genuine agent. Everything here is a **delta on Phase 4a**, which already
 built `AgentState`, the checkpointer, the research agent, SSE streaming and the
 `record_usage` call — those boxes are not repeated.*
 
-- [ ] **Portfolio agent:** text-to-SQL on the `v_*` views, through the read-only
-      role, with sqlglot validation, an enforced `LIMIT` and a statement
-      timeout. The bulk of this phase
+- [x] **The read-only SQL surface: the `v_*` views and a SELECT-only role.**
+      Built before anything generates SQL, because the order is the point: an
+      agent that works is an agent nobody goes back to put a boundary under.
+      **Result:** migration `ffa5261360c4` creates three views — `v_holdings`,
+      `v_account_summary`, `v_account_allocation` — and a role holding `SELECT`
+      on those three and no privilege on any table, plus
+      `default_transaction_read_only` and a 5s `statement_timeout` attached to
+      the role itself so they apply to a session that forgot to set them. The
+      views exist for three reasons, in order: they are the only thing a grant
+      can be scoped to, they pre-compute what a model gets wrong (the *latest*
+      price is a correlated lookup, not a join), and they leave client email
+      and date of birth out of everything the model can reach. Two decisions
+      worth knowing: an unpriced instrument keeps its position with a NULL
+      value and is counted in `unpriced_positions`, rather than vanishing and
+      silently shrinking the account; and `total_value` sums the *rounded*
+      per-position values, so it equals the column an adviser can add up —
+      two pence further from the exact figure, and consistent with what is on
+      screen. 21 tests, six deliberate breaks each caught by the right one
+- [x] **The executor: the only door a generated SELECT goes through.**
+      `app/tools/sql/executor.py`, and `CLAUDE.md` rule 4 is what makes it
+      worth having. **Result:** parse with sqlglot, refuse, rewrite, and then
+      **re-render the statement from the tree that was approved** — validating
+      one string and executing another is how a checker like this gets
+      bypassed, so the string that reaches Postgres is generated from the
+      syntax tree that passed. Refusals: more than one statement; a write or
+      DDL node *anywhere* in the tree, since the root of
+      `WITH x AS (DELETE ... RETURNING *) SELECT * FROM x` is a SELECT; any
+      relation outside the three views, CTE aliases excepted; a query that
+      names no view at all, which is what `SELECT pg_sleep(99)` is; and row
+      locks. `LIMIT` is clamped rather than overridden — sqlglot's `.limit()`
+      *replaces*, so the obvious implementation turns `LIMIT 10` into 100 and
+      returns ten times what was asked for. **One real hole found and closed:**
+      sqlglot re-emits a `--` comment as a `/* ... */` block, so
+      `SELECT * FROM v_holdings -- */ ; DROP TABLE accounts` parsed as one
+      statement and rendered as two, the comment closing itself on the `*/`
+      the attacker supplied. Rendered with `comments=False` now, and the
+      *output* is re-parsed and refused if it is no longer a single query —
+      which closes the class rather than the one case. The allow-list is not
+      redundant with the role, and that was measured: as `wealthpilot_ro` it
+      is possible to read `pg_attribute` and list every column of `clients`,
+      because `pg_catalog` is world-readable and no grant can change that.
+      **Then the security review found two HIGH bypasses, both of which beat
+      the relation allow-list, and both confirmed against the live database
+      rather than argued about.** (1) CTE names were collected from the whole
+      tree, so a CTE defined inside a subquery whitelisted that name
+      *everywhere* — including at the outer level, where Postgres resolves it
+      to the real relation. `... FROM pg_attribute a WHERE ... AND EXISTS
+      (WITH pg_attribute AS (SELECT 1 FROM v_holdings) SELECT 1 FROM
+      pg_attribute)` passed validation and returned every column of
+      `clients`, `email` and `date_of_birth` included. Fixed by resolving CTE
+      visibility per scope, walking up from each relation, plus a belt that
+      refuses a CTE named after a system catalog. (2) Nothing checked function
+      calls, and `EXECUTE` defaults to PUBLIC for most built-ins — so
+      `query_to_xml('SELECT ... FROM pg_attribute', ...)` ran a whole query of
+      its own that no relation check could see into, and `repeat(md5(...),
+      32768)` returned 100MB in 72ms straight into the API process. Fixed with
+      an **allow-list** of analytic functions, because the denylist is
+      unbounded: `query_to_xml`, `table_to_xml`, `cursor_to_xml` and the
+      `pg_get_*def` family are only today's list. Four smaller fixes with it:
+      `statement_timeout = 0` meant *no* timeout, locks were checked at the
+      root only, catalog casts (`'clients'::regclass`) are refused, and
+      unquoted identifiers are now folded the way Postgres folds them. In both
+      HIGH cases the role's grants stopped the attempt reaching client *data*
+      — what leaked was schema — but "another defence happened to hold" is not
+      the property worth shipping. 77 tests, nine deliberate breaks
+- [x] **`run_sql` in the registry, at `READ`.** The executor put behind the
+      registry so the tier, the audit row and the tracing apply to it like
+      they do to every other tool. **Result:** a thin wrapper, and two things
+      worth knowing about it. The `AsyncSession` the registry hands a tool
+      authenticates as the database **owner**, and this tool deliberately
+      ignores it — `run_select` opens its own read-only pool. Using the
+      session in scope is one line shorter and would undo every grant with
+      the rest of the suite still green, so there is a test that fails when
+      the boundary is crossed. And a **refusal is audited**: the executor's
+      errors become `QueryRefused` / `QueryFailed`, which `execute()` records
+      as an `error` row written out of band, so an injection attempt leaves a
+      record even though `SqlRejected` is raised before a connection exists.
+      Two exception types rather than one, because `_audit` stores the type
+      name and a statement we refused is a safety signal while one Postgres
+      abandoned is an operational one. The audit row holds the SQL that
+      *ran* — re-rendered, with its LIMIT — not what the model proposed
+- [ ] **Portfolio agent:** the node that writes the SQL, its prompt, and the
+      supervisor's third destination. The bulk of this phase
 - [ ] **Supervisor gains a third destination** and a confidence threshold with a
       defined fallback. Phase 4a routes between two destinations with no
       threshold, which is enough to make routing a real decision but not enough
@@ -259,13 +290,20 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       (`fee-schedule#p1` fell out of the top 3 and the answer still cited it
       correctly from lower down), which is the known informal-phrasing gap
       rather than anything new
-- [ ] **Decide whether an execution-only account is rebalanceable.** The
-      action agent checks only that the account exists, deliberately matching
-      `propose_rebalance`, which checks the same and nothing more — an agent
-      stricter than its own tool would diverge the two silently. So
-      `AC-00002`, an execution-only GIA, is proposable today and
-      `actions_slice.jsonl` expects that. If the firm's answer is no, the rule
-      belongs in the tool and the agent together, with a case in the dataset
+- [ ] **An execution-only account must never be rebalanced — enforce it.**
+      Settled against the corpus rather than left open: `mandates-and-
+      rebalancing.md` says *"An `execution_only` account must **never** be
+      rebalanced by the firm"* and `complaints-and-breaches.md` lists it under
+      *"Prohibited absolutely"*. So this is not a preference, it is a rule the
+      documents already state and the code does not keep: `AC-00002` is an
+      execution-only GIA and `propose_rebalance` will happily raise a task
+      against it. The rule goes in **both** the tool and the agent — a tool
+      stricter than its agent produces a confusing refusal after the model has
+      already promised the adviser an action, and an agent stricter than its
+      tool diverges the two silently. `actions_slice.jsonl` expects the
+      current behaviour and has to change with it, which is the one case where
+      editing a dataset is correct rather than cheating: the expectation was
+      wrong, not the run
 - [ ] **Revisit `route-vague-cash-01`.** "cash is piling up in AC-00005, is
       that a problem" expects `research` today, because only the documents can
       answer it. Once the portfolio agent can read the account's actual
@@ -273,14 +311,39 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       about this account's data, not about policy in the abstract
 - [ ] `evals/datasets/sql.jsonl` (≥40 cases, compared by **result rows**, not
       SQL text)
-- [ ] **More tools** — at least one further `HIGH` and one `LOW`, so the
-      registry is exercised rather than illustrated and tier handling is
-      tested on more than one row
+- [ ] **Redact bound parameters out of `audit_log.error` — now due.** Carried
+      from Phase 5, where the trigger was "when the text-to-SQL tool lands".
+      It has landed. The string is `f"{type(exc).__name__}: {exc}"`, and a
+      SQLAlchemy `DBAPIError` embeds `[SQL: ...] [parameters: ...]` — so every
+      failed generated query now writes model-authored SQL *together with the
+      client values bound into it* to a table with no redaction and no
+      retention policy. Log the statement plus a parameter count or hashed
+      parameters. Note the executor's own path is already clean — it renders
+      the statement whole from the tree, so it binds nothing — which means
+      what this catches is the `QueryFailed` case and anything else that
+      reaches the audit through SQLAlchemy
 - [ ] **Grow** `actions_slice.jsonl` into `evals/datasets/actions.jsonl`
       (≥30 cases), and retire the slice file
 - [ ] **Extend** the SSE contract with whatever events the portfolio agent needs,
       updating `shared/stream-events.ts` and `backend/app/api/events.py` together
       and keeping the contract test green
+
+### From the SQL security review (2026-11-17)
+
+*The two HIGH findings are fixed, in the executor item above. Of the rest: the
+redaction item is now due and is in this phase's list; the parser pin is in
+Phase 8 with the model pin; client scoping is in Phase 9 with authentication,
+which it needs to mean anything; the byte cap is in `docs/NOTES.md` as a known
+gap. This is the one that closed here.*
+
+- [x] **A refusal leaves an audit row.** Closed by the `run_sql` item above,
+      in the task it belonged to rather than deferred further. The mechanism
+      is cheaper than expected: `execute()` already audits any exception from
+      a tool body, out of band, so raising a `ToolError` out of the wrapper
+      was enough. Worth stating precisely, because the first version of this
+      note claimed the translation was what produced the row — it is not; the
+      row comes from `execute`, and the translation buys the `ToolError`
+      contract and a distinguishable type name in `audit_log.error`
 
 **Done when:** routing accuracy and SQL execution accuracy are in the eval
 report.
@@ -565,57 +628,10 @@ below as a follow-up, deliberately.*
       variable is `LLM_MODEL`, an unpinned alias — see `docs/EXPERIMENTS.md`
       and the Phase 8 pinning item
 
-### Known follow-ups
-
-*Recorded, not scheduled. None of them blocks this phase's PR; each says
-when it stops being acceptable, so the decision to defer is a decision and
-not a thing that was forgotten.*
-
-- [ ] **A cancelled request still writes no audit row.** A client
-      disconnecting mid-tool raises `CancelledError`, which is not an
-      `Exception` and so never reaches the audit in `execute`. The savepoint
-      is released correctly; only the row is missing. Fixing it needs
-      `asyncio.shield` around the write, which is a change to make
-      deliberately rather than in passing. Recorded 2026-10-19.
-      **Matters when:** anything can actually cancel a run — a stop button,
-      a proxy timeout, a deploy draining connections. Today nothing does, so
-      the missing row describes an event that does not happen; Phase 9 is
-      where it becomes a real hole in the record
-- [ ] **Redact bound parameters out of `audit_log.error`.** The string is
-      `f"{type(exc).__name__}: {exc}"`, and a SQLAlchemy `DBAPIError` embeds
-      `[SQL: ...] [parameters: ...]`. It is clamped and NUL-stripped but not
-      redacted, so when the text-to-SQL tool lands the log will carry
-      model-generated SQL (wanted) together with the client values bound into
-      it (not wanted, and the table has no redaction or retention policy).
-      Log the statement plus a parameter count or hashed parameters.
-      **Matters when:** the text-to-SQL tool lands, which is the first tool
-      that binds values into a statement that can fail. Before that there is
-      nothing in the log to redact; after it, every failed query writes the
-      bound values to a table with no retention policy
-- [ ] **Shape the `audit_log` migrations for a table that is being written
-      to.** `c3e8a1d07b55` adds the column, backfills with one unbatched
-      UPDATE over a sequential scan, and validates the check constraint under
-      `ACCESS EXCLUSIVE`, all in one transaction — so the table every tool
-      call writes to is locked for the whole migration. Milliseconds at this
-      size and correct as written; the shape to demonstrate is `NOT VALID`
-      then a batched backfill then `VALIDATE CONSTRAINT`.
-      **Matters when:** the table is big enough or busy enough for an
-      `ACCESS EXCLUSIVE` lock to be felt — so, a deployed Phase 9 rather than
-      a dev database. It is also the shape worth *showing*, which is its own
-      reason to do it before the repo is read by anyone
-- [ ] **Give a `usage` row the turn it belongs to.** `thread_id` is the only
-      key `usage` and the checkpointer share, so the turn-level history matches
-      a row to a turn by time window — correct, and a heuristic over two
-      clocks. The fix is a column naming the turn (the checkpoint id the turn
-      ended on, or a per-thread ordinal) written by `stream_turn`, after which
-      `app/history.py:attach_usage` becomes a join and `created_at` stops
-      carrying meaning it was never meant to. A migration plus a backfill that
-      can only be approximate for existing rows, which is why it is not part
-      of the history endpoint. Recorded 2026-10-21.
-      **Matters when:** a turn's cost has to be exact rather than attributed —
-      anything billed, or an eval that reports cost per turn. It breaks
-      outright the day one thread can run two turns at once, because the
-      window stops naming a single turn
+*This phase's four known follow-ups have moved. The `audit_log.error`
+redaction became due when text-to-SQL landed and is in Phase 4; the other
+three are known gaps in `docs/NOTES.md`, each with the condition that would
+make it matter.*
 
 **Done when:** a 60-second recording shows a question answered with citations,
 streamed token by token, a rebalance proposed, a human approving it in the
@@ -624,7 +640,8 @@ inbox, and the inbox showing afterwards who approved it and what it did.
 **Where the old Phase 5 went.** `audit_log` for every tool call and decision was
 already done in Phase 4a — `execute()` is the single chokepoint and audits
 every attempt, including refusals. Per-tool feature flags are dropped as
-unnecessary here. More tools and growing `actions.jsonl` move to Phase 4.
+unnecessary here. Growing `actions.jsonl` moved to Phase 4; "more tools, so
+the registry is exercised" was cut, and the reasoning is in `docs/NOTES.md`.
 
 ## Phase 6 — Guardrails and safety evals (3–5 days) · **Core**
 
@@ -650,15 +667,6 @@ owed from Phase 3 is fixed.*
       tags under several retrieval configurations, not one. Boilerplate
       stripping (Phase 3) becomes adoptable once this holds — it is worth
       +1.4 hit@1 at no runtime cost and was reverted only for this
-- [ ] **This case is worse than "config-dependent": it is bistable.** Measured
-      2026-10-13, the same question on the same commit refused correctly 1 of
-      5 times, and 3 of the 5 wrong answers asserted "the firm may not act
-      under a power of attorney" — a confident wrong answer, not a paraphrase.
-      So `answer.refusal_correct: 1.000` in `baseline.json` is not a
-      reproducible number, and **the Phase 8 CI gate must not gate on it until
-      this is fixed**, or the gate fails at random. `GATEABLE` in
-      `app/evals/report.py` is a label today and enforces nothing, which is the
-      only reason this has not already broken CI
 - [ ] Indirect injection test: a seeded document containing hidden instructions
 - [ ] `safety.jsonl` (≥40 attacks): must never trigger a HIGH tool without approval, never leak another client's data
 - [ ] **Three attack shapes the Phase 4a review proposed**, none of which
@@ -671,18 +679,17 @@ owed from Phase 3 is fixed.*
       interrupt; and replay plus argument-swap exercised **through the API and
       graph** rather than only as registry unit tests, since that is the layer
       a future node could break
-- [ ] **Decide whether self-approval is acceptable.** Nothing compares
-      `decided_by` against `requested_by`, so the adviser who asked for a
-      rebalance can approve it themselves and the audit trail looks like a
-      complete approval chain with one person at both ends. The gate is a
-      four-eyes control in intent. Unlike the `decided_by` provenance gap this
-      is documented nowhere, so it reads as an omission rather than a
-      decision — either reject `decided_by == requested_by`, or say in
-      `decide()` that self-approval is accepted for this firm model and why
-- [ ] **Expire approvals.** `'expired'` is in `APPROVAL_STATUSES` and is never
-      written. An approval reading "equity 4pp over band" stays spendable
-      after three weeks of market movement, and an approved-but-unconsumed row
-      whose thread was abandoned lives forever
+- [ ] **Expire approvals after five business days.** `'expired'` is in
+      `APPROVAL_STATUSES` and nothing ever writes it, so an approval reading
+      "equity 4pp over band" stays spendable after three weeks, against
+      valuations that have moved. The TTL is not invented: `compliance-faq.md`
+      says *"Internal approval lapses after five business days"* and
+      `mandates-and-rebalancing.md` repeats it for an approved proposal that
+      goes unexecuted. Expiry has to be enforced where the approval is
+      **claimed**, not by a sweep job — a background task that flips rows
+      leaves a window where a stale approval is still spendable, and
+      `_claim_approval` is already the single conditional UPDATE that decides
+      whether an action may run
 
 **Done when:** safety pass rate is in the report and gated in CI.
 
@@ -714,17 +721,12 @@ owed from Phase 3 is fixed.*
       the composer is disabled for an answer nobody will read. An
       `AbortController` kept beside `driving`, aborted in the same effect that
       clears the turns
-- [ ] Agent timeline: tool calls as they run, each tagged with its risk tier
 - [ ] Put `retrieval` back in front of the answer in the timeline. Token
       streaming left it behind: the deltas come from the research node while it
       runs, and `retrieved` only lands with the node's update, so the badge
       appears after the prose it preceded. The fix is to write retrieval to the
       custom stream too, which means stopping the node's update from emitting
       it a second time — the same duplicate-event problem `route` already had
-- [ ] Citations drawer opening the source document at the cited page
-- [ ] Usage dashboard
-- [ ] Evals page (baseline vs latest, failing cases)
-- [ ] Dark mode, responsive, empty and error states
 - [ ] Playwright smoke test: ask → stream → approve
 
 **Done when:** a 2-minute screen recording shows the whole flow. Put it at the top of the README.
@@ -735,35 +737,94 @@ owed from Phase 3 is fixed.*
 CI; today that is false, and it is two days to make true. It follows Phase 5 so
 the thresholds are set once the answer path, including streaming, is stable.*
 
-- [ ] `evals/thresholds.yaml`; fail CI if a metric drops below threshold or regresses more than X% vs baseline
-- [ ] **Do not gate on `answer.refusal_correct` until Phase 6 fixes it.**
-      Measured 2026-10-13, `refusal-poa-policy-01` refused correctly 1 run in
-      5 on the same commit, so the baseline's 1.000 is luck rather than a
-      measurement and a threshold on it fails at random. `refusal-cyber-01` is
-      the second one, found on 2026-10-19: it refused in three runs on
-      `33e7026` and in none of three on `0abe814` with retrieval byte-identical
-      — so two of the suite's five refusal cases are coin-flips. `GATEABLE` in
-      `app/evals/report.py` is a label that enforces nothing today, which is
-      the only reason this has not already bitten. Either Phase 6 lands first
-      or this metric starts report-only, stated in `thresholds.yaml`
-- [ ] **Pin `LLM_MODEL` to a dated snapshot, before setting any threshold.**
-      It is the alias `openai:gpt-4o-mini` in `app/config.py` and
-      `.env.example`, and the provider moves what it serves: the full-suite
-      re-baseline of 2026-10-19 lost `refusal-cyber-01` on both the streamed
-      and the non-streaming path with the prompt, retrieval and request body
-      unchanged since 2026-10-13. A threshold measured against a moving alias
-      cannot tell this project's regression from someone else's retrain, which
-      is a day already spent once. Pinning is itself a behaviour change, so it
-      gets its own before/after run
-- [ ] **Set every threshold from several runs, not one.** Three runs of a
-      suite are cheap and the project has now been wrong twice by trusting a
-      single sample
-- [ ] **`citations.validity` also varies, and by more than it looks.** Seven
-      smoke runs measured 0.926 to 1.000 while `retrieval.mrr` sat at exactly
-      0.693 every time, so the movement is the model's quote wording, not
-      retrieval. Any threshold on it has to sit below the observed floor, or
-      be set on the full suite where one case moves it less
-- [ ] Small smoke subset on every PR, full suite nightly
+- [x] **`evals/thresholds.yaml`, and a gate that fails the run.**
+      **Result:** floors in the YAML, the check in
+      `backend/app/evals/gate.py`, on by default in the CLI with `--no-gate`
+      for runs that are meant to move the numbers. Three things were wrong
+      with the gate this project had already specified, all found by testing
+      the proposal against the 74 reports on record rather than by reading it.
+      (1) The proposed floors were **one set for all suites**, taken from the
+      rag suite — `retrieval.mrr: 0.70` against smoke's 0.6927 fails **23 of
+      23** smoke runs, so every pull request would have been red and the gate
+      would have been switched off in a day. Floors are per suite now.
+      (2) `GATEABLE` listed seven metrics on the reasoning that a calculation
+      over fixed inputs must be deterministic; measured within a single
+      commit, three of them move — `citations.validity` by 0.074,
+      `answer.refusal_correct` by 0.037, `answer.must_include` by 0.062 on the
+      rag suite. Those are report-only, and a floor for anything outside
+      `GATEABLE` is ignored rather than honoured, so editing the YAML is not a
+      way in. (3) `docs/EVALS.md` stated every gateable metric "moves by
+      exactly zero", which was false for those three; corrected with the
+      measurements. Floors come from the **current** configuration, not the
+      lowest value ever recorded — the `all` suite's history holds retrieval
+      variants that were abandoned, one at MRR 0.6645, and a floor under that
+      would have a real regression land inside it. Checked both ways: no
+      report since Phase 3 merged fails the gate, and the pre-Phase-3 reports
+      do
+- [x] **Record the model the provider actually served.** Done before the pin
+      below, because the pin is a claim and this is what can check it: a
+      threshold set against an alias measures someone else's release, and with
+      only the alias recorded nothing can say which model produced which
+      number. **Result:** `usage.model_served` (migration `53252bedd4fb`),
+      read from `response_metadata["model_name"]`, which carries the API's own
+      `model` field. A second column, not a correction — `app/pricing.py` is
+      keyed on the alias, so `model` must stay as configured or the cost comes
+      out NULL, which is exactly what the pin below would have caused
+      silently. Two things found rather than assumed: on the streaming path
+      the provider sends `model_name` on the chunk carrying `finish_reason`
+      and the token counts on a *later* chunk, so reading the model off the
+      usage chunk — the obvious implementation — yields None on the only path
+      the graph runs in production; and a real call confirms the end to end,
+      `openai:gpt-4o-mini` → **`gpt-4o-mini-2024-07-18`**, which is also the
+      answer to what the pin should name. Existing rows stay NULL: we do not
+      know what served them. No eval run: the request to the model is
+      unchanged, only what is read off the response
+- [x] **Pin `LLM_MODEL` to a dated snapshot.** `openai:gpt-4o-mini` is a
+      name, not a version, so a threshold set against it measures the
+      provider's release schedule. **Result:** pinned to
+      `openai:gpt-4o-mini-2024-07-18` — the snapshot the alias already
+      resolved to, read off a real response rather than chosen. `PRICES` gains
+      the snapshot **in the same commit**, because `price_for` is keyed on the
+      model name and a pin without it reports NULL cost on every row and
+      breaks nothing visibly. Snapshots are written out rather than matched by
+      stripping the date: a prefix rule would price an unreleased
+      `gpt-4o-mini-2027-...` at today's rate, and a confident wrong number is
+      worse than an honest NULL. **Smoke, three runs before and three after:**
+      retrieval, `must_include`, `no_prose_refs` and cost all identical;
+      `citations.validity` 0.951 → 0.963, inside the before spread of ±0.074.
+      One gated metric moved — `answer.refusal_correct` 1.000 → 0.988 — and it
+      is `refusal-poa-policy-01` failing in **one of the six runs**, the case
+      already recorded as bistable. The six runs are new evidence rather than
+      a regression: they all ran against the same pinned snapshot, so that
+      case is bistable **at a fixed model**, which rules out provider drift as
+      its cause and points Phase 6 at the prompt or the passage ordering. Also
+      proved the guard works: changing the config alone turned
+      `test_the_configured_default_model_is_priced` red before the price table
+      was touched
+- [x] **Small smoke subset on every PR, full suite on demand.** The subset
+      already existed — `smoke` is 27 hand-picked ids out of `rag_qa.jsonl`,
+      not a second file — so this was CI wiring and no Python.
+      **Result:** an `evals` job in `.github/workflows/ci.yml` that migrates,
+      seeds and ingests from an empty database and then runs the suite; the
+      gate is on by default inside the CLI, so the job's exit code *is* the
+      verdict and no threshold is restated in the workflow. $0.0087 per pull
+      request, and nothing on a fork or on the push to `main` that follows a
+      merge — the same content was measured on the pull request minutes
+      earlier. **The nightly cron became a `workflow_dispatch` button**, with
+      the reasoning in `docs/NOTES.md`. Also measured before wiring anything,
+      because the floors came from one local index: from a scratch database
+      the four gated metrics come out identical to four decimals, recorded
+      under measurements in `docs/NOTES.md`
+- [ ] **Pin `sqlglot` exactly, and treat a bump as a security change.**
+      Carried from the SQL security review and put here because it is the same
+      job as pinning the model: a threshold or a boundary set against a moving
+      dependency measures someone else's release. `sqlglot` is `>=27,<28`, and
+      the comment-smuggling case proved the *renderer's* behaviour is part of
+      the SQL boundary rather than an implementation detail. Exact pin, bumped
+      deliberately with `tests/test_sql_executor.py` as the gate. Related: a
+      set-returning function in `FROM` is refused today only because sqlglot
+      gives those nodes an empty table name — an accident of the library that
+      a test now pins, not a decision it made for us
 - [ ] Post the metrics table as a PR comment
 
 ## Phase 9 — AWS deployment (1 week) · **Optional**
@@ -815,6 +876,26 @@ of the credit.*
       account-existence check to accounts the principal may act on, and keep
       the refusal wording identical for "does not exist" and "not yours" so
       the response cannot be used to enumerate account ids
+- [ ] **Scope a SQL query to the client it was asked about.** From the SQL
+      security review, and here rather than in Phase 4 because it needs an
+      authenticated principal to mean anything. `v_account_summary` carries
+      `client_name`, `segment` and `adviser` for every client in the firm, and
+      nothing ties a query to one of them — so "only this client's data" rests
+      on the prompt, which is what the executor's own docstring argues is not
+      a control. Scope in the data, not in the prompt: `WHERE client_id =
+      current_setting('app.client_id', true)` inside the views, with
+      `run_sql` requiring a client and issuing `SET LOCAL app.client_id`.
+      `v_account_allocation` has no `client_id` column, so it needs a
+      migration either way. Note `set_config` had to be refused first — it was
+      reachable until the function allow-list landed, and a scope a query can
+      rewrite is not a scope
+- [ ] **An approval may not be decided by whoever requested it.** The decision
+      is already taken (see `docs/NOTES.md`): self-approval is unacceptable for
+      a firm whose only control is a second pair of eyes. It lands here, with
+      authentication, because both `decided_by` and `requested_by` come from
+      the request body today — a check against them would refuse the honest
+      case and miss the dishonest one, which is worse than no check because it
+      reads like a control
 - [ ] **Rate-limit the turn endpoint.** Independent of auth: every message
       costs at least two real model calls and nothing anywhere limits them.
       The account-existence check added in Phase 4a makes an unauthenticated
@@ -831,10 +912,7 @@ of the credit.*
 
 ## Phase 10 — Stretch modules · **Optional**
 
-*Pick at most one, and only after 4a, 4, 8 and 6. MCP is the cheapest and the
-most topical.*
+*One item, after 4a, 4, 8 and 6. Three others were considered and cut; the
+reasoning is in `docs/NOTES.md`.*
 
 - [ ] **MCP server** exposing `ask`, `search_docs`, `portfolio_query` (read-only tools only)
-- [ ] **LoRA fine-tune** of a small open model for intent routing; compare against the prompted supervisor on accuracy, latency and cost
-- [ ] **Framework-free agent**: the same research flow with a raw tool loop, to explain what LangGraph does for you
-- [ ] **LlamaIndex comparison** for the RAG step

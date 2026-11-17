@@ -213,6 +213,9 @@ async def stream_turn(
     # breakdown is a single null bucket and cannot answer "what does research
     # cost us against actions".
     route: str | None = None
+    # Same treatment as `route`, and for the same reason: the fact exists in a
+    # node's update and nowhere else by the time the row is written.
+    model_served: str | None = None
 
     try:
         async for mode, chunk in graph.astream(
@@ -237,6 +240,7 @@ async def stream_turn(
                     for key, value in (update.get("usage") or {}).items():
                         totals[key] = totals.get(key, 0) + int(value)
                     route = update.get("route") or route
+                    model_served = update.get("model_served") or model_served
                 for event in events_for(node, update):
                     yield event
     except Exception as exc:
@@ -250,6 +254,7 @@ async def stream_turn(
             thread_id=thread_id,
             user_id=user_id,
             route=route,
+            model_served=model_served,
         )
         yield ErrorEvent(message=f"{type(exc).__name__}: {exc}")
         return
@@ -262,6 +267,7 @@ async def stream_turn(
         thread_id=thread_id,
         user_id=user_id,
         route=route,
+        model_served=model_served,
     )
     yield DoneEvent(usage=usage_for(totals, elapsed_ms=elapsed_ms))
 
@@ -274,6 +280,7 @@ async def _record(
     thread_id: str,
     user_id: str | None,
     route: str | None,
+    model_served: str | None = None,
 ) -> None:
     """Write the turn's `usage` row.
 
@@ -295,6 +302,7 @@ async def _record(
     await record_usage(
         session,
         model=get_settings().llm_model,
+        model_served=model_served,
         input_tokens=totals.get("inputTokens", 0),
         output_tokens=totals.get("outputTokens", 0),
         latency_ms=int(elapsed_ms),

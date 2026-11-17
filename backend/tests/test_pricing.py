@@ -99,6 +99,33 @@ def test_the_configured_default_model_is_priced() -> None:
     assert price_for(Settings(_env_file=None).llm_model) is not None
 
 
+def test_the_pinned_snapshot_costs_what_its_alias_did() -> None:
+    """Pinning the model must not move the money.
+
+    `LLM_MODEL` went from the `gpt-4o-mini` alias to the dated snapshot it was
+    already resolving to, so the cost of a request is unchanged by definition —
+    it is the same model. This asserts the price table agrees, because the one
+    way to get that wrong is to add the snapshot with a mistyped rate and then
+    read a cost regression that is really a typo.
+    """
+    assert price_for("gpt-4o-mini-2024-07-18") == price_for("gpt-4o-mini")
+    assert cost_of("openai:gpt-4o-mini-2024-07-18", 3180, 142) == cost_of(
+        "openai:gpt-4o-mini", 3180, 142
+    )
+
+
+def test_an_unlisted_snapshot_is_unpriced_rather_than_guessed() -> None:
+    """Why the table spells snapshots out instead of stripping the date.
+
+    A prefix rule would price every future `gpt-4o-mini-*` at today's rate and
+    report a confident wrong number. Refusing to price it is the behaviour the
+    module docstring argues for: NULL makes someone ask, a wrong figure does
+    not.
+    """
+    assert price_for("openai:gpt-4o-mini-2099-01-01") is None
+    assert cost_of("openai:gpt-4o-mini-2099-01-01", 1000, 1000) is None
+
+
 def test_the_eval_report_and_the_usage_table_agree() -> None:
     """One price table. The eval report's float and the usage table's Decimal
     must describe the same request identically."""

@@ -87,18 +87,37 @@ def git_sha() -> str:
         return "unknown"
 
 
-# Deterministic metrics may gate a build: the same input gives the same number,
-# so a drop is a regression rather than a mood. The ragas metrics are
-# report-only until their variance is known — and relevancy in particular
+# Metrics that may gate a build: the same input gives the same number, so a
+# drop is a regression rather than a mood.
+#
+# **This list used to be longer, and it was wrong.** It was written from the
+# reasoning that a calculation over fixed inputs must be deterministic, before
+# anybody measured the repeat-run spread. Measured across the 23 smoke runs and
+# 3 rag runs on record, three of its entries move with the code unchanged:
+#
+#   citations.validity      0.074 within one commit (smoke)
+#   answer.refusal_correct  0.037 within one commit (smoke)
+#   answer.must_include     0.062 within one commit (rag, 33e7026)
+#
+# All three are report-only now. They are not noise-free because they depend on
+# what the model wrote, not only on what was retrieved — and a floor under a
+# metric that moves on its own fails on a quiet day, after which the gate gets
+# switched off and the metrics that *would* have caught something stop being
+# watched too.
+#
+# `answer.must_include` is the one worth re-examining: its spread on smoke is
+# zero across every repeat we have, and only the rag suite has caught it
+# moving. More smoke repeats would settle whether it can gate there.
+# `answer.refusal_correct` returns when Phase 6 fixes the bistable
+# `refusal-poa-policy-01` — see `docs/NOTES.md`.
+#
+# The ragas metrics were already report-only, and relevancy in particular
 # penalises the caveats the prompt explicitly requires, so a "drop" there may
 # mean the answer got more correct.
 GATEABLE = (
     "retrieval.mrr",
     "retrieval.hit_at_1",
     "retrieval.hit_at_6",
-    "citations.validity",
-    "answer.must_include",
-    "answer.refusal_correct",
     "answer.no_prose_refs",
 )
 

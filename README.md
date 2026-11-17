@@ -32,11 +32,13 @@ per-request token, cost and latency accounting.
 | Conversation history across a reload, documents page | **working** — restored from the checkpointer (`backend/app/history.py`) |
 | Text-to-SQL portfolio agent | not built — **Phase 4, next** |
 | Guardrails, prompt-injection defence, safety evals | not built — Phase 6 |
-| CI eval gate | not built — Phase 8 |
+| CI eval gate | **working** — the smoke suite gates every pull request against measured floors (`evals/thresholds.yaml`) |
 | AWS deployment, MCP server | not built — Phases 9–10 |
 
 The table below describes the intended architecture. Rows marked *not built*
-are planned, not present; `docs/ROADMAP.md` is the current state of play.
+are planned, not present. `docs/ROADMAP.md` is the current state of play, and
+`docs/NOTES.md` carries the known gaps and the decisions behind them — including
+the ones this project chose not to close yet, and why.
 
 ## What it demonstrates
 

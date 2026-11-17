@@ -71,6 +71,12 @@ uv run --project backend --group evals python evals/run.py --suite rag \
     --repeat 3 --compare evals/reports/baseline.json
 ```
 
+The smoke suite runs on every pull request, in the `evals` job of
+`.github/workflows/ci.yml`, against a database migrated, seeded and ingested
+from empty. The full suite runs on a button — Actions → CI → **Run workflow**,
+with the suite as an input — rather than on a nightly cron; `docs/NOTES.md` says
+why.
+
 `--group evals` installs ragas, which is deliberately not a runtime dependency
 — the service never scores itself. The smoke suite does not need it (the judge
 is off by default there); `rag` and `all` do, and the runner now says so and
@@ -80,29 +86,60 @@ Output: a table in the terminal and `evals/reports/<timestamp>.json` containing 
 
 ## Gate (`evals/thresholds.yaml`)
 
-```yaml
-absolute:
-  retrieval.mrr: 0.70
-  retrieval.hit_at_1: 0.60
-  citations.validity: 0.95
-  answer.refusal_correct: 1.00
-  routing.accuracy: 0.90
-  sql.execution_accuracy: 0.80
-  actions.interrupt_compliance: 1.00
-  safety.pass_rate: 1.00
-regression:
-  max_drop_pct: 3        # vs baseline.json, for any gateable metric
-```
+The file is committed and the numbers in it are measured; read it rather than
+this section for the current values. What matters here is the two rules it
+follows, both of which were learned by getting them wrong first.
 
-`interrupt_compliance` and `safety.pass_rate` must be 1.0: a single failure fails the build.
+**Floors are per suite.** The proposal this section used to carry set
+`retrieval.mrr: 0.70` for everything. Checked against the 23 smoke runs and 3
+rag runs on record, that fails **23 of 23** smoke runs — 0.70 is the rag
+suite's level and smoke sits at 0.6927. They are different sets of questions,
+so there is no single right number, and a gate that fails every pull request
+gets switched off within a day.
+
+**Floors come from what the current configuration measures**, floored to two
+decimals for one notch of headroom — not from a target. "Current
+configuration" matters because the `all` suite's history contains retrieval
+variants that were measured and abandoned, one at `retrieval.mrr` 0.6645; the
+lowest value *ever recorded* would put the floor underneath a config nobody
+runs, and a real regression could land inside it.
+
+Thresholds for `routing.accuracy`, `sql.execution_accuracy`,
+`actions.interrupt_compliance` and `safety.pass_rate` are **not** in the file
+yet: those suites arrive in Phases 4 and 6. A floor for a metric nothing
+produces gates nothing and gives the impression something is protected.
+`routing.accuracy` is a special case — it reads 1.0000 across 15 runs, but
+Phase 4 grows that dataset from a 15-case slice to 60 or more and the number
+will fall for that reason alone, so a floor set now would fail on the commit
+that improves coverage.
 
 ### Only deterministic metrics gate
 
-A run report carries a `gateable` list, and CI reads it rather than hardcoding
-one that silently drifts. It contains the metrics whose value is a calculation
-over fixed inputs: MRR, hit@1, hit@k, citation validity, `must_include`, and
-refusal correctness. Measured across three repeat runs of the same suite, every
-one of them moves by **exactly zero** — so a drop is a regression, not a mood.
+A run report carries a `gateable` list, and the gate reads it rather than
+trusting the YAML: a floor for a metric outside that list is ignored, so
+editing the file is not a way to gate something noisy.
+
+**The list used to be longer, and the claim made for it was false.** It was
+written from the reasoning that a calculation over fixed inputs must be
+deterministic, before anyone measured the repeat-run spread, and this section
+stated that every entry "moves by exactly zero". Measured within a single
+commit, three of them do not:
+
+| metric | moves by | where |
+|---|---|---|
+| `citations.validity` | 0.074 | smoke, one commit, 3 runs |
+| `answer.refusal_correct` | 0.037 | smoke; and bistable, see `docs/NOTES.md` |
+| `answer.must_include` | 0.062 | rag, commit `33e7026`, same code |
+
+All three are report-only. What gates is retrieval — MRR, hit@1, hit@6 — plus
+`answer.no_prose_refs`, which has read 1.0000 in every run since Phase 5, and
+`ops.errors`, which fails the build on any errored case. Those four do move by
+exactly zero, measured across 23 smoke runs spanning several commits.
+
+They are not all noise-free for the same reason: the three that move depend on
+what the model *wrote*, not only on what was retrieved. `answer.must_include`
+is the one worth revisiting — its spread on smoke is zero across every repeat
+we have, and only the larger rag suite has caught it moving.
 
 The Ragas metrics — faithfulness and answer relevancy — are **report-only**.
 Two reasons:

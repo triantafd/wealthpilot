@@ -21,6 +21,8 @@ is empty or holds the full corpus — and nothing a test does can damage it.
 import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -46,6 +48,7 @@ from app.main import app
 from app.observability import get_langfuse
 from app.rag.embeddings import FakeEmbedder
 from app.rag.generate import Citation, GeneratedAnswer
+from app.tools.sql import executor
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
@@ -170,10 +173,19 @@ def _development_database_is_off_limits() -> Iterator[None]:
     globals when it runs. Both caches are cleared so a factory built before
     the guard cannot outlive it.
 
+    `app.tools.sql.executor.get_readonly_engine` is guarded the same way and
+    for a sharper reason: it composes its DSN from `POSTGRES_DB` like the
+    others, but authenticates as the *read-only* role — so a test reaching it
+    would read development data while every grant and check in that module
+    reported itself working correctly. Nothing about the failure would look
+    like one. `tests/test_sql_executor.py` points it at the test database
+    explicitly.
+
     Anything in the suite that needs a database gets one from `db_session`,
     or builds its own engine against `_test_database_name()`.
     """
     import app.db.session as session_module
+    import app.tools.sql.executor as executor_module
 
     def refuse() -> Any:
         raise RuntimeError(
@@ -185,13 +197,17 @@ def _development_database_is_off_limits() -> Iterator[None]:
         )
 
     real_get_engine = session_module.get_engine
+    real_readonly_engine = executor_module.get_readonly_engine
     session_module.get_engine.cache_clear()
     session_module.get_sessionmaker.cache_clear()
+    executor_module.get_readonly_engine.cache_clear()
     session_module.get_engine = refuse  # type: ignore[assignment]
+    executor_module.get_readonly_engine = refuse  # type: ignore[assignment]
     try:
         yield
     finally:
         session_module.get_engine = real_get_engine
+        executor_module.get_readonly_engine = real_readonly_engine
         session_module.get_sessionmaker.cache_clear()
 
 
@@ -340,10 +356,18 @@ class FakeChatModel:
     """
 
     def __init__(
-        self, by_schema: dict[type, Any], *, stream_schemas: tuple[type, ...] = ()
+        self,
+        by_schema: dict[type, Any],
+        *,
+        stream_schemas: tuple[type, ...] = (),
+        served_model: str | None = None,
     ) -> None:
         self._by_schema = by_schema
         self._stream_schemas = stream_schemas
+        #: What this fake claims the *provider* served, reported the way a real
+        #: one does. None by default, which is what the suite looked like
+        #: before `usage.model_served` existed.
+        self.served_model = served_model
         self.schema: type | None = None
         self.messages: list[Any] = []
         self.calls: dict[type, int] = {}
@@ -415,10 +439,24 @@ class FragmentedModel:
         width = max(1, len(text) // self.PIECES + 1)
         fragments = [text[i : i + width] for i in range(0, len(text), width)]
 
+        served = self._model.served_model
         for index, fragment in enumerate(fragments):
             last = index == len(fragments) - 1
-            # Usage rides on the final chunk, as the provider sends it.
-            yield AIMessageChunk(content=fragment, usage_metadata=self.USAGE if last else None)
+            # The provider does not send both facts on one chunk, and copying
+            # that matters: langchain-openai attaches `model_name` to the chunk
+            # carrying `finish_reason`, and the token counts arrive on a later
+            # one. A fake that put them together would pass an implementation
+            # that only ever looked at the usage chunk.
+            second_to_last = index == len(fragments) - 2
+            yield AIMessageChunk(
+                content=fragment,
+                usage_metadata=self.USAGE if last else None,
+                response_metadata=(
+                    {"model_name": served, "finish_reason": "stop"}
+                    if served and second_to_last
+                    else {}
+                ),
+            )
 
 
 def fake_model(answer: str, *citations: "Citation") -> Any:
@@ -439,6 +477,7 @@ def fake_graph_model(
     outcome: str = "propose",
     detail: str = "",
     stream_answer: bool = False,
+    served_model: str | None = None,
 ) -> Any:
     """A chat model for a whole graph run: routes, then answers.
 
@@ -465,6 +504,7 @@ def fake_graph_model(
         # it arrived, and one streaming fake for every test would make each of
         # them depend on the chain's shape.
         stream_schemas=(GeneratedAnswer,) if stream_answer else (),
+        served_model=served_model,
     )
 
 
@@ -553,3 +593,110 @@ async def _no_committed_leftovers(test_database: str) -> AsyncIterator[None]:
     finally:
         await engine.dispose()
     yield
+
+
+# --- The read-only SQL surface ----------------------------------------------
+#
+# Here rather than in a test module because two of them need these now:
+# `test_sql_executor.py` and `test_tool_run_sql.py`. Both fixtures are opt-in.
+
+#: The account the `a_portfolio` fixture builds. Spelled into test queries as a
+#: literal rather than interpolated, because those tests pass SQL as text by
+#: design and an f-string that builds a query trips ruff's S608 on every call.
+SQL_FIXTURE_ACCOUNT = "AC-EX01"
+SQL_FIXTURE_CLIENT = "CL-EX01"
+SQL_FIXTURE_PRICE_DATE = date(2026, 1, 2)
+
+
+@pytest.fixture
+async def readonly(test_database: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
+    """Point the executor's engine at the test database.
+
+    `get_readonly_engine` composes its DSN from `POSTGRES_DB`, so left alone
+    it would read *development* data as the read-only role — with every check
+    in the module reporting itself working. `conftest` refuses it outright for
+    that reason; this fixture is the sanctioned exception, and it asserts the
+    database it substitutes.
+    """
+    settings = get_settings()
+    database = test_database.rsplit("/", 1)[-1]
+    assert database.endswith("_test"), database
+    if settings.postgres_ro_user is None or settings.postgres_ro_password is None:
+        pytest.fail("POSTGRES_RO_USER and POSTGRES_RO_PASSWORD must be set; see .env.example")
+
+    url = (
+        f"postgresql+asyncpg://{settings.postgres_ro_user}:"
+        f"{settings.postgres_ro_password.get_secret_value()}"
+        f"@{settings.postgres_host}:{settings.postgres_port}/{database}"
+    )
+    engine = create_async_engine(url)
+    monkeypatch.setattr(executor, "get_readonly_engine", lambda: engine)
+    try:
+        yield
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+async def a_portfolio(test_database: str) -> AsyncIterator[str]:
+    """Five committed positions on one account.
+
+    Committed, and therefore on its own engine: `run_select` connects as a
+    different role on a different pool, so it cannot see anything held open
+    inside `db_session`'s transaction. Removed afterwards in dependency
+    order, because nothing else clears the firm tables.
+    """
+    engine = create_async_engine(test_database)
+    account, client = SQL_FIXTURE_ACCOUNT, SQL_FIXTURE_CLIENT
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO clients (id, full_name, segment) VALUES (:i, 'Exec Test', 'hnw')"
+                ),
+                {"i": client},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO accounts (id, client_id, account_type, mandate) "
+                    "VALUES (:a, :c, 'GIA', 'discretionary')"
+                ),
+                {"a": account, "c": client},
+            )
+            for index in range(5):
+                instrument = f"IN-EX{index}"
+                await connection.execute(
+                    text(
+                        "INSERT INTO instruments (id, name, asset_class) VALUES (:i, :n, 'equity')"
+                    ),
+                    {"i": instrument, "n": f"Instrument {index}"},
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO prices (instrument_id, price_date, close) VALUES (:i, :d, :c)"
+                    ),
+                    {"i": instrument, "d": SQL_FIXTURE_PRICE_DATE, "c": Decimal("10.00")},
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO holdings (account_id, instrument_id, quantity, as_of) "
+                        "VALUES (:a, :i, :q, :d)"
+                    ),
+                    {
+                        "a": account,
+                        "i": instrument,
+                        "q": Decimal("100"),
+                        "d": SQL_FIXTURE_PRICE_DATE,
+                    },
+                )
+        yield account
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM holdings WHERE account_id = :a"), {"a": account}
+            )
+            await connection.execute(text("DELETE FROM prices WHERE instrument_id LIKE 'IN-EX%'"))
+            await connection.execute(text("DELETE FROM accounts WHERE id = :a"), {"a": account})
+            await connection.execute(text("DELETE FROM instruments WHERE id LIKE 'IN-EX%'"))
+            await connection.execute(text("DELETE FROM clients WHERE id = :c"), {"c": client})
+        await engine.dispose()
