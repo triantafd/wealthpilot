@@ -47,6 +47,11 @@ jobs:
       POSTGRES_USER: wealthpilot
       POSTGRES_PASSWORD: wealthpilot
       POSTGRES_DB: wealthpilot
+      # The read-only role that executes generated SQL. Migration ffa5261360c4
+      # creates it and fails if these are unset, so CI has to supply them; the
+      # role exists only inside this throwaway service container.
+      POSTGRES_RO_USER: wealthpilot_ro
+      POSTGRES_RO_PASSWORD: wealthpilot_ro
 
     defaults:
       run:

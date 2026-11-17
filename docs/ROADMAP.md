@@ -227,9 +227,27 @@ second genuine agent. Everything here is a **delta on Phase 4a**, which already
 built `AgentState`, the checkpointer, the research agent, SSE streaming and the
 `record_usage` call — those boxes are not repeated.*
 
-- [ ] **Portfolio agent:** text-to-SQL on the `v_*` views, through the read-only
-      role, with sqlglot validation, an enforced `LIMIT` and a statement
-      timeout. The bulk of this phase
+- [x] **The read-only SQL surface: the `v_*` views and a SELECT-only role.**
+      Built before anything generates SQL, because the order is the point: an
+      agent that works is an agent nobody goes back to put a boundary under.
+      **Result:** migration `ffa5261360c4` creates three views — `v_holdings`,
+      `v_account_summary`, `v_account_allocation` — and a role holding `SELECT`
+      on those three and no privilege on any table, plus
+      `default_transaction_read_only` and a 5s `statement_timeout` attached to
+      the role itself so they apply to a session that forgot to set them. The
+      views exist for three reasons, in order: they are the only thing a grant
+      can be scoped to, they pre-compute what a model gets wrong (the *latest*
+      price is a correlated lookup, not a join), and they leave client email
+      and date of birth out of everything the model can reach. Two decisions
+      worth knowing: an unpriced instrument keeps its position with a NULL
+      value and is counted in `unpriced_positions`, rather than vanishing and
+      silently shrinking the account; and `total_value` sums the *rounded*
+      per-position values, so it equals the column an adviser can add up —
+      two pence further from the exact figure, and consistent with what is on
+      screen. 21 tests, six deliberate breaks each caught by the right one
+- [ ] **Portfolio agent:** text-to-SQL on the views above, through that role,
+      with sqlglot validation, an enforced `LIMIT` and a statement timeout in
+      `app/tools/sql/executor.py`. The bulk of this phase
 - [ ] **Supervisor gains a third destination** and a confidence threshold with a
       defined fallback. Phase 4a routes between two destinations with no
       threshold, which is enough to make routing a real decision but not enough
