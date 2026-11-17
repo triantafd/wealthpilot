@@ -71,6 +71,21 @@ trusting a single run.*
 
 ---
 
+- **The retrieval floors reproduce from an empty database.** Measured
+      2026-11-17, before wiring CI, because every number in
+      `evals/thresholds.yaml` had been taken on one developer's long-lived
+      local index and nothing said whether it was a property of the system or
+      of that index. A scratch database created, migrated, seeded and
+      ingested from nothing — 10 documents, 81 chunks, the same counts — then
+      the smoke suite: `retrieval.mrr` 0.6927, `hit_at_1` 0.6000, `hit_at_6`
+      0.9200, `answer.no_prose_refs` 1.0000, **identical to four decimals** to
+      the five runs taken that day on the development database. So the floors
+      are a property of the corpus and the retriever, a CI run's numbers are
+      comparable to a local one's, and a future disagreement between the two
+      is a finding rather than the expected noise. Embedding is deterministic
+      enough at this corpus size to say that; it is not a promise about a
+      corpus ten times larger
+
 ## Known gaps, not scheduled
 
 *Real, and nobody is fixing them yet. The trigger line is the point: it turns
@@ -192,6 +207,20 @@ project demonstrates, and the list of 61 open items was itself the problem.*
   approvals inbox and the documents page already demonstrate the frontend
   claim. These are each a day, and `/usage` and the eval reports are already
   reachable as JSON for anyone who wants the numbers.
+
+- **A nightly eval run on a cron.** Phase 8 asked for the full suite every
+  night. **Cut:** a nightly exists to catch what moves *without* us — the
+  provider's model, a dependency, the judge — because our own changes are
+  already caught on the pull request. Both of those are now pinned:
+  `LLM_MODEL` to a dated snapshot and everything else in `uv.lock`. What is
+  left is a few cents a day, charged against a side project, producing a
+  report in an artifact nobody opens and a red X in a list nobody reads.
+  Restricting it to nights after a code change was considered and is worse:
+  it removes the only thing a nightly does that the PR run does not.
+  Replaced by `workflow_dispatch` — the same full suite, on a button, costing
+  nothing when not pressed. **Revisit when** there is somewhere for it to
+  shout (an email or a chat webhook) *and* a reason to suspect drift, such as
+  unpinning the model or a reported provider change.
 
 - **LoRA fine-tune** of a small open model for intent routing; a
   **framework-free agent** rebuilding the research flow on a raw tool loop;

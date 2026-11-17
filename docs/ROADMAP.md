@@ -801,7 +801,20 @@ the thresholds are set once the answer path, including streaming, is stable.*
       proved the guard works: changing the config alone turned
       `test_the_configured_default_model_is_priced` red before the price table
       was touched
-- [ ] Small smoke subset on every PR, full suite nightly
+- [x] **Small smoke subset on every PR, full suite on demand.** The subset
+      already existed — `smoke` is 27 hand-picked ids out of `rag_qa.jsonl`,
+      not a second file — so this was CI wiring and no Python.
+      **Result:** an `evals` job in `.github/workflows/ci.yml` that migrates,
+      seeds and ingests from an empty database and then runs the suite; the
+      gate is on by default inside the CLI, so the job's exit code *is* the
+      verdict and no threshold is restated in the workflow. $0.0087 per pull
+      request, and nothing on a fork or on the push to `main` that follows a
+      merge — the same content was measured on the pull request minutes
+      earlier. **The nightly cron became a `workflow_dispatch` button**, with
+      the reasoning in `docs/NOTES.md`. Also measured before wiring anything,
+      because the floors came from one local index: from a scratch database
+      the four gated metrics come out identical to four decimals, recorded
+      under measurements in `docs/NOTES.md`
 - [ ] **Pin `sqlglot` exactly, and treat a bump as a security change.**
       Carried from the SQL security review and put here because it is the same
       job as pinning the model: a threshold or a boundary set against a moving

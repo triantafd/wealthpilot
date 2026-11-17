@@ -4,6 +4,16 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The button that stands in for a nightly cron. A schedule would bill a few
+  # cents a day to detect drift nobody had asked about, in a report nobody
+  # opens; see docs/NOTES.md. This runs the full suite when you ask for it.
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Suite to run
+        type: choice
+        options: [all, rag, smoke]
+        default: all
 
 # A new push to the same branch makes the previous run irrelevant. Without
 # this, a busy branch queues runs that are already superseded.
@@ -146,3 +156,124 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  evals:
+    name: Evals
+    runs-on: ubuntu-latest
+
+    # Three conditions, each for its own reason.
+    #
+    # Not on push to main: the merge commit's content was measured on the pull
+    # request minutes earlier, so a second run is a second bill for an answer
+    # we already have.
+    #
+    # Not on a fork's pull request: secrets are not available there, so the job
+    # could only fail for a reason the contributor cannot fix.
+    #
+    # The manual run is always allowed, whatever it was dispatched from.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: wealthpilot
+          POSTGRES_PASSWORD: wealthpilot
+          POSTGRES_DB: wealthpilot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wealthpilot -d wealthpilot"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      APP_ENV: ci
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: wealthpilot
+      POSTGRES_PASSWORD: wealthpilot
+      POSTGRES_DB: wealthpilot
+      POSTGRES_RO_USER: wealthpilot_ro
+      POSTGRES_RO_PASSWORD: wealthpilot_ro
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # `inputs` is empty outside a manual run, and an empty string is falsy in
+      # a GitHub expression, so a pull request gets the smoke suite.
+      SUITE: ${{ inputs.suite || 'smoke' }}
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the API key is configured
+        # Fails rather than skips. A gate that quietly does not run is the
+        # failure mode this phase exists to prevent, and unlike a fork's
+        # missing secret this one is fixable by whoever owns the repository.
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::OPENAI_API_KEY is not set. Add it under Settings →" \
+                 "Secrets and variables → Actions, or the eval gate cannot run."
+            exit 1
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install dependencies
+        # The judge is off for smoke and on for the other suites, and ragas is
+        # not a runtime dependency, so a pull request does not install pandas,
+        # pyarrow and huggingface-hub to answer 27 questions.
+        run: |
+          if [ "$SUITE" = smoke ]; then
+            uv sync --frozen
+          else
+            uv sync --frozen --group evals
+          fi
+
+      - name: Run migrations
+        run: uv run alembic upgrade head
+
+      - name: Seed
+        run: uv run python -m app.scripts.seed
+
+      - name: Index the corpus
+        # From an empty database every time, which is the point: the floors in
+        # evals/thresholds.yaml were measured against one developer's local
+        # index, and a run here is what says whether they reproduce.
+        run: uv run python -m app.scripts.ingest
+
+      - name: Run the suite
+        # From the repository root, the path CLAUDE.md documents. The gate is
+        # on by default inside the CLI, so this step's exit code is the gate's
+        # verdict — there is no threshold logic in this file to drift from it.
+        working-directory: ${{ github.workspace }}
+        run: uv run --project backend python evals/run.py --suite "$SUITE"
+
+      - name: Keep the report
+        # Reports are gitignored, so without this the numbers die with the
+        # runner. `always()` because a failed gate is exactly when you want to
+        # read the report.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: eval-report-${{ env.SUITE }}-${{ github.run_id }}
+          # baseline.json lives in the same directory and is committed; an
+          # artifact containing it would invite reading last month's numbers as
+          # this run's.
+          path: |
+            evals/reports/*.json
+            !evals/reports/baseline.json
+          # A warning, not an error: if the suite died before writing a report
+          # the run has already failed for the real reason, and a second red
+          # step here would only compete with it for attention.
+          if-no-files-found: warn

@@ -71,6 +71,12 @@ uv run --project backend --group evals python evals/run.py --suite rag \
     --repeat 3 --compare evals/reports/baseline.json
 ```
 
+The smoke suite runs on every pull request, in the `evals` job of
+`.github/workflows/ci.yml`, against a database migrated, seeded and ingested
+from empty. The full suite runs on a button — Actions → CI → **Run workflow**,
+with the suite as an input — rather than on a nightly cron; `docs/NOTES.md` says
+why.
+
 `--group evals` installs ragas, which is deliberately not a runtime dependency
 — the service never scores itself. The smoke suite does not need it (the judge
 is off by default there); `rag` and `all` do, and the runner now says so and
