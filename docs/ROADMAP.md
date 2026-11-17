@@ -737,7 +737,30 @@ owed from Phase 3 is fixed.*
 CI; today that is false, and it is two days to make true. It follows Phase 5 so
 the thresholds are set once the answer path, including streaming, is stable.*
 
-- [ ] `evals/thresholds.yaml`; fail CI if a metric drops below threshold or regresses more than X% vs baseline
+- [x] **`evals/thresholds.yaml`, and a gate that fails the run.**
+      **Result:** floors in the YAML, the check in
+      `backend/app/evals/gate.py`, on by default in the CLI with `--no-gate`
+      for runs that are meant to move the numbers. Three things were wrong
+      with the gate this project had already specified, all found by testing
+      the proposal against the 74 reports on record rather than by reading it.
+      (1) The proposed floors were **one set for all suites**, taken from the
+      rag suite — `retrieval.mrr: 0.70` against smoke's 0.6927 fails **23 of
+      23** smoke runs, so every pull request would have been red and the gate
+      would have been switched off in a day. Floors are per suite now.
+      (2) `GATEABLE` listed seven metrics on the reasoning that a calculation
+      over fixed inputs must be deterministic; measured within a single
+      commit, three of them move — `citations.validity` by 0.074,
+      `answer.refusal_correct` by 0.037, `answer.must_include` by 0.062 on the
+      rag suite. Those are report-only, and a floor for anything outside
+      `GATEABLE` is ignored rather than honoured, so editing the YAML is not a
+      way in. (3) `docs/EVALS.md` stated every gateable metric "moves by
+      exactly zero", which was false for those three; corrected with the
+      measurements. Floors come from the **current** configuration, not the
+      lowest value ever recorded — the `all` suite's history holds retrieval
+      variants that were abandoned, one at MRR 0.6645, and a floor under that
+      would have a real regression land inside it. Checked both ways: no
+      report since Phase 3 merged fails the gate, and the pre-Phase-3 reports
+      do
 - [x] **Record the model the provider actually served.** Done before the pin
       below, because the pin is a claim and this is what can check it: a
       threshold set against an alias measures someone else's release, and with

@@ -26,6 +26,7 @@ from app.db.session import get_sessionmaker
 from app.evals.actions import aggregate_actions, load_action_cases, run_action_case
 from app.evals.actions import confusion as actions_confusion
 from app.evals.dataset import DatasetError, load_cases
+from app.evals.gate import check, load_thresholds, render
 from app.evals.report import (
     build_report,
     load_baseline,
@@ -115,7 +116,8 @@ async def _run(args: argparse.Namespace) -> int:
         errors = int(metrics.get(f"{args.suite}.errors", 0))
         if errors:
             print(f"\n  {errors} case(s) errored", file=sys.stderr)
-        return 1 if errors else 0
+        breached = _gate(args, report, baseline)
+        return 1 if errors or breached else 0
 
     cases = load_cases(args.suite)
     use_ragas = args.ragas if args.ragas is not None else args.suite != "smoke"
@@ -195,7 +197,25 @@ async def _run(args: argparse.Namespace) -> int:
     errors = int(report["metrics"]["ops.errors"])
     if errors:
         print(f"\n  {errors} case(s) errored", file=sys.stderr)
-    return 1 if errors else 0
+    breached = _gate(args, report, baseline)
+    return 1 if errors or breached else 0
+
+
+def _gate(args: Any, report: dict[str, Any], baseline: dict[str, Any] | None) -> bool:
+    """Check the run against `evals/thresholds.yaml`; True when it failed.
+
+    On by default, because a gate somebody has to remember to switch on is not
+    a gate. `--no-gate` exists for the runs that are *supposed* to move the
+    numbers — the Phase 3 variant experiments deliberately traded one metric
+    for another, and exiting non-zero on those would be noise.
+    """
+    if args.no_gate:
+        return False
+    thresholds = load_thresholds(args.thresholds)
+    breaches = check(report, thresholds, baseline)
+    print()
+    print(render(breaches, str(report.get("suite", "?"))))
+    return bool(breaches)
 
 
 def main() -> None:
@@ -206,6 +226,17 @@ def main() -> None:
         choices=["smoke", "rag", "routing", "actions", "all"],
     )
     parser.add_argument("--compare", type=Path, help="baseline report to compare against")
+    parser.add_argument(
+        "--no-gate",
+        action="store_true",
+        help="report the thresholds without failing on them, for a run meant to move the numbers",
+    )
+    parser.add_argument(
+        "--thresholds",
+        type=Path,
+        default=None,
+        help="thresholds file (default: evals/thresholds.yaml)",
+    )
     parser.add_argument("--save-baseline", action="store_true", help="overwrite baseline.json")
     parser.add_argument(
         "--retrieval-only",

@@ -1,0 +1,75 @@
+# The CI gate's floors. Set from measurement, not from aspiration.
+#
+# Every number below is the lowest value that metric has produced **on the
+# configuration we currently run**, floored to two decimals so there is one
+# notch of headroom. A threshold invented as a target fails on the day it is
+# written, and the first reaction to a gate that fails for no reason is to
+# switch the gate off.
+#
+# "On the configuration we currently run" is load-bearing, and the `all` suite
+# is why. Its 17 reports include retrieval variants that were measured and
+# abandoned — one sits at `retrieval.mrr` 0.6645 and another at `hit_at_1`
+# 0.5143 — so the lowest value *ever recorded* would set a floor underneath a
+# config nobody uses, and a real regression could land inside it unnoticed.
+# For smoke the two rules agree: 23 runs across several commits all produced
+# 0.6927, because none of them touched retrieval.
+#
+# `docs/EVALS.md` carried a proposed set before this file existed. Checked
+# against all 23 smoke runs and 3 rag runs on record, it would have failed
+# `retrieval.mrr` on **23 of 23** smoke runs, because its 0.70 was taken from
+# the rag suite while the gate runs smoke on every pull request. Thresholds are
+# therefore **per suite**: the two are different sets of questions and there is
+# no single right number for both.
+#
+# Only metrics whose repeat-run spread is zero appear here. See `GATEABLE` in
+# `backend/app/evals/report.py` for which those are and what was measured.
+
+suites:
+  # 27 cases. Runs on every pull request, so this is the set that has to be
+  # quiet when nothing has changed.
+  smoke:
+    retrieval.mrr: 0.69 # measured 0.6927, 23 runs, spread 0.0000
+    retrieval.hit_at_1: 0.59 # measured 0.6000 — floored, it had no headroom at 0.60
+    retrieval.hit_at_6: 0.91 # measured 0.9200, 23 runs, spread 0.0000
+    answer.no_prose_refs: 1.0 # measured 1.0000 in every run; one prose reference is a real fault
+
+  # 75 cases, with the ragas judge. Nightly.
+  rag:
+    retrieval.mrr: 0.74 # measured 0.7467, 3 runs, spread 0.0000
+    retrieval.hit_at_1: 0.62 # measured 0.6286
+    retrieval.hit_at_6: 0.96 # measured 0.9714
+    answer.no_prose_refs: 1.0
+
+  # The rag cases plus the slice suites, so its retrieval numbers are the rag
+  # suite's by construction and the floors are the same. Taken from the recent
+  # runs (b722b7a, 2a8a033) rather than from the whole history, for the reason
+  # in the header: the older reports measure variants that were abandoned.
+  #
+  # `answer.no_prose_refs` sat at 0.92 on bdcb481, before Phase 5 stopped the
+  # model writing page references into prose. That is a fixed fault, not
+  # headroom to leave in the floor.
+  all:
+    retrieval.mrr: 0.74
+    retrieval.hit_at_1: 0.62
+    retrieval.hit_at_6: 0.96
+    answer.no_prose_refs: 1.0
+
+# A second net, for a drop that stays above the floor. Compared against a
+# baseline of the *same* suite only: a smoke run measured against a rag
+# baseline is a comparison of two different question sets.
+regression:
+  max_drop_pct: 3
+
+# Not gated, deliberately:
+#
+#   citations.validity      moves 0.074 within one commit
+#   answer.refusal_correct  bistable; returns when Phase 6 fixes it
+#   answer.must_include     moves 0.062 within one commit on the rag suite
+#   routing.accuracy        1.0000 across 15 runs, but Phase 4 grows the
+#                           dataset from a 15-case slice to 60+ and the number
+#                           will drop for that reason alone. A floor set now
+#                           would fail on the commit that improves coverage.
+#   ragas faithfulness/relevancy, latency, cost
+#
+# `GATEABLE` in backend/app/evals/report.py is the enforced list; a floor here
+# for anything outside it is ignored rather than silently honoured.

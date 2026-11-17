@@ -228,13 +228,25 @@ def test_the_table_marks_a_regression_against_a_baseline() -> None:
 def test_only_deterministic_metrics_are_gateable() -> None:
     """A ragas metric moving may mean the judge had a different day. Worse,
     relevancy penalises the caveats the prompt explicitly requires, so a drop
-    there can mean the answer got more correct."""
+    there can mean the answer got more correct.
+
+    This test used to assert `citations.validity in GATEABLE`, which was the
+    belief rather than the measurement: it moves by 0.074 within a single
+    commit. Two others went the same way — `answer.refusal_correct` and, on
+    the rag suite, `answer.must_include`. What is left gates because it was
+    measured at exactly zero spread across 23 smoke runs, not because a
+    calculation over fixed inputs ought to be deterministic. The three are
+    report-only and the reasoning is in `app/evals/report.py`.
+    """
     from app.evals.report import GATEABLE
 
     assert "answer.faithfulness" not in GATEABLE
     assert "answer.relevancy" not in GATEABLE
     assert "retrieval.mrr" in GATEABLE
-    assert "citations.validity" in GATEABLE
+    # Removed after measurement; see the docstring.
+    assert "citations.validity" not in GATEABLE
+    assert "answer.refusal_correct" not in GATEABLE
+    assert "answer.must_include" not in GATEABLE
 
 
 def test_the_report_records_which_metrics_may_gate() -> None:
