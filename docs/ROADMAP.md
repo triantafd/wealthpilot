@@ -263,7 +263,12 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       the SQL, its prompt, and `evals/datasets/sql.jsonl` (≥40 cases, compared
       by **result rows**, not SQL text). The bulk of this phase. The cases are
       written alongside the node rather than after it, because an agent ticked
-      off before anything scores it is a feature nobody has measured. The
+      off before anything scores it is a feature nobody has measured. Four
+      cases the security review asked for: a direct injection in the question,
+      a double refusal whose visible text names no relation, a forced
+      `QueryFailed` (the regression guard for the leak it found), and a
+      cross-client question recorded as expected-to-flip when Phase 9 scopes
+      queries. The
       supervisor's third destination was named here too and is the next item;
       that was one piece of work written down twice
 - [ ] **Supervisor gains a third destination**, a confidence threshold with a
@@ -279,7 +284,10 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       agent can read the account's allocation the right destination may be
       `portfolio` — a call that cannot be made before this destination exists.
       One destination per commit, deliberately: with two new routes in one
-      change, a drop in `routing.accuracy` names no culprit
+      change, a drop in `routing.accuracy` names no culprit. When the portfolio
+      node is wired here, take its `thread_id` from `thread_of(config)` like
+      every other node rather than from state — it reads state today because
+      nothing calls it through the graph yet
 - [ ] **A question about the last answer has nowhere to go.** Observed in the
       app on 2026-10-19 and reproduced: ask the fee question, then "whre did
       you see that". The supervisor resolves the pronoun correctly —

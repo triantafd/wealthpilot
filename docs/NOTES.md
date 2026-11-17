@@ -146,6 +146,25 @@ trusting a single run.*
 
 ---
 
+- **A portfolio question is answered for any account id it names.** The
+  executor and `run_sql` had no caller until the portfolio agent, so the
+  authorisation gap recorded for Phase 9 is now reachable from free text:
+  `v_account_summary` carries `client_name`, `adviser` and `total_value` for
+  the whole book, and the only thing scoping a query today is rule 8 of
+  `portfolio_sql.md`, which is a prompt. Phase 9 owns the input side, which
+  needs auth to mean anything. **The output side does not** — comparing the
+  `client_id`s in the returned rows against the ids the question named needs
+  no identity at all, and is the seed of the Phase 6 output guard. Raised by
+  the security review of 2026-11-17.
+
+- **`audit_log.result` holds the rows a query returned**, up to 16,000
+  characters of client positions, with no retention policy. Deliberate — an
+  audit row that does not say what was read is not evidence — and the same is
+  true of the answer itself, which the checkpointer persists. The gap is that
+  nothing expires either. A `redact` hook on `ToolSpec` would let `run_sql`
+  audit `sql` and `row_count` without the rows, if the decision ever goes the
+  other way.
+
 ## Decisions taken
 
 ### Chunk sizes: not tried, deliberately

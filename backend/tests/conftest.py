@@ -361,15 +361,23 @@ class FakeChatModel:
         *,
         stream_schemas: tuple[type, ...] = (),
         served_model: str | None = None,
+        prose: str = "",
     ) -> None:
         self._by_schema = by_schema
         self._stream_schemas = stream_schemas
+        #: What an unstructured call streams back. The portfolio agent's second
+        #: call asks for prose rather than a schema, so `by_schema` has nothing
+        #: to answer it with.
+        self.prose = prose
         #: What this fake claims the *provider* served, reported the way a real
         #: one does. None by default, which is what the suite looked like
         #: before `usage.model_served` existed.
         self.served_model = served_model
         self.schema: type | None = None
         self.messages: list[Any] = []
+        #: Every call's messages, in order. `messages` is the last call alone,
+        #: which cannot show what a *retry* was told.
+        self.history: list[Any] = []
         self.calls: dict[type, int] = {}
 
     def with_structured_output(self, schema: type, **_: object) -> Any:
@@ -380,6 +388,7 @@ class FakeChatModel:
 
     async def ainvoke(self, messages: Any, **_: object) -> Any:
         self.messages = messages
+        self.history.append(messages)
         if self.schema not in self._by_schema:
             raise AssertionError(
                 f"FakeChatModel was not given a response for {self.schema!r}; "
@@ -395,6 +404,34 @@ class FakeChatModel:
         # The last response repeats rather than raising: a node called once
         # more than a test anticipated should not fail on the fake.
         return prepared[min(index, len(prepared) - 1)]
+
+    async def astream(self, messages: Any, **_: object) -> Any:
+        """Stream `prose` in pieces, the way a provider streams plain text.
+
+        Split in four and with the two metadata facts on different chunks, for
+        the reason `FragmentedModel` gives below: an implementation that reads
+        the model name off the usage chunk works against a tidier fake and
+        returns None against the real thing.
+        """
+        from langchain_core.messages import AIMessageChunk
+
+        self.messages = messages
+        self.history.append(messages)
+        text = self.prose
+        width = max(1, len(text) // 4 + 1)
+        fragments = [text[i : i + width] for i in range(0, len(text), width)] or [""]
+
+        for index, fragment in enumerate(fragments):
+            last = index == len(fragments) - 1
+            yield AIMessageChunk(
+                content=fragment,
+                usage_metadata=FragmentedModel.USAGE if last else None,
+                response_metadata=(
+                    {"model_name": self.served_model, "finish_reason": "stop"}
+                    if self.served_model and index == len(fragments) - 2
+                    else {}
+                ),
+            )
 
 
 class FragmentedChain:
