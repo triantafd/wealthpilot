@@ -13,16 +13,12 @@ Every rejection case here is a statement a model could plausibly emit, or one
 an injected instruction would try. None of them are invented syntax.
 """
 
-from collections.abc import AsyncIterator
 from datetime import date
 from decimal import Decimal
 from typing import Final
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.config import get_settings
 from app.tools.sql import executor
 from app.tools.sql.executor import (
     MAX_ROWS,
@@ -300,95 +296,6 @@ def test_the_cap_is_configurable_but_still_a_ceiling() -> None:
 # --------------------------------------------------------------------------
 # run_select(): against the real role and the real views
 # --------------------------------------------------------------------------
-
-
-@pytest.fixture
-async def readonly(test_database: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
-    """Point the executor's engine at the test database.
-
-    `get_readonly_engine` composes its DSN from `POSTGRES_DB`, so left alone
-    it would read *development* data as the read-only role — with every check
-    in the module reporting itself working. `conftest` refuses it outright for
-    that reason; this fixture is the sanctioned exception, and it asserts the
-    database it substitutes.
-    """
-    settings = get_settings()
-    database = test_database.rsplit("/", 1)[-1]
-    assert database.endswith("_test"), database
-    if settings.postgres_ro_user is None or settings.postgres_ro_password is None:
-        pytest.fail("POSTGRES_RO_USER and POSTGRES_RO_PASSWORD must be set; see .env.example")
-
-    url = (
-        f"postgresql+asyncpg://{settings.postgres_ro_user}:"
-        f"{settings.postgres_ro_password.get_secret_value()}"
-        f"@{settings.postgres_host}:{settings.postgres_port}/{database}"
-    )
-    engine = create_async_engine(url)
-    monkeypatch.setattr(executor, "get_readonly_engine", lambda: engine)
-    try:
-        yield
-    finally:
-        await engine.dispose()
-
-
-@pytest.fixture
-async def a_portfolio(test_database: str) -> AsyncIterator[str]:
-    """Five committed positions on one account.
-
-    Committed, and therefore on its own engine: `run_select` connects as a
-    different role on a different pool, so it cannot see anything held open
-    inside `db_session`'s transaction. Removed afterwards in dependency
-    order, because nothing else clears the firm tables.
-    """
-    engine = create_async_engine(test_database)
-    account, client = ACCOUNT, CLIENT
-    try:
-        async with engine.begin() as connection:
-            await connection.execute(
-                text(
-                    "INSERT INTO clients (id, full_name, segment) VALUES (:i, 'Exec Test', 'hnw')"
-                ),
-                {"i": client},
-            )
-            await connection.execute(
-                text(
-                    "INSERT INTO accounts (id, client_id, account_type, mandate) "
-                    "VALUES (:a, :c, 'GIA', 'discretionary')"
-                ),
-                {"a": account, "c": client},
-            )
-            for index in range(5):
-                instrument = f"IN-EX{index}"
-                await connection.execute(
-                    text(
-                        "INSERT INTO instruments (id, name, asset_class) VALUES (:i, :n, 'equity')"
-                    ),
-                    {"i": instrument, "n": f"Instrument {index}"},
-                )
-                await connection.execute(
-                    text(
-                        "INSERT INTO prices (instrument_id, price_date, close) VALUES (:i, :d, :c)"
-                    ),
-                    {"i": instrument, "d": PRICED, "c": Decimal("10.00")},
-                )
-                await connection.execute(
-                    text(
-                        "INSERT INTO holdings (account_id, instrument_id, quantity, as_of) "
-                        "VALUES (:a, :i, :q, :d)"
-                    ),
-                    {"a": account, "i": instrument, "q": Decimal("100"), "d": PRICED},
-                )
-        yield account
-    finally:
-        async with engine.begin() as connection:
-            await connection.execute(
-                text("DELETE FROM holdings WHERE account_id = :a"), {"a": account}
-            )
-            await connection.execute(text("DELETE FROM prices WHERE instrument_id LIKE 'IN-EX%'"))
-            await connection.execute(text("DELETE FROM accounts WHERE id = :a"), {"a": account})
-            await connection.execute(text("DELETE FROM instruments WHERE id LIKE 'IN-EX%'"))
-            await connection.execute(text("DELETE FROM clients WHERE id = :c"), {"c": client})
-        await engine.dispose()
 
 
 async def test_a_real_query_returns_real_rows(readonly: None, a_portfolio: str) -> None:

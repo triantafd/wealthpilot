@@ -292,9 +292,24 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       HIGH cases the role's grants stopped the attempt reaching client *data*
       — what leaked was schema — but "another defence happened to hold" is not
       the property worth shipping. 77 tests, nine deliberate breaks
-- [ ] **Portfolio agent:** the agent that writes the SQL the executor runs —
-      a `run_sql` entry in the registry at `READ`, the node, and the prompt.
-      The bulk of this phase
+- [x] **`run_sql` in the registry, at `READ`.** The executor put behind the
+      registry so the tier, the audit row and the tracing apply to it like
+      they do to every other tool. **Result:** a thin wrapper, and two things
+      worth knowing about it. The `AsyncSession` the registry hands a tool
+      authenticates as the database **owner**, and this tool deliberately
+      ignores it — `run_select` opens its own read-only pool. Using the
+      session in scope is one line shorter and would undo every grant with
+      the rest of the suite still green, so there is a test that fails when
+      the boundary is crossed. And a **refusal is audited**: the executor's
+      errors become `QueryRefused` / `QueryFailed`, which `execute()` records
+      as an `error` row written out of band, so an injection attempt leaves a
+      record even though `SqlRejected` is raised before a connection exists.
+      Two exception types rather than one, because `_audit` stores the type
+      name and a statement we refused is a safety signal while one Postgres
+      abandoned is an operational one. The audit row holds the SQL that
+      *ran* — re-rendered, with its LIMIT — not what the model proposed
+- [ ] **Portfolio agent:** the node that writes the SQL, its prompt, and the
+      supervisor's third destination. The bulk of this phase
 - [ ] **Supervisor gains a third destination** and a confidence threshold with a
       defined fallback. Phase 4a routes between two destinations with no
       threshold, which is enough to make routing a real decision but not enough
@@ -393,15 +408,14 @@ above; these are the rest.*
       **Matters when:** the first dependency bump after this phase. A patch
       release that changes how a comment or a function-in-FROM is modelled
       would move the boundary with no visible diff in this repo
-- [ ] **A refusal should leave an audit row.** `run_select` writes nothing to
-      `audit_log`; the registry entry in the next task will cover the success
-      path, but the *interesting* row is the refusal, because `SqlRejected` is
-      where an injection attempt shows up — and it is raised before any
-      connection, so the wrapper has to log it rather than logging only what
-      ran. `SqlResult.sql` is the right field for the success path: it is what
-      actually executed, after the rewrite.
-      **Matters when:** the next task, which is where it should land rather
-      than being deferred further
+- [x] **A refusal leaves an audit row.** Closed by the `run_sql` item above,
+      in the task it belonged to rather than deferred further. The mechanism
+      is cheaper than expected: `execute()` already audits any exception from
+      a tool body, out of band, so raising a `ToolError` out of the wrapper
+      was enough. Worth stating precisely, because the first version of this
+      note claimed the translation was what produced the row — it is not; the
+      row comes from `execute`, and the translation buys the `ToolError`
+      contract and a distinguishable type name in `audit_log.error`
 
 **Done when:** routing accuracy and SQL execution accuracy are in the eval
 report.
