@@ -6,11 +6,18 @@ The point of the project is not the chatbot. It is the engineering around it: ev
 
 ## Status
 
-**Phases 0–4a complete. Phase 5 — making the chat usable — is next.** A
-question goes through a LangGraph supervisor to a research or action agent,
-streams back over SSE, and a HIGH-risk action pauses for a human before
-anything happens. Around it: a 75-case eval suite with a frozen baseline,
-Langfuse tracing, and per-request token, cost and latency accounting.
+**Phases 0–5 complete. Phase 4 — the text-to-SQL portfolio agent — is
+next.** The numbering is deliberate: Phase 5 was brought forward so the app
+would be usable before the second agent landed.
+
+A question goes through a LangGraph supervisor to a research or action agent
+and streams back token by token over SSE, with its citations. A HIGH-risk
+action never runs on the model's say-so — it pauses at an approval gate, and a
+human approves or rejects it in an inbox that afterwards says who decided and
+what the decision authorised. The conversation survives a page reload,
+restored from the checkpointer with its routes, citations and costs intact.
+Around it: a 75-case eval suite with a frozen baseline, Langfuse tracing, and
+per-request token, cost and latency accounting.
 
 | Area | State |
 |---|---|
@@ -19,10 +26,11 @@ Langfuse tracing, and per-request token, cost and latency accounting.
 | Tracing, `usage` table, `/usage`, per-model pricing | **working** |
 | Retrieval variants: full-text, hybrid RRF, cross-encoder | **measured, off by default** (`docs/EXPERIMENTS.md`) |
 | LangGraph supervisor, research and action agents | **working** (`backend/app/agents/`) |
-| SSE streaming, chat page | **working, thin** — one turn at a time, no token streaming; Phase 5 |
-| Risk-tiered tools, approval gate, audit log | **working** (`backend/app/tools/registry.py`) |
-| Conversation history, markdown, documents page | not built — Phase 5 |
-| Text-to-SQL portfolio agent | not built — Phase 4 |
+| SSE streaming, chat page | **working** — token by token, whole conversation, markdown rendered |
+| Risk-tiered tools, approval gate, audit log | **working** — every attempt audited, with who authorised it (`backend/app/tools/registry.py`) |
+| Approvals inbox: who approved what, and what it did | **working** (`frontend/src/features/approvals/`) |
+| Conversation history across a reload, documents page | **working** — restored from the checkpointer (`backend/app/history.py`) |
+| Text-to-SQL portfolio agent | not built — **Phase 4, next** |
 | Guardrails, prompt-injection defence, safety evals | not built — Phase 6 |
 | CI eval gate | not built — Phase 8 |
 | AWS deployment, MCP server | not built — Phases 9–10 |
@@ -60,17 +68,27 @@ Phase 1 baseline: vector-only retrieval, measured over 75 golden questions,
 averaged across three runs of the same suite. `evals/reports/baseline.json`
 carries the per-case detail and the run-to-run spread.
 
-| Metric | Phase 1 baseline | Current | Spread over 3 runs |
+**Current** is the full-suite run of 2026-10-19 — three runs, the same 75
+cases, the same config (`openai:gpt-4o-mini`, `text-embedding-3-small`,
+vector, top-k 6, no reranker), report `evals/reports/20261019-142323.json` at
+commit `0abe814`. Nothing merged since then changes model behaviour, so it
+still describes `main`. The one movement worth reading is refusal
+correctness, 100% → 98.7%: that is a single case, and `docs/EXPERIMENTS.md`
+traces it to provider drift on an unpinned model alias rather than to a change
+in this repo — six days apart, same inputs, on both the streamed and the
+non-streamed path. Phase 8 pins the model, which is the fix.
+
+| Metric | Phase 1 baseline | Current | Spread, current, 3 runs |
 |---|---|---|---|
-| Retrieval MRR | 0.747 | — | ±0.000 |
-| Retrieval hit@1 | 62.9% | — | ±0.000 |
-| Retrieval hit@6 | 97.1% | — | ±0.000 |
-| Citation validity | 98.4% | — | ±0.003 |
-| Faithfulness (Ragas) | 87.0% | — | ±0.011 |
-| Answer relevancy (Ragas) | 62.1% | — | ±0.008 |
-| Refusal correctness | 100% | — | ±0.000 |
-| p95 latency | 3.5 s | — | ±0.46 s |
-| Cost per query | $0.00032 | — | ±0.000 |
+| Retrieval MRR | 0.747 | 0.747 | ±0.000 |
+| Retrieval hit@1 | 62.9% | 62.9% | ±0.000 |
+| Retrieval hit@6 | 97.1% | 97.1% | ±0.000 |
+| Citation validity | 98.4% | 97.8% | ±0.006 |
+| Faithfulness (Ragas) | 87.0% | 90.2% | ±0.005 |
+| Answer relevancy (Ragas) | 62.1% | 60.8% | ±0.015 |
+| Refusal correctness | 100% | 98.7% | ±0.000 |
+| p95 latency | 3.5 s | 2.8 s | not measured per-run |
+| Cost per query | $0.00032 | $0.00032 | not measured per-run |
 | Routing accuracy | *Phase 4* | | |
 | SQL execution accuracy | *Phase 4* | | |
 | Safety pass rate | *Phase 6* | | |
@@ -83,7 +101,10 @@ The Ragas metrics are **report-only**, not gates. An LLM judge moves on its own
 — the spread column is how much — and answer relevancy penalises the caveats the
 research prompt explicitly requires, so a drop there can mean the answer got
 *more* correct. Everything with a ±0.000 spread is deterministic and therefore
-**eligible** to gate CI; the gate itself arrives in Phase 8.
+**eligible** to gate CI; the gate itself arrives in Phase 8. Refusal
+correctness is the case that shows why the gate needs the model pinned first:
+it is deterministic *and* currently one case below the 1.00 it would be gated
+at, for a reason outside this repo.
 
 ## Quick start
 
