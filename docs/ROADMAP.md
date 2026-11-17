@@ -738,6 +738,24 @@ CI; today that is false, and it is two days to make true. It follows Phase 5 so
 the thresholds are set once the answer path, including streaming, is stable.*
 
 - [ ] `evals/thresholds.yaml`; fail CI if a metric drops below threshold or regresses more than X% vs baseline
+- [x] **Record the model the provider actually served.** Done before the pin
+      below, because the pin is a claim and this is what can check it: a
+      threshold set against an alias measures someone else's release, and with
+      only the alias recorded nothing can say which model produced which
+      number. **Result:** `usage.model_served` (migration `53252bedd4fb`),
+      read from `response_metadata["model_name"]`, which carries the API's own
+      `model` field. A second column, not a correction — `app/pricing.py` is
+      keyed on the alias, so `model` must stay as configured or the cost comes
+      out NULL, which is exactly what the pin below would have caused
+      silently. Two things found rather than assumed: on the streaming path
+      the provider sends `model_name` on the chunk carrying `finish_reason`
+      and the token counts on a *later* chunk, so reading the model off the
+      usage chunk — the obvious implementation — yields None on the only path
+      the graph runs in production; and a real call confirms the end to end,
+      `openai:gpt-4o-mini` → **`gpt-4o-mini-2024-07-18`**, which is also the
+      answer to what the pin should name. Existing rows stay NULL: we do not
+      know what served them. No eval run: the request to the model is
+      unchanged, only what is read off the response
 - [ ] **Pin `LLM_MODEL` to a dated snapshot, before setting any threshold.**
       It is the alias `openai:gpt-4o-mini` in `app/config.py` and
       `.env.example`, and the provider moves what it serves: the full-suite

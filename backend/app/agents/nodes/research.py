@@ -143,6 +143,7 @@ async def research_agent(
             "inputTokens": result.usage.input_tokens,
             "outputTokens": result.usage.output_tokens,
         },
+        "model_served": result.usage.model,
     }
     # Deliberately does not write `route`: the supervisor decides it, and this
     # node echoing it produced a second `route` stream event with no confidence

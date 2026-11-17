@@ -356,10 +356,18 @@ class FakeChatModel:
     """
 
     def __init__(
-        self, by_schema: dict[type, Any], *, stream_schemas: tuple[type, ...] = ()
+        self,
+        by_schema: dict[type, Any],
+        *,
+        stream_schemas: tuple[type, ...] = (),
+        served_model: str | None = None,
     ) -> None:
         self._by_schema = by_schema
         self._stream_schemas = stream_schemas
+        #: What this fake claims the *provider* served, reported the way a real
+        #: one does. None by default, which is what the suite looked like
+        #: before `usage.model_served` existed.
+        self.served_model = served_model
         self.schema: type | None = None
         self.messages: list[Any] = []
         self.calls: dict[type, int] = {}
@@ -431,10 +439,24 @@ class FragmentedModel:
         width = max(1, len(text) // self.PIECES + 1)
         fragments = [text[i : i + width] for i in range(0, len(text), width)]
 
+        served = self._model.served_model
         for index, fragment in enumerate(fragments):
             last = index == len(fragments) - 1
-            # Usage rides on the final chunk, as the provider sends it.
-            yield AIMessageChunk(content=fragment, usage_metadata=self.USAGE if last else None)
+            # The provider does not send both facts on one chunk, and copying
+            # that matters: langchain-openai attaches `model_name` to the chunk
+            # carrying `finish_reason`, and the token counts arrive on a later
+            # one. A fake that put them together would pass an implementation
+            # that only ever looked at the usage chunk.
+            second_to_last = index == len(fragments) - 2
+            yield AIMessageChunk(
+                content=fragment,
+                usage_metadata=self.USAGE if last else None,
+                response_metadata=(
+                    {"model_name": served, "finish_reason": "stop"}
+                    if served and second_to_last
+                    else {}
+                ),
+            )
 
 
 def fake_model(answer: str, *citations: "Citation") -> Any:
@@ -455,6 +477,7 @@ def fake_graph_model(
     outcome: str = "propose",
     detail: str = "",
     stream_answer: bool = False,
+    served_model: str | None = None,
 ) -> Any:
     """A chat model for a whole graph run: routes, then answers.
 
@@ -481,6 +504,7 @@ def fake_graph_model(
         # it arrived, and one streaming fake for every test would make each of
         # them depend on the chain's shape.
         stream_schemas=(GeneratedAnswer,) if stream_answer else (),
+        served_model=served_model,
     )
 
 

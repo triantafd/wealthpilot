@@ -94,11 +94,11 @@ class UsageSummary:
 _INSERT = text(
     """
     INSERT INTO usage (
-        thread_id, user_id, route, model,
+        thread_id, user_id, route, model, model_served,
         input_tokens, output_tokens, cost_usd, latency_ms, created_at
     )
     VALUES (
-        :thread_id, :user_id, :route, :model,
+        :thread_id, :user_id, :route, :model, :model_served,
         :input_tokens, :output_tokens, :cost_usd, :latency_ms, clock_timestamp()
     )
     RETURNING id
@@ -174,6 +174,7 @@ async def record_usage(
     model: str,
     input_tokens: int,
     output_tokens: int,
+    model_served: str | None = None,
     latency_ms: int | None = None,
     route: str | None = None,
     thread_id: str | None = None,
@@ -181,6 +182,10 @@ async def record_usage(
     cost_usd: Decimal | None = None,
 ) -> int:
     """Record one request and return the new row's id.
+
+    `model` is what was asked for and is what the cost is derived from;
+    `model_served` is what the provider reported running, recorded so a future
+    number can be attributed to a model rather than argued about.
 
     Cost is derived from `model` and the token counts unless given explicitly.
     An unpriced model records NULL rather than zero, so it cannot be mistaken
@@ -206,6 +211,7 @@ async def record_usage(
             "user_id": user_id,
             "route": route,
             "model": model,
+            "model_served": model_served,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "cost_usd": cost,

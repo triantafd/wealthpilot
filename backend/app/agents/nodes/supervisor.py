@@ -83,6 +83,7 @@ async def supervise(state: dict[str, Any], chat_model: BaseChatModel) -> dict[st
         # making it conditional would mean one more thing that can be absent.
         "standalone_question": routing.standalone_question.strip(),
         "usage": {"inputTokens": usage.input_tokens, "outputTokens": usage.output_tokens},
+        "model_served": usage.model,
     }
 
 

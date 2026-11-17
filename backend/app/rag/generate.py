@@ -16,7 +16,7 @@ import json
 import re
 import warnings
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -88,6 +88,21 @@ class TokenUsage:
     input_tokens: int = 0
     output_tokens: int = 0
 
+    model: str | None = None
+    """The model the provider *served*, not the one we asked for.
+
+    `LLM_MODEL` is an alias — `openai:gpt-4o-mini` — and the provider decides
+    what runs behind it. Recording only the alias is what made the Phase 5
+    investigation into `refusal-cyber-01` take ten manual calls to conclude
+    "provider drift": every usage row for six weeks said the same thing, so
+    nothing could say which model produced which number. langchain-openai puts
+    the served name in `response_metadata["model_name"]`, taken from the API's
+    own `model` field.
+
+    None when the provider did not report one, which is every fake model in
+    the test suite. Null therefore means "not reported", not "unknown model".
+    """
+
     @property
     def total_tokens(self) -> int:
         return self.input_tokens + self.output_tokens
@@ -95,9 +110,12 @@ class TokenUsage:
     @classmethod
     def from_message(cls, message: object) -> "TokenUsage":
         usage = getattr(message, "usage_metadata", None) or {}
+        metadata = getattr(message, "response_metadata", None) or {}
+        served = metadata.get("model_name")
         return cls(
             input_tokens=int(usage.get("input_tokens", 0)),
             output_tokens=int(usage.get("output_tokens", 0)),
+            model=str(served) if served else None,
         )
 
 
@@ -436,6 +454,7 @@ async def _stream_answer(
     # The handler turns this into a generation span carrying the rendered
     # prompt, the model's raw output and the token counts. Empty list when
     # tracing is off.
+    served: str | None = None
     async for chunk in step.astream(messages, config={"callbacks": langchain_callbacks()}):
         delta = accumulator.feed(chunk_text(getattr(chunk, "content", "")))
         if delta and on_prose is not None:
@@ -446,6 +465,18 @@ async def _stream_answer(
         # parsed object, which no longer exists on this path.
         if getattr(chunk, "usage_metadata", None):
             usage = TokenUsage.from_message(chunk)
+        # Tracked separately, because the two facts do not arrive together.
+        # langchain-openai attaches `model_name` to the chunk carrying
+        # `finish_reason`, while the token counts ride on a later chunk
+        # requested by `stream_options`. Reading the model off the usage chunk
+        # alone therefore yields None on this path — found in the library
+        # source, not by assuming the final chunk has everything.
+        reported = (getattr(chunk, "response_metadata", None) or {}).get("model_name")
+        if reported:
+            served = str(reported)
+
+    if served and usage.model != served:
+        usage = replace(usage, model=served)
 
     return accumulator.final(), usage, accumulator.json_text
 
