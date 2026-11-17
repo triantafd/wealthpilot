@@ -259,16 +259,27 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       name and a statement we refused is a safety signal while one Postgres
       abandoned is an operational one. The audit row holds the SQL that
       *ran* — re-rendered, with its LIMIT — not what the model proposed
-- [ ] **Portfolio agent:** the node that writes the SQL, its prompt, and the
-      supervisor's third destination. The bulk of this phase
-- [ ] **Supervisor gains a third destination** and a confidence threshold with a
-      defined fallback. Phase 4a routes between two destinations with no
-      threshold, which is enough to make routing a real decision but not enough
-      to need one
-- [ ] **Grow** `routing_slice.jsonl` into `evals/datasets/routing.jsonl`
-      (≥60 cases) covering every destination, and retire the slice file.
-      Two shapes the slice has none of: an instruction naming **no account id**,
-      and a message carrying **two requests at once**
+- [ ] **Portfolio agent, with the cases that judge it.** The node that writes
+      the SQL, its prompt, and `evals/datasets/sql.jsonl` (≥40 cases, compared
+      by **result rows**, not SQL text). The bulk of this phase. The cases are
+      written alongside the node rather than after it, because an agent ticked
+      off before anything scores it is a feature nobody has measured. The
+      supervisor's third destination was named here too and is the next item;
+      that was one piece of work written down twice
+- [ ] **Supervisor gains a third destination**, a confidence threshold with a
+      defined fallback, and the dataset that measures it. Phase 4a routes
+      between two destinations with no threshold, which is enough to make
+      routing a real decision but not enough to need one. In the same commit,
+      grow `routing_slice.jsonl` into `evals/datasets/routing.jsonl` (≥60
+      cases) covering every destination and retire the slice file — two shapes
+      the slice has none of are an instruction naming **no account id** and a
+      message carrying **two requests at once**. Also **`route-vague-cash-01`**:
+      "cash is piling up in AC-00005, is that a problem" expects `research`
+      today because only the documents could answer it, and once the portfolio
+      agent can read the account's allocation the right destination may be
+      `portfolio` — a call that cannot be made before this destination exists.
+      One destination per commit, deliberately: with two new routes in one
+      change, a drop in `routing.accuracy` names no culprit
 - [ ] **A question about the last answer has nowhere to go.** Observed in the
       app on 2026-10-19 and reproduced: ask the fee question, then "whre did
       you see that". The supervisor resolves the pronoun correctly —
@@ -304,13 +315,6 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       current behaviour and has to change with it, which is the one case where
       editing a dataset is correct rather than cheating: the expectation was
       wrong, not the run
-- [ ] **Revisit `route-vague-cash-01`.** "cash is piling up in AC-00005, is
-      that a problem" expects `research` today, because only the documents can
-      answer it. Once the portfolio agent can read the account's actual
-      allocation, the right destination may be `portfolio` — the question is
-      about this account's data, not about policy in the abstract
-- [ ] `evals/datasets/sql.jsonl` (≥40 cases, compared by **result rows**, not
-      SQL text)
 - [ ] **Redact bound parameters out of `audit_log.error` — now due.** Carried
       from Phase 5, where the trigger was "when the text-to-SQL tool lands".
       It has landed. The string is `f"{type(exc).__name__}: {exc}"`, and a
