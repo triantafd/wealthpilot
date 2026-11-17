@@ -36,6 +36,7 @@ dependencies = [
     # by app/db/migrations/env.py, verified in the spike.
     "langgraph>=1.2,<2",
     "langgraph-checkpoint-postgres>=3.1,<4",
+    "sqlglot>=27,<28",
 ]
 
 # `app` is installed into the venv rather than merely being on sys.path, so

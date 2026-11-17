@@ -170,10 +170,19 @@ def _development_database_is_off_limits() -> Iterator[None]:
     globals when it runs. Both caches are cleared so a factory built before
     the guard cannot outlive it.
 
+    `app.tools.sql.executor.get_readonly_engine` is guarded the same way and
+    for a sharper reason: it composes its DSN from `POSTGRES_DB` like the
+    others, but authenticates as the *read-only* role — so a test reaching it
+    would read development data while every grant and check in that module
+    reported itself working correctly. Nothing about the failure would look
+    like one. `tests/test_sql_executor.py` points it at the test database
+    explicitly.
+
     Anything in the suite that needs a database gets one from `db_session`,
     or builds its own engine against `_test_database_name()`.
     """
     import app.db.session as session_module
+    import app.tools.sql.executor as executor_module
 
     def refuse() -> Any:
         raise RuntimeError(
@@ -185,13 +194,17 @@ def _development_database_is_off_limits() -> Iterator[None]:
         )
 
     real_get_engine = session_module.get_engine
+    real_readonly_engine = executor_module.get_readonly_engine
     session_module.get_engine.cache_clear()
     session_module.get_sessionmaker.cache_clear()
+    executor_module.get_readonly_engine.cache_clear()
     session_module.get_engine = refuse  # type: ignore[assignment]
+    executor_module.get_readonly_engine = refuse  # type: ignore[assignment]
     try:
         yield
     finally:
         session_module.get_engine = real_get_engine
+        executor_module.get_readonly_engine = real_readonly_engine
         session_module.get_sessionmaker.cache_clear()
 
 

@@ -245,9 +245,56 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       per-position values, so it equals the column an adviser can add up —
       two pence further from the exact figure, and consistent with what is on
       screen. 21 tests, six deliberate breaks each caught by the right one
-- [ ] **Portfolio agent:** text-to-SQL on the views above, through that role,
-      with sqlglot validation, an enforced `LIMIT` and a statement timeout in
-      `app/tools/sql/executor.py`. The bulk of this phase
+- [x] **The executor: the only door a generated SELECT goes through.**
+      `app/tools/sql/executor.py`, and `CLAUDE.md` rule 4 is what makes it
+      worth having. **Result:** parse with sqlglot, refuse, rewrite, and then
+      **re-render the statement from the tree that was approved** — validating
+      one string and executing another is how a checker like this gets
+      bypassed, so the string that reaches Postgres is generated from the
+      syntax tree that passed. Refusals: more than one statement; a write or
+      DDL node *anywhere* in the tree, since the root of
+      `WITH x AS (DELETE ... RETURNING *) SELECT * FROM x` is a SELECT; any
+      relation outside the three views, CTE aliases excepted; a query that
+      names no view at all, which is what `SELECT pg_sleep(99)` is; and row
+      locks. `LIMIT` is clamped rather than overridden — sqlglot's `.limit()`
+      *replaces*, so the obvious implementation turns `LIMIT 10` into 100 and
+      returns ten times what was asked for. **One real hole found and closed:**
+      sqlglot re-emits a `--` comment as a `/* ... */` block, so
+      `SELECT * FROM v_holdings -- */ ; DROP TABLE accounts` parsed as one
+      statement and rendered as two, the comment closing itself on the `*/`
+      the attacker supplied. Rendered with `comments=False` now, and the
+      *output* is re-parsed and refused if it is no longer a single query —
+      which closes the class rather than the one case. The allow-list is not
+      redundant with the role, and that was measured: as `wealthpilot_ro` it
+      is possible to read `pg_attribute` and list every column of `clients`,
+      because `pg_catalog` is world-readable and no grant can change that.
+      **Then the security review found two HIGH bypasses, both of which beat
+      the relation allow-list, and both confirmed against the live database
+      rather than argued about.** (1) CTE names were collected from the whole
+      tree, so a CTE defined inside a subquery whitelisted that name
+      *everywhere* — including at the outer level, where Postgres resolves it
+      to the real relation. `... FROM pg_attribute a WHERE ... AND EXISTS
+      (WITH pg_attribute AS (SELECT 1 FROM v_holdings) SELECT 1 FROM
+      pg_attribute)` passed validation and returned every column of
+      `clients`, `email` and `date_of_birth` included. Fixed by resolving CTE
+      visibility per scope, walking up from each relation, plus a belt that
+      refuses a CTE named after a system catalog. (2) Nothing checked function
+      calls, and `EXECUTE` defaults to PUBLIC for most built-ins — so
+      `query_to_xml('SELECT ... FROM pg_attribute', ...)` ran a whole query of
+      its own that no relation check could see into, and `repeat(md5(...),
+      32768)` returned 100MB in 72ms straight into the API process. Fixed with
+      an **allow-list** of analytic functions, because the denylist is
+      unbounded: `query_to_xml`, `table_to_xml`, `cursor_to_xml` and the
+      `pg_get_*def` family are only today's list. Four smaller fixes with it:
+      `statement_timeout = 0` meant *no* timeout, locks were checked at the
+      root only, catalog casts (`'clients'::regclass`) are refused, and
+      unquoted identifiers are now folded the way Postgres folds them. In both
+      HIGH cases the role's grants stopped the attempt reaching client *data*
+      — what leaked was schema — but "another defence happened to hold" is not
+      the property worth shipping. 77 tests, nine deliberate breaks
+- [ ] **Portfolio agent:** the agent that writes the SQL the executor runs —
+      a `run_sql` entry in the registry at `READ`, the node, and the prompt.
+      The bulk of this phase
 - [ ] **Supervisor gains a third destination** and a confidence threshold with a
       defined fallback. Phase 4a routes between two destinations with no
       threshold, which is enough to make routing a real decision but not enough
@@ -299,6 +346,62 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
 - [ ] **Extend** the SSE contract with whatever events the portfolio agent needs,
       updating `shared/stream-events.ts` and `backend/app/api/events.py` together
       and keeping the contract test green
+
+### Known follow-ups from the SQL security review (2026-11-17)
+
+*What the review raised and this phase did **not** fix. Each says when
+deferring it stops being acceptable, so it is a decision rather than a
+forgotten note. The two HIGH findings are fixed and are in the executor item
+above; these are the rest.*
+
+- [ ] **Cap the result in bytes, not only in rows.** `MAX_ROWS` is 100 and
+      nothing bounds how wide a row is: `repeat(md5(random()::text), 32768)`
+      returned 100MB in 72ms, and `run_select` materialises the whole result
+      with `[dict(row) for row in result.mappings()]` before anything sees it.
+      The function allow-list removed `repeat` and `string_agg` as the levers,
+      so this is no longer reachable *today*, but the property worth having is
+      an octet budget with `yield_per` streaming rather than an allow-list that
+      happens to exclude the wide functions. `temp_file_limit` belongs here
+      too: it is the other half of the resource cap and it is SUSET, so it
+      cannot be set by the role or by a migration running as the owner — it
+      needs `postgresql.conf` or a `GRANT SET ON PARAMETER`.
+      **Matters when:** any function returning a large value is added to the
+      allow-list, or the views grow a wide text column. Until then the
+      allow-list is load-bearing for a property it was not designed for,
+      which is the part that should not be left standing indefinitely
+- [ ] **Scope a query to the client it was asked about.** `v_account_summary`
+      carries `client_name`, `segment` and `adviser` for every client in the
+      firm, and nothing in the boundary ties a query to one of them — so "only
+      this client's data" rests on the prompt, which is precisely what the
+      executor's own docstring argues is not a control. The fix that survives
+      a prompt-injected query is scoping in the data: `WHERE client_id =
+      current_setting('app.client_id', true)` inside the views, with
+      `run_select` requiring a client and issuing `SET LOCAL app.client_id`.
+      Note `v_account_allocation` has no `client_id` column, so it needs a
+      migration either way, and that `set_config` had to be refused first —
+      it was reachable until the function allow-list landed.
+      **Matters when:** the agent is reachable by more than one adviser, or
+      any question is asked on behalf of a named client. A single-tenant demo
+      does not expose it; a second user does, immediately
+- [ ] **Pin the parser, and treat a bump as a security change.** `sqlglot` is
+      `>=27,<28`, and the comment-smuggling case shows that the *renderer's*
+      behaviour is part of this boundary rather than an implementation detail.
+      An exact pin, bumped deliberately with `tests/test_sql_executor.py` as
+      the gate. Related: set-returning functions in `FROM` are refused today
+      only because sqlglot gives those nodes an empty table name — an accident
+      of the library, now pinned by a test, not a decision it made for us.
+      **Matters when:** the first dependency bump after this phase. A patch
+      release that changes how a comment or a function-in-FROM is modelled
+      would move the boundary with no visible diff in this repo
+- [ ] **A refusal should leave an audit row.** `run_select` writes nothing to
+      `audit_log`; the registry entry in the next task will cover the success
+      path, but the *interesting* row is the refusal, because `SqlRejected` is
+      where an injection attempt shows up — and it is raised before any
+      connection, so the wrapper has to log it rather than logging only what
+      ran. `SqlResult.sql` is the right field for the success path: it is what
+      actually executed, after the rewrite.
+      **Matters when:** the next task, which is where it should land rather
+      than being deferred further
 
 **Done when:** routing accuracy and SQL execution accuracy are in the eval
 report.
