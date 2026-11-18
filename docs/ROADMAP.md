@@ -392,7 +392,7 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       found no high-severity issue; its four mediums are applied except the
       `status` sibling rule, which is a different prohibition and is in
       `docs/NOTES.md` with the two account ids that prove it
-- [ ] **Redact bound parameters out of `audit_log.error` — now due.** Carried
+- [x] **Redact bound parameters out of `audit_log.error` — now due.** Carried
       from Phase 5, where the trigger was "when the text-to-SQL tool lands".
       It has landed. The string is `f"{type(exc).__name__}: {exc}"`, and a
       SQLAlchemy `DBAPIError` embeds `[SQL: ...] [parameters: ...]` — so every
@@ -402,7 +402,17 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       parameters. Note the executor's own path is already clean — it renders
       the statement whole from the tree, so it binds nothing — which means
       what this catches is the `QueryFailed` case and anything else that
-      reaches the audit through SQLAlchemy
+      reaches the audit through SQLAlchemy.
+      Result: `redact_parameters` in `app/audit.py`, applied inside
+      `write_audit` rather than at the registry's two call sites, so a caller
+      nobody has written yet cannot be the one that forgets. The statement
+      stays, the values become their length and a twelve-character digest —
+      two failures on the same values are still visibly the same failure
+      without the values being stored. Applied to the SSE `error` event as
+      well, which carries the same string to a screen. SQLAlchemy's own
+      `hide_parameters` was considered and refused: it also hides them from
+      local logs, leaves no correlator, and covers only errors that arrive
+      through SQLAlchemy
 - [ ] **Grow** `actions_slice.jsonl` into `evals/datasets/actions.jsonl`
       (≥30 cases), and retire the slice file
 - [ ] **Extend** the SSE contract with whatever events the portfolio agent needs,

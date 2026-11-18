@@ -23,6 +23,7 @@ that cannot be written is the one failure mode this table exists to prevent,
 so anything unserialisable is stringified rather than allowed to raise.
 """
 
+import hashlib
 import json
 import logging
 import uuid
@@ -140,6 +141,50 @@ def clamp(text: str) -> str:
     return text.replace("\x00", "")[:MAX_FIELD_CHARS]
 
 
+#: What SQLAlchemy appends to a `DBAPIError`'s text, and the trailing link that
+#: follows it.
+_PARAMETERS = "[parameters: "
+_BACKGROUND = "(Background on this error at:"
+
+
+def redact_parameters(text: str) -> str:
+    """Replace bound parameter *values* with their length and a digest.
+
+    A failed query reaches this column as `f"{type(exc).__name__}: {exc}"`, and
+    SQLAlchemy's `DBAPIError.__str__` embeds both the statement and the values
+    bound into it — so a timed-out generated query was writing client figures
+    into a table with no redaction and no retention policy. The statement is
+    kept, because a failure nobody can read is not evidence.
+
+    The digest is what makes this more than deletion: the same values failing
+    twice produce the same twelve characters, so a pattern is still visible
+    without the values being stored. The length is there because an empty
+    parameter list and a thousand of them are different facts.
+
+    SQLAlchemy's own `hide_parameters=True` would do half of this at the
+    engine, and is deliberately not used: it would hide parameters from local
+    logs as well, leaves no correlator behind, and covers only errors that
+    arrive through SQLAlchemy. This covers the column.
+    """
+    start = text.find(_PARAMETERS)
+    if start == -1:
+        return text
+
+    # The values can contain brackets of their own, so the close is found from
+    # the right — before SQLAlchemy's trailing link when there is one.
+    tail = text.find(_BACKGROUND, start)
+    end = text.rfind("]", start, tail if tail != -1 else len(text))
+    if end == -1:
+        return f"{text[:start]}{_PARAMETERS}redacted]"
+
+    values = text[start + len(_PARAMETERS) : end]
+    digest = hashlib.sha256(values.encode("utf-8", "replace")).hexdigest()[:12]
+    return (
+        f"{text[:start]}{_PARAMETERS}{len(values)} chars redacted, "
+        f"sha256:{digest}]{text[end + 1 :]}"
+    )
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -231,8 +276,11 @@ async def write_audit(
         outcome=outcome,
         # Not run through `jsonable` — it is text, not JSON — but it comes
         # from `str(exc)`, which for a database error embeds the statement
-        # that failed, so it gets the same bound and the same scrubbing.
-        error=clamp(error) if error is not None else None,
+        # that failed *and the values bound into it*, so it gets the same
+        # bound and the same scrubbing. Redacted here rather than at the two
+        # call sites in the registry, so that a caller nobody has written yet
+        # cannot be the one that forgets.
+        error=clamp(redact_parameters(error)) if error is not None else None,
         duration_ms=duration_ms,
         approval_id=approval_id,
         approver=approver,

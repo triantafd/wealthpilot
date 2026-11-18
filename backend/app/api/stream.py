@@ -56,6 +56,7 @@ from app.api.events import (
     TokenEvent,
     Usage,
 )
+from app.audit import redact_parameters
 from app.pricing import cost_of
 from app.rag.embeddings import Embedder
 from app.usage import record_usage
@@ -256,7 +257,11 @@ async def stream_turn(
             route=route,
             model_served=model_served,
         )
-        yield ErrorEvent(message=f"{type(exc).__name__}: {exc}")
+        # Redacted like the audit column, and for a worse reason: this one
+        # goes to a screen. A database error carries the statement and the
+        # values bound into it, and an adviser is the last person who should
+        # read either.
+        yield ErrorEvent(message=redact_parameters(f"{type(exc).__name__}: {exc}"))
         return
 
     elapsed_ms = (time.perf_counter() - started) * 1000

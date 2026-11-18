@@ -258,6 +258,19 @@ trusting a single run.*
   now discloses an account's *mandate* on the same unscoped terms, because its
   refusal names it — the same root, one more field.
 
+- **PostgreSQL's own messages can still carry a value, and the redaction does
+      not catch them.** `redact_parameters` removes SQLAlchemy's
+      `[parameters: ...]` block, which is where a generated query's bound
+      values were landing. A constraint violation is different: asyncpg sends
+      *"Key (id)=(AC-00001) already exists"* as part of the message itself,
+      and no structural marker separates it from the rest. Low, because an id
+      of that shape is already in `audit_log.args` in full, so this is not a
+      new class of data — unlike bound parameters, which could be any value
+      from anywhere. Recorded 2026-11-18.
+      **Matters when:** a tool binds something the args column does not
+      already hold, or Phase 9 adds a table whose constraints quote client
+      data.
+
 - **A suspended or closed account can still be rebalanced.** The execution-only
       prohibition is item 1 of six in `mandates-and-rebalancing.md`'s prohibited
       list; item 6 is trading on a `closed` or `suspended` account, and the

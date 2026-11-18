@@ -373,6 +373,38 @@ async def test_a_failure_arrives_as_an_error_event_not_an_exception(
     assert "provider exploded" in events[-1].message  # type: ignore[attr-defined]
 
 
+async def test_an_error_event_carries_no_bound_parameters(db_session: AsyncSession) -> None:
+    """The same redaction as `audit_log.error`, for a worse destination: this
+    one goes to a screen. A database error embeds the statement and the values
+    bound into it, and an adviser is the last person who should read either."""
+
+    class Broken:
+        def with_structured_output(self, schema: type, **_: object) -> "Broken":
+            return self
+
+        async def ainvoke(self, messages: Any, **_: object) -> Any:
+            raise RuntimeError(
+                "(asyncpg.ProgrammingError) column does not exist "
+                "[SQL: SELECT 1 WHERE account_id = $1] [parameters: ('AC-00001',)]"
+            )
+
+    events = [
+        e
+        async for e in stream_turn(
+            db_session,
+            InMemorySaver(),
+            thread_id=f"t-{uuid.uuid4()}",
+            question="cost?",
+            embedder=FakeEmbedder(),
+            chat_model=Broken(),  # type: ignore[arg-type]
+        )
+    ]
+
+    message = events[-1].message  # type: ignore[attr-defined]
+    assert "AC-00001" not in message
+    assert "sha256:" in message
+
+
 # --- Over HTTP ---------------------------------------------------------------
 
 
