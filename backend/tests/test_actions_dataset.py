@@ -8,7 +8,7 @@ says what is right for the firm; the agent follows in the next task.
 **How these cases must be run.** Straight to the action agent, bypassing the
 supervisor. Three cases are questions that reach it only by a routing mistake,
 and through the whole graph the supervisor would send them to `research` or
-`out_of_scope` — they would pass while testing nothing. `routing_slice.jsonl`
+`out_of_scope` — they would pass while testing nothing. `routing.jsonl`
 exercises the supervisor; this file exercises the action agent and the
 registry; the integration tests exercise the graph.
 

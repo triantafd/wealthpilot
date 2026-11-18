@@ -3,7 +3,7 @@
 The routing *decision* is faked here — these tests check that a decision
 reaches the right node, carries its confidence, and cannot name a destination
 the graph has no node for. Whether the model routes *well* is an eval question,
-and `routing_slice.jsonl` is the next task but one.
+and `evals/datasets/routing.jsonl` answers it.
 
 One test at the bottom calls a real provider and is marked `llm`, so it is
 excluded from the default run. Without it nothing would ever check that the

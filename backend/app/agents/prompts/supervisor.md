@@ -52,7 +52,7 @@ many positions, what a stored field says about it. Answerable by querying the
 database, not by reading a document.
 
 Examples: "what's AC-00042 worth today?", "split AC-00077 by asset class for
-me", "rank the book by value and give me the top twenty", "has AC-00031 got a
+me", "rank the book by value and give me the top twenty", "has AC-00118 got a
 review date in the diary?"
 
 **The test is where the answer lives, not what the words are about.** "Is a 40%

@@ -298,7 +298,7 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       off the book total silently. Rules 6 and 7 of the prompt are the second
       pass. Three failures remain and are named in NOTES; two more are cases of
       mine, awaiting a decision
-- [ ] **Supervisor gains a third destination**, a confidence threshold with a
+- [x] **Supervisor gains a third destination**, a confidence threshold with a
       defined fallback, and the dataset that measures it. Phase 4a routes
       between two destinations with no threshold, which is enough to make
       routing a real decision but not enough to need one. In the same commit,
@@ -314,7 +314,25 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       change, a drop in `routing.accuracy` names no culprit. When the portfolio
       node is wired here, take its `thread_id` from `thread_of(config)` like
       every other node rather than from state — it reads state today because
-      nothing calls it through the graph yet
+      nothing calls it through the graph yet.
+      Result: 65 cases, the slice retired, its 21 carried over verbatim.
+      `routing.accuracy` 1.000 on 21 → **0.938** on 65 (0.908 on the run
+      before, two book-wide cases flipping between them), research 1.000,
+      portfolio 0.917, action 0.909, out_of_scope 0.900. The drop is the
+      dataset getting harder, which was the point of growing it
+- [ ] **The supervisor reads `portfolio` as one account.** Found by the 65-case
+      set: every example in its prompt names a single account, so a question
+      about the **whole book** — "how does the book's value break down by
+      segment", "which accounts are suspended", "the average account size for
+      our hnw clients" — goes to `research`, where no document can answer it.
+      Three cases, two of which flip between runs, which is what a borderline
+      reading looks like rather than a firm wrong one. Say in the prompt that a
+      count, an average, a ranking or a list across the book is still a figure
+      from the records, and re-measure. The other three failures are harder and
+      are not this: a message carrying a figure *and* an instruction, a message
+      carrying a figure *and* a rule, and "the usual report please" — all three
+      are cases where two readings are defensible and the dataset's `why` is
+      the argument for the one it expects
 - [ ] **A question about the last answer has nowhere to go.** Observed in the
       app on 2026-10-19 and reproduced: ask the fee question, then "whre did
       you see that". The supervisor resolves the pronoun correctly —
@@ -760,6 +778,19 @@ owed from Phase 3 is fixed.*
       the composer is disabled for an answer nobody will read. An
       `AbortController` kept beside `driving`, aborted in the same effect that
       clears the turns
+- [ ] **A portfolio answer's table renders as literal pipes.** The trigger
+      `src/lib/inline-markdown.tsx` names in its own docstring — *"if answers
+      ever grow tables, they will show literally and this becomes a reason to
+      adopt a real parser"* — has now fired: `portfolio_answer.md` asks for a
+      markdown table wherever several rows are the answer, because that is
+      what an allocation is, and the renderer supports inline formatting only.
+      Measured on the 75 rag answers, tables appeared **zero** times, which is
+      why the file is what it is; portfolio answers are a different
+      distribution. The choice is `react-markdown` with `remark-gfm` behind the
+      same no-HTML, no-URL guarantee, or a table-only block parser. Note what
+      the current file buys: it renders untrusted text as React elements and
+      nothing else, so a link or a `<script>` in an answer *cannot* be one. Any
+      replacement has to keep that
 - [ ] Put `retrieval` back in front of the answer in the timeline. Token
       streaming left it behind: the deltas come from the research node while it
       runs, and `retrieved` only lands with the node's update, so the badge

@@ -86,15 +86,27 @@ trusting a single run.*
       enough at this corpus size to say that; it is not a promise about a
       corpus ten times larger
 
-- **The supervisor's confidence carries no information yet, so its threshold is
-      a tripwire.** Across the 21 slice cases the model reports **only 0.9 or
-      1.0** and gets none of them wrong, so there is no distribution to
-      calibrate against: no value of `MIN_CONFIDENCE` separates its right
-      answers from its wrong ones, because it has none of the latter. It is set
-      at 0.5 — a floor that fires on nothing today — with the fallback defined
-      and tested, rather than left absent. Measured 2026-11-18.
-      **Set it properly when:** the 60-case dataset and the fourth destination
-      produce low confidences to look at.
+- **The supervisor's confidence cannot be used as a gate, and now there is
+      evidence rather than an absence of it.** On the 21-case slice the model
+      reported only 0.9 or 1.0 and got nothing wrong, so there was nothing to
+      calibrate against. The 65-case set was supposed to settle it, and it did,
+      in the other direction: across two runs **every wrong routing had
+      confidence 0.9 — and so did 39 of the correct ones**. The only separating
+      value would be 1.0, which would discard 39 right answers to catch 4 wrong
+      ones.
+
+      So `MIN_CONFIDENCE` stays at 0.5: a tripwire with a defined, tested
+      fallback, and not a parameter anybody should tune. Measured 2026-11-18.
+      **Revisit when:** a model reports a genuinely graded confidence — which
+      is a property of the model, not of the dataset, so the trigger is a model
+      change rather than more cases.
+
+- **`routing.accuracy` moves about 3 points run to run on the 65-case set.**
+      Two runs of the same commit scored 0.908 and 0.938, and the two cases
+      that moved were both book-wide aggregates — the borderline reading named
+      in the roadmap, not random cases. Any floor for this metric has to sit
+      below the lower of those, and `GATEABLE` keeps it out of the gate for
+      exactly this reason. Measured 2026-11-18.
 
 - **Teaching a model what a column holds makes it filter on that column.**
       Measured 2026-11-18, and the clearest case yet for running a suite twice

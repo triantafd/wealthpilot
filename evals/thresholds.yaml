@@ -65,10 +65,12 @@ regression:
 #   citations.validity      moves 0.074 within one commit
 #   answer.refusal_correct  bistable; returns when Phase 6 fixes it
 #   answer.must_include     moves 0.062 within one commit on the rag suite
-#   routing.accuracy        1.0000 across 15 runs, but Phase 4 grows the
-#                           dataset from a 15-case slice to 60+ and the number
-#                           will drop for that reason alone. A floor set now
-#                           would fail on the commit that improves coverage.
+#   routing.accuracy        0.938 on the 65-case set, and 0.908 on the run
+#                           before it — about 3 points of movement within one
+#                           commit. It read 1.0000 across 15 runs of the
+#                           21-case slice, so a floor taken from then would
+#                           have failed on the commit that improved coverage.
+#   sql.execution_accuracy  0.886, up from 0.659 one task earlier; see NOTES
 #   ragas faithfulness/relevancy, latency, cost
 #
 # `GATEABLE` in backend/app/evals/report.py is the enforced list; a floor here
