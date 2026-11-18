@@ -61,10 +61,14 @@ ANSWER = "The account holds £1,000.00 across five positions."
 RUN_SQL_MODULE = sys.modules["app.tools.sql.run_sql"]
 
 
+#: The thread the node is told it is on. Passed as an argument rather than read
+#: from state, which is why it is not in `_state` below.
+THREAD = "t-portfolio"
+
+
 def _state(question: str = "What is AC-EX01 worth?") -> dict[str, Any]:
     return {
         "messages": [HumanMessage(content=question)],
-        "thread_id": "t-portfolio",
         "user_id": "adviser@example.com",
     }
 
@@ -93,7 +97,7 @@ async def test_it_answers_from_the_rows_the_query_returned(db_session: AsyncSess
     statement becomes rows, and the rows become an answer."""
     model = _model(SqlAttempt(sql=ANSWERABLE))
 
-    result = await portfolio_agent(_state(), db_session, model)
+    result = await portfolio_agent(_state(), db_session, model, thread_id=THREAD)
 
     assert result["messages"][0].content == ANSWER
     assert len(result["sql_queries"]) == 1
@@ -109,7 +113,7 @@ async def test_the_statement_recorded_is_the_one_that_ran(db_session: AsyncSessi
     was never asked to run."""
     model = _model(SqlAttempt(sql=ANSWERABLE))
 
-    result = await portfolio_agent(_state(), db_session, model)
+    result = await portfolio_agent(_state(), db_session, model, thread_id=THREAD)
 
     assert "LIMIT" in result["sql_queries"][0]["sql"].upper()
 
@@ -120,7 +124,7 @@ async def test_the_call_goes_through_the_registry(db_session: AsyncSession) -> N
     one-line mistake CLAUDE.md rule 3 exists to prevent."""
     model = _model(SqlAttempt(sql=ANSWERABLE))
 
-    await portfolio_agent(_state(), db_session, model)
+    await portfolio_agent(_state(), db_session, model, thread_id=THREAD)
 
     rows = await _audit_rows(db_session)
     assert [row.tool_name for row in rows] == ["run_sql"]
@@ -146,7 +150,7 @@ async def test_the_streamed_answer_is_billed(db_session: AsyncSession) -> None:
     implementation that stopped reading at the first would lose them."""
     model = _model(SqlAttempt(sql=ANSWERABLE))
 
-    result = await portfolio_agent(_state(), db_session, model)
+    result = await portfolio_agent(_state(), db_session, model, thread_id=THREAD)
 
     assert result["usage"]["inputTokens"] == 11
     assert result["usage"]["outputTokens"] == 7
@@ -158,7 +162,7 @@ async def test_the_streamed_answer_is_billed(db_session: AsyncSession) -> None:
 async def test_a_refused_statement_is_retried_once(db_session: AsyncSession) -> None:
     model = _model(SqlAttempt(sql=REFUSED), SqlAttempt(sql=ANSWERABLE))
 
-    result = await portfolio_agent(_state(), db_session, model)
+    result = await portfolio_agent(_state(), db_session, model, thread_id=THREAD)
 
     assert result["messages"][0].content == ANSWER
     assert len(result["sql_queries"]) == 2
@@ -172,7 +176,7 @@ async def test_the_retry_is_told_what_was_refused(db_session: AsyncSession) -> N
     worth having rather than a loop that probes the boundary."""
     model = _model(SqlAttempt(sql=REFUSED), SqlAttempt(sql=ANSWERABLE))
 
-    await portfolio_agent(_state(), db_session, model)
+    await portfolio_agent(_state(), db_session, model, thread_id=THREAD)
 
     sent = "\n".join(str(getattr(m, "content", m)) for call in model.history for m in call)
     assert "refused" in sent.lower()
@@ -183,7 +187,7 @@ async def test_a_second_refusal_ends_the_turn(db_session: AsyncSession) -> None:
     """Two attempts, not three, and no answer invented from no rows."""
     model = _model(SqlAttempt(sql=REFUSED), SqlAttempt(sql=REFUSED))
 
-    result = await portfolio_agent(_state(), db_session, model)
+    result = await portfolio_agent(_state(), db_session, model, thread_id=THREAD)
 
     assert len(result["sql_queries"]) == MAX_SQL_ATTEMPTS == 2
     assert all(trace["error"] for trace in result["sql_queries"])
@@ -196,7 +200,7 @@ async def test_the_adviser_is_not_shown_the_refusal(db_session: AsyncSession) ->
     Showing it also hands an attacker the boundary's own error text."""
     model = _model(SqlAttempt(sql=REFUSED), SqlAttempt(sql=REFUSED))
 
-    result = await portfolio_agent(_state(), db_session, model)
+    result = await portfolio_agent(_state(), db_session, model, thread_id=THREAD)
 
     message = str(result["messages"][0].content)
     assert "pg_sleep" not in message
@@ -208,7 +212,7 @@ async def test_both_refusals_are_audited(db_session: AsyncSession) -> None:
     rows, so a second try is not a way to have the first forgotten."""
     model = _model(SqlAttempt(sql=REFUSED), SqlAttempt(sql=REFUSED))
 
-    await portfolio_agent(_state(), db_session, model)
+    await portfolio_agent(_state(), db_session, model, thread_id=THREAD)
 
     rows = await _audit_rows(db_session)
     assert len(rows) == 2
@@ -234,7 +238,7 @@ async def test_a_failed_query_does_not_escape_the_node(
     monkeypatch.setattr(RUN_SQL_MODULE, "run_select", _fail)
     model = _model(SqlAttempt(sql=ANSWERABLE))
 
-    result = await portfolio_agent(_state(), db_session, model)
+    result = await portfolio_agent(_state(), db_session, model, thread_id=THREAD)
 
     message = str(result["messages"][0].content)
     assert "timeout" not in message.lower()
@@ -259,7 +263,7 @@ async def test_a_failure_is_not_retried(
     monkeypatch.setattr(RUN_SQL_MODULE, "run_select", _fail)
     model = _model(SqlAttempt(sql=ANSWERABLE), SqlAttempt(sql=ANSWERABLE))
 
-    await portfolio_agent(_state(), db_session, model)
+    await portfolio_agent(_state(), db_session, model, thread_id=THREAD)
 
     assert calls == 1
 
@@ -292,7 +296,9 @@ async def test_the_model_may_say_these_views_cannot_answer(db_session: AsyncSess
     refusal after the adviser has waited."""
     model = _model(SqlAttempt(cannot_answer="these records hold positions, not contact details"))
 
-    result = await portfolio_agent(_state("What is the client's email?"), db_session, model)
+    result = await portfolio_agent(
+        _state("What is the client's email?"), db_session, model, thread_id=THREAD
+    )
 
     assert "contact details" in str(result["messages"][0].content)
     assert result["sql_queries"] == []
@@ -304,7 +310,7 @@ async def test_a_blank_refusal_still_says_something(db_session: AsyncSession) ->
     the turn with an empty message."""
     model = _model(SqlAttempt())
 
-    result = await portfolio_agent(_state(), db_session, model)
+    result = await portfolio_agent(_state(), db_session, model, thread_id=THREAD)
 
     assert str(result["messages"][0].content).strip()
 
@@ -318,7 +324,7 @@ async def test_rows_never_enter_the_state(db_session: AsyncSession) -> None:
     as long as the thread is."""
     model = _model(SqlAttempt(sql=ANSWERABLE))
 
-    result = await portfolio_agent(_state(), db_session, model)
+    result = await portfolio_agent(_state(), db_session, model, thread_id=THREAD)
 
     assert set(result["sql_queries"][0]) == {
         "question",
@@ -333,7 +339,7 @@ async def test_what_the_node_returns_is_json_able(db_session: AsyncSession) -> N
     """A checkpoint only one build of the app can read is not a checkpoint."""
     model = _model(SqlAttempt(sql=ANSWERABLE))
 
-    result = await portfolio_agent(_state(), db_session, model)
+    result = await portfolio_agent(_state(), db_session, model, thread_id=THREAD)
 
     serialisable = {k: v for k, v in result.items() if k != "messages"}
     json.dumps(serialisable)
@@ -348,7 +354,7 @@ async def test_the_model_served_is_reported(db_session: AsyncSession) -> None:
         served_model="gpt-4o-mini-2024-07-18",
     )
 
-    result = await portfolio_agent(_state(), db_session, model)
+    result = await portfolio_agent(_state(), db_session, model, thread_id=THREAD)
 
     assert result["model_served"] == "gpt-4o-mini-2024-07-18"
 

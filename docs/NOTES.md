@@ -86,6 +86,16 @@ trusting a single run.*
       enough at this corpus size to say that; it is not a promise about a
       corpus ten times larger
 
+- **The supervisor's confidence carries no information yet, so its threshold is
+      a tripwire.** Across the 21 slice cases the model reports **only 0.9 or
+      1.0** and gets none of them wrong, so there is no distribution to
+      calibrate against: no value of `MIN_CONFIDENCE` separates its right
+      answers from its wrong ones, because it has none of the latter. It is set
+      at 0.5 — a floor that fires on nothing today — with the fallback defined
+      and tested, rather than left absent. Measured 2026-11-18.
+      **Set it properly when:** the 60-case dataset and the fourth destination
+      produce low confidences to look at.
+
 - **Teaching a model what a column holds makes it filter on that column.**
       Measured 2026-11-18, and the clearest case yet for running a suite twice
       rather than reasoning about a prompt. Adding the enumerated values to
@@ -260,6 +270,12 @@ Worth recording as a limitation rather than a routing bug: a complete answer
 needs **both** sources, and the graph routes to one destination per turn. That
 is the case the supervisor's confidence threshold and fallback exist for, and
 it is the first question in the corpus that genuinely needs two agents.
+
+**Confirmed end to end on 2026-11-18**, once the destination existed to tempt
+it: asked through the compiled graph with a real model, that message routed to
+`research` at confidence 0.9 and came back with the 15%-over-30-days rule. The
+prediction and the behaviour agree, which is the only reason this stays a
+decision rather than a question.
 
 ### Self-approval is not acceptable — and the check is meaningless until auth
 

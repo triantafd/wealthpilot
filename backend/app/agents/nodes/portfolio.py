@@ -144,8 +144,17 @@ async def portfolio_agent(
     state: dict[str, Any],
     session: AsyncSession,
     chat_model: BaseChatModel,
+    *,
+    thread_id: str,
 ) -> dict[str, Any]:
-    """Answer the thread's latest question from the firm's own data."""
+    """Answer the thread's latest question from the firm's own data.
+
+    `thread_id` comes from the run config, as it does for the approval nodes:
+    the audit row records which thread asked, and a thread id read out of state
+    is whatever an earlier call put there rather than the thread this run is
+    on. `user_id` still comes from state, because nothing authenticates a
+    request yet and the API is what puts it there.
+    """
     question = question_to_answer(state)
     tokens = {"inputTokens": 0, "outputTokens": 0}
     served: str | None = None
@@ -170,7 +179,7 @@ async def portfolio_agent(
                 session,
                 TOOL,
                 {"query": attempt.sql},
-                thread_id=state.get("thread_id"),
+                thread_id=thread_id,
                 user_id=state.get("user_id"),
             )
         except QueryRefused as exc:

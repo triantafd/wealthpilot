@@ -17,8 +17,14 @@ from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.graph import OUT_OF_SCOPE, RESEARCH, _destination, compile_graph
-from app.agents.nodes.supervisor import Routing, SliceRoute, refuse_out_of_scope, supervise
+from app.agents.graph import OUT_OF_SCOPE, PORTFOLIO, RESEARCH, _destination, compile_graph
+from app.agents.nodes.supervisor import (
+    FALLBACK,
+    MIN_CONFIDENCE,
+    Routing,
+    refuse_out_of_scope,
+    supervise,
+)
 from app.agents.state import add_usage, initial_state, thread_config
 from app.rag.documents import SourceDocument
 from app.rag.embeddings import FakeEmbedder
@@ -52,12 +58,12 @@ async def _seed(session: AsyncSession) -> FakeEmbedder:
 
 
 async def test_the_route_and_its_confidence_reach_the_state() -> None:
-    model = FakeChatModel({Routing: Routing(route="action", confidence=0.42, reason="asks to do")})
+    model = FakeChatModel({Routing: Routing(route="action", confidence=0.92, reason="asks to do")})
 
     update = await supervise(initial_state("rebalance AC-0042", thread_id="t-1"), model)
 
     assert update["route"] == "action"
-    assert update["route_confidence"] == 0.42
+    assert update["route_confidence"] == 0.92
 
 
 async def test_routing_tokens_are_counted() -> None:
@@ -70,15 +76,52 @@ async def test_routing_tokens_are_counted() -> None:
     assert set(update["usage"]) == {"inputTokens", "outputTokens"}
 
 
-def test_the_schema_cannot_name_a_destination_with_no_node() -> None:
-    """State can hold `portfolio` — changing a persisted shape later is
-    expensive — but the router must not choose it before the agent exists."""
+def test_the_schema_is_the_state_s_own_route() -> None:
+    """It was deliberately narrower while `portfolio` had no node behind it.
+    The node arrived with this change, so the schema widened with it — and a
+    destination outside the four is still refused.
+
+    That every one of the four reaches a node is asserted against the graph, in
+    `test_portfolio_through_the_graph.py`."""
     import typing
 
-    assert set(typing.get_args(SliceRoute)) == {"research", "action", "out_of_scope"}
+    from app.agents.state import Route
+
+    assert set(typing.get_args(Routing.model_fields["route"].annotation)) == set(
+        typing.get_args(Route)
+    )
 
     with pytest.raises(ValueError, match="route"):
-        Routing(route="portfolio", confidence=0.9, reason="x")  # type: ignore[arg-type]
+        Routing(route="accounting", confidence=0.9, reason="x")  # type: ignore[arg-type]
+
+
+async def test_a_decision_below_the_threshold_is_not_followed() -> None:
+    """The fallback the threshold exists for. A guess about an action is the
+    expensive mistake; research refuses safely when the documents do not cover
+    something, so that is where a discarded decision goes."""
+    model = FakeChatModel(
+        {Routing: Routing(route="action", confidence=MIN_CONFIDENCE - 0.01, reason="unsure")}
+    )
+
+    update = await supervise(initial_state("do the thing", thread_id="t-1"), model)
+
+    assert update["route"] == FALLBACK
+    # The confidence is reported as given, and the flag names what was thrown
+    # away: without it a fallback looks like a model that chose research.
+    assert update["route_confidence"] == MIN_CONFIDENCE - 0.01
+    assert update["guardrail_flags"] == ["route_fallback:action"]
+
+
+async def test_a_decision_at_the_threshold_is_followed() -> None:
+    """The boundary is inclusive, so the floor fires only below itself."""
+    model = FakeChatModel(
+        {Routing: Routing(route="action", confidence=MIN_CONFIDENCE, reason="just sure enough")}
+    )
+
+    update = await supervise(initial_state("do the thing", thread_id="t-1"), model)
+
+    assert update["route"] == "action"
+    assert update["guardrail_flags"] == []
 
 
 @pytest.mark.parametrize("confidence", [-0.1, 1.1])
@@ -113,13 +156,14 @@ async def test_a_parsing_failure_is_an_error_not_a_silent_default() -> None:
         # what the gate then asks a human about.
         ("action", "propose_action"),
         ("out_of_scope", OUT_OF_SCOPE),
+        ("portfolio", PORTFOLIO),
     ],
 )
 def test_each_route_maps_to_its_node(route: str, expected: str) -> None:
     assert _destination({"route": route}) == expected  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("route", [None, "portfolio", "nonsense"])
+@pytest.mark.parametrize("route", [None, "nonsense"])
 def test_an_unservable_route_falls_back_to_research(route: Any) -> None:
     """Research refuses safely when the documents do not cover something, so an
     unknown route costs a wasted search rather than a dead thread."""

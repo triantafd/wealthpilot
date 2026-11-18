@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from app.agents.nodes.supervisor import SliceRoute
+from app.agents.state import Route
 
 DATASET = Path(__file__).resolve().parents[2] / "evals" / "datasets" / "routing_slice.jsonl"
 
@@ -48,7 +48,7 @@ def test_every_expected_route_is_one_the_supervisor_can_choose(case: dict[str, A
     forever and tell you nothing."""
     import typing
 
-    assert case["expected_route"] in typing.get_args(SliceRoute)
+    assert case["expected_route"] in typing.get_args(Route)
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c["id"])

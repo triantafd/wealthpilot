@@ -6,14 +6,14 @@ graph rather than three that drift.
 Phase 4a's shape:
 
     START -> supervisor -> research                -> END
+                        -> portfolio               -> END
                         -> propose_action -> request_approval
                                           -> approval_gate  -> END
                         -> out_of_scope             -> END
 
-The portfolio agent and a confidence threshold arrive in Phase 4; the state's
-`Route` already allows `portfolio` so adding it does not change a persisted
-shape, while the supervisor's output schema does not, so it cannot route
-somewhere with no node behind it.
+The portfolio destination arrived with the node behind it, which is what the
+supervisor's narrower output schema was holding out for: the state's `Route`
+always allowed `portfolio`, so this changed no persisted shape.
 
 The session, embedder and chat model are bound at build time rather than read
 from globals. A node must write the approval row, the tool's effect and the
@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.nodes.action import propose_action
 from app.agents.nodes.approval_gate import approval_gate, request_approval
+from app.agents.nodes.portfolio import portfolio_agent
 from app.agents.nodes.research import research_agent
 from app.agents.nodes.supervisor import refuse_out_of_scope, supervise
 from app.agents.state import AgentState, thread_of
@@ -41,6 +42,7 @@ from app.rag.embeddings import Embedder
 # reaches a node, which is harder to see than a NameError.
 SUPERVISOR = "supervisor"
 RESEARCH = "research"
+PORTFOLIO = "portfolio"
 PROPOSE_ACTION = "propose_action"
 REQUEST_APPROVAL = "request_approval"
 APPROVAL_GATE = "approval_gate"
@@ -55,6 +57,8 @@ def _destination(state: AgentState) -> str:
     an unknown route costs a wasted search instead of a dead thread.
     """
     route = state.get("route")
+    if route == "portfolio":
+        return PORTFOLIO
     if route == "action":
         return PROPOSE_ACTION
     if route == "out_of_scope":
@@ -107,6 +111,15 @@ def build_graph(
     async def propose_node(state: AgentState) -> dict[str, Any]:
         return await propose_action(dict(state), session, _chat_model())
 
+    # Takes the run config for its thread id, like the two approval nodes
+    # below: the audit row says which thread asked, and a thread id read out of
+    # state is a value some earlier call put there rather than the thread this
+    # run is on.
+    async def portfolio_node(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+        return await portfolio_agent(
+            dict(state), session, _chat_model(), thread_id=thread_of(config)
+        )
+
     # These two take the run config as well as the state: an approval is bound
     # to a thread, and the thread it is bound to has to be the one the run is
     # actually on rather than the one a state field claims.
@@ -121,6 +134,7 @@ def build_graph(
 
     graph.add_node(SUPERVISOR, supervisor_node)
     graph.add_node(RESEARCH, research_node)
+    graph.add_node(PORTFOLIO, portfolio_node)
     graph.add_node(PROPOSE_ACTION, propose_node)
     graph.add_node(REQUEST_APPROVAL, request_node)
     graph.add_node(APPROVAL_GATE, gate_node)
@@ -130,9 +144,15 @@ def build_graph(
     graph.add_conditional_edges(
         SUPERVISOR,
         _destination,
-        {RESEARCH: RESEARCH, PROPOSE_ACTION: PROPOSE_ACTION, OUT_OF_SCOPE: OUT_OF_SCOPE},
+        {
+            RESEARCH: RESEARCH,
+            PORTFOLIO: PORTFOLIO,
+            PROPOSE_ACTION: PROPOSE_ACTION,
+            OUT_OF_SCOPE: OUT_OF_SCOPE,
+        },
     )
     graph.add_edge(RESEARCH, END)
+    graph.add_edge(PORTFOLIO, END)
     graph.add_edge(PROPOSE_ACTION, REQUEST_APPROVAL)
     graph.add_edge(REQUEST_APPROVAL, APPROVAL_GATE)
     graph.add_edge(APPROVAL_GATE, END)

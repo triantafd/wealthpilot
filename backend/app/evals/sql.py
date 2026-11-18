@@ -306,9 +306,10 @@ async def run_sql_case(
     started = time.perf_counter()
     fault = impatient_database() if case.fault == "failed" else nullcontext()
     try:
-        state = dict(initial_state(case.question, thread_id=f"eval-{case.id}"))
+        thread_id = f"eval-{case.id}"
+        state = dict(initial_state(case.question, thread_id=thread_id))
         with fault:
-            update = await portfolio_agent(state, session, chat_model)
+            update = await portfolio_agent(state, session, chat_model, thread_id=thread_id)
     except Exception as exc:
         return SqlCaseResult(
             case_id=case.id,
