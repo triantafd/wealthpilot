@@ -760,7 +760,7 @@ the registry is exercised" was cut, and the reasoning is in `docs/NOTES.md`.
 owed from Phase 3 is fixed.*
 
 - [ ] Input guard: heuristic rules + LLM classifier
-- [ ] Output guard: cross-client data check. Citation verification already
+- [x] Output guard: cross-client data check. Citation verification already
       exists — `verify_citations` has been deterministic since Phase 1.
       **Comparing the returned values is only half of it**, measured: asked
       for another client's holdings, the model selected tickers and values
@@ -769,7 +769,17 @@ owed from Phase 3 is fixed.*
       own literals are the other half — `app/evals/safety.py` does both, and
       `sqlglot` is already in the executor if a tree is wanted over a regex.
       `safety.pass_rate_no_other_client` is 0.167 today and is what this
-      should move
+      should move.
+      Result: `app/guardrails/cross_client.py`, no model call. A question that
+      names a client or an account may not be answered with another's data; a
+      question that names nobody is not checked, because "the ten biggest
+      accounts in the book" is legitimately about the book. Placed inside the
+      portfolio node **before the rows reach the answer prompt**, so blocked
+      data never enters a model call — a test asserts the second call does not
+      happen at all. `no_other_client` 0.167 → **0.667**, and the two cases
+      still failing are both tagged `expected-to-flip`: they need to know who
+      is asking, which is Phase 9. `sql.execution_accuracy` unchanged at
+      0.886, so no legitimate question is blocked
 - [ ] **`uv run pytest -m llm` fails as a set, and CLAUDE.md documents it.**
       Each of the four files holding a real-model test passes alone; run
       together, one fails with "Event loop is closed". The provider client

@@ -17,6 +17,12 @@ registered `READ` tool, and calling `run_select` here would skip the tier
 check, the audit row and the span — CLAUDE.md rule 3. The executor's own
 defences would still hold; the record that the attempt happened would not.
 
+**The rows are checked before they reach a prompt.** `app/guardrails/
+cross_client.py` compares the clients the question named against the clients
+the statement and the rows touch, and the turn ends in a refusal when they
+disagree. Placed here rather than over the finished answer, because a guard
+that reads the sentence has already let the data through a model call.
+
 **Rows never enter the state.** The checkpointer persists state, so putting
 them there would write client positions into every checkpoint of every thread
 and leave them there. What is kept is `SqlTrace`: the question, the statement
@@ -42,6 +48,7 @@ from app.agents.nodes.research import prose_writer, question_to_answer
 from app.agents.prompts import load_prompt
 from app.agents.state import SqlTrace
 from app.audit import clamp
+from app.guardrails import cross_client
 from app.observability import langchain_callbacks
 from app.rag.generate import TokenUsage, stream_prose
 from app.tools.registry import ToolError, execute
@@ -252,6 +259,25 @@ async def portfolio_agent(
         }
 
     rows = result.get("rows") or []
+
+    # The output guard, before the rows reach a prompt rather than after the
+    # answer is written: a check on the finished sentence would already have
+    # put another client's figures through a model call. ARCHITECTURE section 1
+    # puts a guard on the way out; this is the half of it that needs no
+    # identity.
+    verdict = await cross_client.check(
+        session, question=question, sql=str(result["sql"]), rows=rows
+    )
+    if not verdict.allowed:
+        return {
+            "messages": [AIMessage(content=cross_client.REFUSAL)],
+            "sql_queries": traces,
+            "guardrail_flags": [verdict.flag],
+            "citations": [],
+            "usage": tokens,
+            "model_served": served,
+        }
+
     facts = (
         f"Question: {question}\n\n"
         f"SQL that ran:\n{result['sql']}\n\n"

@@ -271,6 +271,20 @@ trusting a single run.*
       already hold, or Phase 9 adds a table whose constraints quote client
       data.
 
+- **A guard that has to read the data to stop it will look like the leak, if
+      you measure the wrong thing.** The attack set scored `no_other_client`
+      0.167 before the output guard and **0.167 after it** — because the
+      scorer re-ran the statement and inspected the rows, which the guard also
+      has to do in order to know they belong to somebody else. Measuring the
+      query scores the guard as the leak it prevents, and would have stayed
+      red however well it worked.
+
+      The criterion is whether the **adviser** got the data: the scorer now
+      passes a case the guard blocked, and does its own arithmetic only on
+      turns that were answered. 0.667 on the same run. The general form: when
+      a defence is added, check that the measurement is still about the
+      outcome and not about the mechanism. Measured 2026-11-18.
+
 - **A cross-client leak does not have to be *in* the rows.** The first run of
       the attack set scored 0.805, and two of the cross-client cases passed
       for the wrong reason: asked for another client's holdings while
