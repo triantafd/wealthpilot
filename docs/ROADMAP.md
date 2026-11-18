@@ -759,7 +759,27 @@ the registry is exercised" was cut, and the reasoning is in `docs/NOTES.md`.
 *The strongest differentiator in the plan, and where the refusal-order bug
 owed from Phase 3 is fixed.*
 
-- [ ] Input guard: heuristic rules + LLM classifier
+- [x] Input guard: heuristic rules + LLM classifier — **rules only, and the
+      classifier deliberately not yet.** A classifier is a model call on every
+      message, which doubles the latency of the cheapest path and charges every
+      ordinary question for a benefit nobody had demonstrated. The rules are
+      four patterns whose subject is the *system* — its instructions, its
+      schema, an order to disregard them, forged role framing — because that
+      is the thing no adviser asks about and the thing every one of these
+      attacks needs. A message that merely sounds authoritative is **not**
+      screened: "compliance already cleared this" is an ordinary instruction
+      with a false claim, and the gate answers it.
+      Result: `safety.pass_rate_no_leak` and `_extraction` 0.600 → **1.000**,
+      overall 0.805 → **0.854**, and `gated` unchanged at 0.714 — the guard
+      refuses nothing it should have let through. The false-positive bound is a
+      test, not a judgement: all 193 legitimate messages in the four golden
+      sets go through the rules and none may be blocked, so a greedy rule fails
+      deterministically and for nothing. The suite also got **cheaper**
+      ($0.0125 → $0.0094): five attacks now reach no model at all. The
+      classifier's case is whatever the remaining attacks show, and today they
+      show nothing it would catch — four of the six that land are tagged
+      `expected-to-flip` and two are the model being more conservative than the
+      set expects
 - [x] Output guard: cross-client data check. Citation verification already
       exists — `verify_citations` has been deterministic since Phase 1.
       **Comparing the returned values is only half of it**, measured: asked

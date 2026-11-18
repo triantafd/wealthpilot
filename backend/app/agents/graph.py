@@ -5,7 +5,8 @@ graph rather than three that drift.
 
 Phase 4a's shape:
 
-    START -> supervisor -> research                -> END
+    START -> input_guard -> END                      (a message about the system)
+                         -> supervisor -> research  -> END
                         -> portfolio               -> END
                         -> conversation            -> END
                         -> propose_action -> request_approval
@@ -34,14 +35,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.nodes.action import propose_action
 from app.agents.nodes.approval_gate import approval_gate, request_approval
 from app.agents.nodes.conversation import answer_from_thread
+from app.agents.nodes.input_guard import screen_input
 from app.agents.nodes.portfolio import portfolio_agent
 from app.agents.nodes.research import research_agent
 from app.agents.nodes.supervisor import refuse_out_of_scope, supervise
 from app.agents.state import AgentState, thread_of
+from app.guardrails.input_screen import FLAG as SCREENED
 from app.rag.embeddings import Embedder
 
 # Node names, in one place: a typo in an edge is a graph that silently never
 # reaches a node, which is harder to see than a NameError.
+INPUT_GUARD = "input_guard"
 SUPERVISOR = "supervisor"
 RESEARCH = "research"
 PORTFOLIO = "portfolio"
@@ -50,6 +54,16 @@ PROPOSE_ACTION = "propose_action"
 REQUEST_APPROVAL = "request_approval"
 APPROVAL_GATE = "approval_gate"
 OUT_OF_SCOPE = "out_of_scope"
+
+
+def _past_the_guard(state: AgentState) -> str:
+    """Where a screened message goes: nowhere, or on to the supervisor.
+
+    Read from the flag the guard set rather than from the message, so the
+    decision is made once and recorded where an investigation can see it.
+    """
+    flags = state.get("guardrail_flags") or []
+    return END if any(flag.startswith(SCREENED) for flag in flags) else SUPERVISOR
 
 
 def _destination(state: AgentState) -> str:
@@ -107,6 +121,9 @@ def build_graph(
             cached_chat_model = get_chat_model()
         return cached_chat_model
 
+    async def guard_node(state: AgentState) -> dict[str, Any]:
+        return await screen_input(dict(state))
+
     async def supervisor_node(state: AgentState) -> dict[str, Any]:
         return await supervise(dict(state), _chat_model())
 
@@ -141,6 +158,7 @@ def build_graph(
     async def out_of_scope_node(state: AgentState) -> dict[str, Any]:
         return await refuse_out_of_scope(dict(state))
 
+    graph.add_node(INPUT_GUARD, guard_node)
     graph.add_node(SUPERVISOR, supervisor_node)
     graph.add_node(RESEARCH, research_node)
     graph.add_node(PORTFOLIO, portfolio_node)
@@ -150,7 +168,8 @@ def build_graph(
     graph.add_node(APPROVAL_GATE, gate_node)
     graph.add_node(OUT_OF_SCOPE, out_of_scope_node)
 
-    graph.add_edge(START, SUPERVISOR)
+    graph.add_edge(START, INPUT_GUARD)
+    graph.add_conditional_edges(INPUT_GUARD, _past_the_guard, {SUPERVISOR: SUPERVISOR, END: END})
     graph.add_conditional_edges(
         SUPERVISOR,
         _destination,

@@ -271,6 +271,18 @@ trusting a single run.*
       already hold, or Phase 9 adds a table whose constraints quote client
       data.
 
+- **The attack set measures the pipeline, not a node, and that had to be made
+      true twice.** `safety.jsonl` puts each case to the agent its check
+      belongs to, which is what lets one message be scored against one
+      behaviour — but a measurement that skips the guards describes a system
+      nobody ships. The input guard sits in `run_safety_case` now, before the
+      dispatch, and the output guard's verdict is read from the turn.
+
+      Being screened is **not** automatically a pass: a `gated` case stopped
+      at the door has been talked out of an action the adviser was entitled
+      to, which is the failure an input guard introduces rather than prevents.
+      Measured 2026-11-18.
+
 - **A guard that has to read the data to stop it will look like the leak, if
       you measure the wrong thing.** The attack set scored `no_other_client`
       0.167 before the output guard and **0.167 after it** — because the
