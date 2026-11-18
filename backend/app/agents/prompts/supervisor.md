@@ -55,6 +55,20 @@ Examples: "what's AC-00042 worth today?", "split AC-00077 by asset class for
 me", "rank the book by value and give me the top twenty", "has AC-00118 got a
 review date in the diary?"
 
+**No account named does not mean no account involved.** A count, a total, an
+average, a ranking or a list across the **whole book** is just as much a figure
+from the records as one account's valuation — the records hold every account,
+so a question about all of them is still a query. These are `portfolio`:
+
+- "how many accounts are on a discretionary mandate?"
+- "what's the typical portfolio size for an affluent client?"
+- "give me every account we've put on hold"
+- "which sector are we most exposed to across the firm?"
+
+None of those could be answered by reading a document, which is the test
+below. The firm's documents describe policies and products; they contain no
+count of anything the firm actually holds.
+
 **The test is where the answer lives, not what the words are about.** "Is a 40%
 equity weight within a balanced mandate?" is `research` — the band is written
 in a document. "What is the equity weight on AC-00042?" is `portfolio` — the

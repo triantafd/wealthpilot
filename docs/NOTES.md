@@ -101,12 +101,18 @@ trusting a single run.*
       is a property of the model, not of the dataset, so the trigger is a model
       change rather than more cases.
 
-- **`routing.accuracy` moves about 3 points run to run on the 65-case set.**
-      Two runs of the same commit scored 0.908 and 0.938, and the two cases
-      that moved were both book-wide aggregates — the borderline reading named
-      in the roadmap, not random cases. Any floor for this metric has to sit
-      below the lower of those, and `GATEABLE` keeps it out of the gate for
-      exactly this reason. Measured 2026-11-18.
+- **`routing.accuracy` moved 3 points run to run, and then stopped.** Two runs
+      of the same commit scored 0.908 and 0.938, and the two cases that moved
+      were both book-wide aggregates — the borderline reading the supervisor
+      prompt then learned, not random cases. After that fix two further runs
+      agreed **case for case** at 0.954.
+
+      So the movement was not a property of the suite: it was three cases the
+      model could read two ways, and a prompt that said which reading was
+      meant removed it. Worth knowing before treating the next unstable metric
+      as irreducible noise — but a floor still belongs under the lower
+      observation, not the latest one, and `GATEABLE` keeps this out of the
+      gate. Measured 2026-11-18.
 
 - **Teaching a model what a column holds makes it filter on that column.**
       Measured 2026-11-18, and the clearest case yet for running a suite twice

@@ -320,7 +320,7 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       before, two book-wide cases flipping between them), research 1.000,
       portfolio 0.917, action 0.909, out_of_scope 0.900. The drop is the
       dataset getting harder, which was the point of growing it
-- [ ] **The supervisor reads `portfolio` as one account.** Found by the 65-case
+- [x] **The supervisor reads `portfolio` as one account.** Found by the 65-case
       set: every example in its prompt names a single account, so a question
       about the **whole book** — "how does the book's value break down by
       segment", "which accounts are suspended", "the average account size for
@@ -332,7 +332,12 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       are not this: a message carrying a figure *and* an instruction, a message
       carrying a figure *and* a rule, and "the usual report please" — all three
       are cases where two readings are defensible and the dataset's `why` is
-      the argument for the one it expects
+      the argument for the one it expects.
+      Result: `routing.accuracy` 0.908/0.938 → **0.954 twice**, portfolio
+      0.917 → 0.958. All three named cases pass in both runs, and
+      `route-average-value-01` — which failed in *both* runs before — is the
+      one that cannot be read as noise. Judged on those three rather than on
+      the headline, because they are 4.6 points of a suite that was moving 3
 - [ ] **A question about the last answer has nowhere to go.** Observed in the
       app on 2026-10-19 and reproduced: ask the fee question, then "whre did
       you see that". The supervisor resolves the pronoun correctly —
