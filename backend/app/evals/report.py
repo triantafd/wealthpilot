@@ -23,17 +23,20 @@ _FRACTIONS = (
     "answer.",
     "routing.",
     "actions.",
+    "sql.",
 )
 
 # Counts that happen to share a prefix with the fractions above. Without this,
 # "16.3 references written" printed as "1633.3%".
 _COUNTS = (
     "answer.prose_refs_written",
-    # Counts that share the routing./actions. prefixes above.
+    # Counts that share the routing./actions./sql. prefixes above.
     "routing.cases",
     "routing.errors",
     "actions.cases",
     "actions.errors",
+    "sql.cases",
+    "sql.errors",
 )
 
 

@@ -86,10 +86,47 @@ trusting a single run.*
       enough at this corpus size to say that; it is not a promise about a
       corpus ten times larger
 
+- **The sql suite's first numbers, and what they do not support yet.**
+      Measured 2026-11-18 on 8e9c769, 51 cases twice. The two runs differ in
+      exactly one case — `sql-crossclient-01`, which declined once and answered
+      once — so the other fifteen failures are reproducible and are defects
+      rather than noise. **No floor belongs in `thresholds.yaml` yet:** the
+      prompt fix those failures call for will move
+      `sql.execution_accuracy`, and a floor at today's 0.659 would be a floor
+      underneath a known defect.
+
+      `sql.failure_silent` read 0.000 on the first run, for a reason worth
+      keeping: a `statement_timeout` of one millisecond does **not** cut a
+      single-account lookup, which completes inside it, while every statement
+      that scans the book is cut five times out of five. The suite's fault
+      case therefore asks a book-wide question.
+
 ## Known gaps, not scheduled
 
 *Real, and nobody is fixing them yet. The trigger line is the point: it turns
 "not now" into a condition rather than a shrug.*
+
+- **`average_cost` is null for every holding in the seeded book.** All 2,622
+      rows, so the column is in `v_holdings` and in the SQL prompt's schema
+      while holding nothing. A question about cost basis, an unrealised gain or
+      a return therefore gets a statement that is correct and a row that is
+      empty, and the answer prompt's "every figure comes from the rows" is the
+      only thing standing between that and an invented number. One eval case
+      (`sql-cost-basis-01`) pins the behaviour. Recorded 2026-11-18.
+      **Matters when:** the seed derives positions from transactions, or a case
+      needs a return.
+
+- **A `QueryFailed` is not retried, although a bad column name is as fixable as
+      a refusal.** Seen in the wild rather than argued: asked which accounts
+      hold `MER011`, the model selected `client_name` from `v_holdings`,
+      PostgreSQL answered that the column does not exist, and the turn ended
+      with nothing. A refusal would have been told what was wrong and allowed
+      one more attempt. Deliberate for a timeout — asking again costs another
+      five seconds to reach the same timeout — and merely untested for an
+      error that names a column. Not changed in passing, because the same loop
+      is a feedback channel for someone probing the schema. Recorded
+      2026-11-18. **Matters when:** more than a case or two is lost this way,
+      or the attack set in Phase 6 has an opinion about the loop.
 
 - **A cancelled request still writes no audit row.** A client
       disconnecting mid-tool raises `CancelledError`, which is not an

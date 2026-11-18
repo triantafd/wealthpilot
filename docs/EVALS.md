@@ -10,7 +10,7 @@ All JSONL, one case per line, each with an `id` and `tags` (e.g. `easy`, `multi-
 |---|---|---|
 | `rag_qa.jsonl` | `question`, `expected_answer`, `expected_sources: [{document_id, page}]` | 50 |
 | `routing.jsonl` | `message`, `expected_route` | 60 |
-| `sql.jsonl` | `question`, `client_id?`, `expected_rows` (or a reference SQL that is executed to produce them) | 40 |
+| `sql.jsonl` | `question`, `expects` (`rows`/`decline`/`failure`), `reference_sql`, `ordered`, `forbidden`, `why` | 40 |
 | `actions.jsonl` | `message`, `expected_outcome` (`propose`/`ask_account`/`refuse`), `expected_account`, `expected_tool`, `must_interrupt: bool`, `why` | 30 |
 | `safety.jsonl` | `message` or `poisoned_document`, `forbidden: [tool names or data patterns]` | 40 |
 
@@ -32,6 +32,18 @@ routing mistake; through the whole graph the supervisor would divert them and
 they would pass while testing nothing. `routing_slice.jsonl` exercises the
 supervisor instead, and the integration tests exercise the two together.
 
+**`sql.jsonl` carries a reference statement, not expected rows.** Both it and
+the model's statement run through the same read-only executor and what is
+compared is what came back, because one correct answer can be written as a
+join, a subquery or a window function and a suite that diffs SQL text measures
+style. Rows are compared by value and not by column name, so an alias is not a
+failure; the headline accuracy also forgives *extra* columns, which is why
+each reference is written as the minimal statement that answers the question.
+Three of its cases are not answerable at all — a contact detail, a schema
+probe, a forced database failure — and are scored on what the adviser is shown
+instead. `app/evals/sql.py` holds the rest, including the one place the suite
+injects a fault.
+
 ## Metrics
 
 | Area | Metric | How |
@@ -40,7 +52,7 @@ supervisor instead, and the integration tests exercise the two together.
 | Answer | faithfulness, answer relevancy, context precision | Ragas |
 | Citations | citation validity | Quote appears verbatim in a cited chunk (deterministic) |
 | Routing | accuracy, confusion matrix | Exact match |
-| SQL | execution accuracy | Result rows equal expected rows (order-insensitive) |
+| SQL | **execution accuracy** (primary), rows_exact, decline_correct, leak_free, injection_resisted | The reference statement's rows, re-run and compared by value |
 | Actions | correct tool, interrupt compliance | HIGH tools must always interrupt |
 | Safety | pass rate | No forbidden tool call, no forbidden data in output |
 | Ops | p50/p95 latency, cost per query | From the run |
@@ -106,8 +118,11 @@ runs, and a real regression could land inside it.
 
 Thresholds for `routing.accuracy`, `sql.execution_accuracy`,
 `actions.interrupt_compliance` and `safety.pass_rate` are **not** in the file
-yet: those suites arrive in Phases 4 and 6. A floor for a metric nothing
-produces gates nothing and gives the impression something is protected.
+yet. A floor for a metric nothing produces gates nothing and gives the
+impression something is protected; `safety.pass_rate` arrives in Phase 6, and
+`sql.execution_accuracy` now exists but reads 0.659 against a prompt defect the
+suite itself found, so a floor there would be a floor under a known fault
+rather than under a regression.
 `routing.accuracy` is a special case — it reads 1.0000 across 15 runs, but
 Phase 4 grows that dataset from a 15-case slice to 60 or more and the number
 will fall for that reason alone, so a floor set now would fail on the commit

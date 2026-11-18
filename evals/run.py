@@ -41,17 +41,20 @@ from app.evals.report import (
 from app.evals.routing import aggregate_routing, load_routing_cases, run_routing_case
 from app.evals.routing import confusion as routing_confusion
 from app.evals.runner import aggregate, run_case, run_retrieval_only, score_with_ragas
+from app.evals.sql import aggregate_sql, load_sql_cases, run_sql_case
+from app.evals.sql import render_failures as sql_failures
 from app.llm import get_chat_model
 from app.observability import configure_tracing, flush
 from app.rag.embeddings import OpenAIEmbedder
 
 
 async def _run_slice_suites(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
-    """Score the routing and action slices.
+    """Score the routing, action and SQL suites.
 
     Each exercises one node directly rather than the graph: a routing case
-    would otherwise also run an agent, and three action cases are questions
-    the supervisor would divert before the agent ever saw them.
+    would otherwise also run an agent, three action cases are questions the
+    supervisor would divert before the agent ever saw them, and the supervisor
+    has no destination for a portfolio question yet.
     """
     extra: dict[str, Any] = {}
     rendered: list[str] = []
@@ -78,11 +81,25 @@ async def _run_slice_suites(args: argparse.Namespace) -> tuple[dict[str, Any], s
         extra["actions_cases"] = [asdict(r) for r in results]
         rendered.append(render_confusion("actions", actions_confusion(results)))
 
+    if args.suite in {"sql", "all"}:
+        sql_cases = load_sql_cases()
+        print(f"SQL: {len(sql_cases)} case(s)…", file=sys.stderr)
+        # A session, because the node reaches the executor through the tool
+        # registry and the registry writes the audit row on the caller's
+        # session. The statements themselves run on the read-only pool.
+        async with get_sessionmaker()() as session:
+            sql_results = [
+                await run_sql_case(case, session, chat_model, args.model) for case in sql_cases
+            ]
+        extra.update(aggregate_sql(sql_results))
+        extra["sql_cases"] = [asdict(r) for r in sql_results]
+        rendered.append(sql_failures(sql_results))
+
     return extra, "\n".join(rendered)
 
 
 async def _run(args: argparse.Namespace) -> int:
-    if args.suite in {"routing", "actions"}:
+    if args.suite in {"routing", "actions", "sql"}:
         if args.save_baseline:
             # baseline.json is the RAG baseline. Saving a 16-case actions
             # report over it would destroy the thing every retrieval change is
@@ -95,9 +112,9 @@ async def _run(args: argparse.Namespace) -> int:
             )
             return 2
 
-        # Neither touches retrieval, so the RAG machinery below is skipped
-        # entirely rather than run over an empty case list. The actions suite
-        # does open a session of its own, to look accounts up.
+        # None of them touches retrieval, so the RAG machinery below is
+        # skipped entirely rather than run over an empty case list. The actions
+        # and SQL suites open sessions of their own.
         extra, rendered = await _run_slice_suites(args)
         metrics = {k: v for k, v in extra.items() if not k.endswith("_cases")}
         report = build_report(args.suite, metrics, [])
@@ -223,7 +240,7 @@ def main() -> None:
     parser.add_argument(
         "--suite",
         default="smoke",
-        choices=["smoke", "rag", "routing", "actions", "all"],
+        choices=["smoke", "rag", "routing", "actions", "sql", "all"],
     )
     parser.add_argument("--compare", type=Path, help="baseline report to compare against")
     parser.add_argument(

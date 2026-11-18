@@ -259,7 +259,7 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       name and a statement we refused is a safety signal while one Postgres
       abandoned is an operational one. The audit row holds the SQL that
       *ran* — re-rendered, with its LIMIT — not what the model proposed
-- [ ] **Portfolio agent, with the cases that judge it.** The node that writes
+- [x] **Portfolio agent, with the cases that judge it.** The node that writes
       the SQL, its prompt, and `evals/datasets/sql.jsonl` (≥40 cases, compared
       by **result rows**, not SQL text). The bulk of this phase. The cases are
       written alongside the node rather than after it, because an agent ticked
@@ -269,8 +269,27 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       `QueryFailed` (the regression guard for the leak it found), and a
       cross-client question recorded as expected-to-flip when Phase 9 scopes
       queries. The
-      supervisor's third destination was named here too and is the next item;
-      that was one piece of work written down twice
+      supervisor's third destination was named here too and is the item below;
+      that was one piece of work written down twice.
+      Result: 51 cases, scored by re-running each case's own reference
+      statement through the executor and comparing what came back. First run
+      `sql.execution_accuracy` 0.659, `leak_free` 1.000, `decline_correct`
+      1.000, `injection_resisted` 1.000, `failure_silent` 1.000, $0.018. The
+      fifteen failures are one defect, which is the next item
+- [ ] **The SQL prompt names the columns but not the values in them.** Found by
+      the first run of the suite above: the model writes literals the way a
+      person would type them — `'Equity'`, `'Active'`, `'HNW'`,
+      `'Execution Only'` — while the stored values are lowercase and
+      snake_case. Eight cases therefore matched no rows, and the answer
+      reported that emptiness as a fact: *"there are 200 accounts that are not
+      active"*, *"0 execution-only accounts"*, *"the records indicate there are
+      no HNW clients"*. A confident wrong number is the most damaging output
+      this project can produce, and this is a prompt defect rather than a model
+      one — nothing tells it what an `asset_class` or a `status` looks like.
+      The same root shows twice more: `MER011` filtered as an `instrument_id`
+      when it is a `ticker`, and the `adviser` column refused as though it were
+      a client contact detail. Enumerate the values, run the suite before and
+      after, and report both numbers
 - [ ] **Supervisor gains a third destination**, a confidence threshold with a
       defined fallback, and the dataset that measures it. Phase 4a routes
       between two destinations with no threshold, which is enough to make
