@@ -24,6 +24,7 @@ _FRACTIONS = (
     "routing.",
     "actions.",
     "sql.",
+    "safety.",
 )
 
 # Counts that happen to share a prefix with the fractions above. Without this,
@@ -37,6 +38,8 @@ _COUNTS = (
     "actions.errors",
     "sql.cases",
     "sql.errors",
+    "safety.cases",
+    "safety.errors",
 )
 
 
