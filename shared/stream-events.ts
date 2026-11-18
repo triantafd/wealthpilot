@@ -77,6 +77,17 @@ export type StreamEvent =
   | { type: "approval_required"; approvalId: string; action: ProposedAction }
   | { type: "action_outcome"; outcome: ActionOutcome }
   | { type: "citations"; items: Citation[] }
+  /** One generated query the portfolio agent ran — the figure equivalent of
+   *  `retrieval` and `citations`. One event per attempt, so a refused first
+   *  try shows as well as the one that answered.
+   *
+   *  `failed` says *that* an attempt failed and never why: the reason is the
+   *  executor's own text, which a security review already found reaching a
+   *  screen once, and it stays in `audit_log.error`. Showing this beside the
+   *  answer does not contradict the answer prompt's rule against mentioning
+   *  the query — that rule is about the sentence, and provenance is metadata,
+   *  exactly as a citation is. See `SqlEvent` in events.py. */
+  | { type: "sql"; sql: string; rowCount: number; ms: number; failed: boolean }
   | { type: "guardrail"; flag: string }
   | { type: "done"; usage: Usage }
   | { type: "error"; message: string };

@@ -49,10 +49,12 @@ from app.api.events import (
     ContractModel,
     DoneEvent,
     ErrorEvent,
+    GuardrailEvent,
     ProposedAction,
     RetrievalEvent,
     RetrievedChunkRef,
     RouteEvent,
+    SqlEvent,
     TokenEvent,
     Usage,
 )
@@ -141,6 +143,39 @@ def _custom_event(payload: Any) -> TokenEvent | None:
     return TokenEvent(text=text) if isinstance(text, str) and text else None
 
 
+def _sql_events(update: dict[str, Any]) -> list[ContractModel]:
+    """Every query this node ran, as provenance beside the answer.
+
+    A list rather than one event, because the node may make a second attempt
+    after a refusal and a trace that shows only the query that worked hides
+    what was tried. The update carries this turn's traces alone — the state
+    field accumulates, the update does not.
+
+    The error text is deliberately dropped: see `SqlEvent`.
+    """
+    return [
+        SqlEvent(
+            sql=str(trace.get("sql") or ""),
+            row_count=int(trace.get("row_count") or 0),
+            ms=int(trace.get("duration_ms") or 0),
+            failed=bool(trace.get("error")),
+        )
+        for trace in update.get("sql_queries") or []
+        if isinstance(trace, dict)
+    ]
+
+
+def _guardrail_events(update: dict[str, Any]) -> list[ContractModel]:
+    """The flags a node raised.
+
+    The contract has carried this event since Phase 4a and nothing emitted it,
+    so every flag the agents set — a portfolio question the records could not
+    answer, an action stopped by a mandate, a routing decision discarded —
+    existed only in the checkpoint. Found while adding the event above.
+    """
+    return [GuardrailEvent(flag=str(flag)) for flag in update.get("guardrail_flags") or []]
+
+
 def _approval_event(chunk: Any) -> ApprovalRequiredEvent | None:
     """The interrupt that pauses a thread for a human.
 
@@ -187,6 +222,11 @@ def events_for(node: str, chunk: Any) -> list[ContractModel]:
         event = builder(chunk)
         if event is not None:
             produced.append(event)
+    # The two that produce a list. Provenance before the answer, flags after:
+    # a source explains the sentence that follows it, and a flag qualifies the
+    # sentence that came before.
+    produced[:0] = _sql_events(chunk)
+    produced += _guardrail_events(chunk)
     return produced
 
 

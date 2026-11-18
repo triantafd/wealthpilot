@@ -14,6 +14,15 @@ import type {
   StreamEvent,
 } from "@shared/stream-events";
 
+/** One query, as the timeline shows it. `failed` carries no reason, by
+ *  design — see `SqlEvent` in backend/app/api/events.py. */
+export interface SqlQuery {
+  sql: string;
+  rowCount: number;
+  ms: number;
+  failed: boolean;
+}
+
 export interface Turn {
   /**
    * Stable identity for this turn.
@@ -32,6 +41,14 @@ export interface Turn {
   /** What the action agent decided. `ask_account` and `refuse` both arrive as
    *  prose, so without this the screen cannot tell them apart. */
   outcome?: ActionOutcome;
+  /** The queries a portfolio answer came from, in the order they were tried.
+   *  The figure equivalent of `citations`: a number with no visible source is
+   *  a number an adviser has to take on trust. */
+  queries: SqlQuery[];
+  /** Flags the agents raised on this turn. Shown rather than swallowed: a
+   *  question the records could not answer and an action stopped by a mandate
+   *  both end a turn with a sentence that looks like any other. */
+  flags: string[];
   approval?: { approvalId: string; action: ProposedAction };
   decision?: "approve" | "reject";
   /** What the decision authorised, from the decide response. The turn's SSE
@@ -51,7 +68,7 @@ export function newTurn(question: string): Turn {
   // A counter, not a timestamp: two turns submitted in the same millisecond
   // would collide, and React keys that collide drop a turn from the screen.
   counter += 1;
-  return { id: `turn-${counter}`, question, citations: [] };
+  return { id: `turn-${counter}`, question, citations: [], queries: [], flags: [] };
 }
 
 /**
@@ -108,6 +125,13 @@ export function restore(wire: RestoredTurn, index: number): Turn {
     // where that is turned into words.
     executed: decision && approval ? approval.execution : undefined,
     executionSpent: decision && approval ? approval.consumed_at !== null : undefined,
+    // Empty, because `GET /threads/{id}/turns` does not carry either yet: the
+    // queries and the flags live in `audit_log` and the checkpoint, and the
+    // fold reads neither. So a reloaded conversation shows the answer without
+    // the query behind it — the same shape as the restored-error gap in
+    // Phase 7, and worth closing with it rather than separately.
+    queries: [],
+    flags: [],
     // A string on the wire; see `RestoredUsage`.
     cost: cost != null ? Number(cost) : undefined,
     ms: wire.usage?.latency_ms ?? undefined,
@@ -172,6 +196,18 @@ export function applyEvent(turn: Turn, event: StreamEvent): Turn {
         : { ...turn, answer: (turn.answer ?? "") + event.text };
     case "citations":
       return { ...turn, citations: event.items };
+    case "sql":
+      // Appended, not replaced: a refused first attempt and the query that
+      // answered are both part of what happened.
+      return {
+        ...turn,
+        queries: [
+          ...turn.queries,
+          { sql: event.sql, rowCount: event.rowCount, ms: event.ms, failed: event.failed },
+        ],
+      };
+    case "guardrail":
+      return { ...turn, flags: [...turn.flags, event.flag] };
     case "approval_required":
       return { ...turn, approval: { approvalId: event.approvalId, action: event.action } };
     case "action_outcome":
@@ -182,7 +218,6 @@ export function applyEvent(turn: Turn, event: StreamEvent): Turn {
       return { ...turn, error: event.message };
     case "tool_start":
     case "tool_end":
-    case "guardrail":
       // In the contract, not yet emitted — see app/api/stream.py. Listed rather
       // than defaulted, so when the backend starts sending them the missing
       // handling is a compile error rather than a silently ignored event.

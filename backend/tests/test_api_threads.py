@@ -172,6 +172,94 @@ def test_only_the_supervisor_reports_a_route() -> None:
     assert len(events_for("supervisor", {"route": "research", "route_confidence": 0.9})) == 1
 
 
+def test_a_query_becomes_a_sql_event_before_the_answer() -> None:
+    """Provenance explains the sentence that follows it, so it goes first."""
+    events = events_for(
+        "portfolio",
+        {
+            "sql_queries": [
+                {
+                    "question": "what is AC-00001 worth?",
+                    "sql": "SELECT total_value FROM v_account_summary LIMIT 100",
+                    "row_count": 1,
+                    "duration_ms": 42,
+                    "error": None,
+                }
+            ],
+            "messages": [type("M", (), {"content": "£394,060.01."})()],
+        },
+    )
+
+    assert [e.type for e in events] == ["sql", "token"]  # type: ignore[attr-defined]
+    assert events[0].row_count == 1  # type: ignore[attr-defined]
+    assert events[0].ms == 42  # type: ignore[attr-defined]
+    assert events[0].failed is False  # type: ignore[attr-defined]
+    assert "v_account_summary" in events[0].sql  # type: ignore[attr-defined]
+
+
+def test_both_attempts_are_reported_not_only_the_one_that_worked() -> None:
+    """A trace showing only the successful query hides what was tried."""
+    events = events_for(
+        "portfolio",
+        {
+            "sql_queries": [
+                {
+                    "sql": "SELECT pg_sleep(1)",
+                    "row_count": 0,
+                    "duration_ms": 1,
+                    "error": "function pg_sleep is not allowed",
+                },
+                {
+                    "sql": "SELECT total_value FROM v_account_summary",
+                    "row_count": 1,
+                    "duration_ms": 9,
+                    "error": None,
+                },
+            ]
+        },
+    )
+
+    assert [e.failed for e in events] == [True, False]  # type: ignore[attr-defined]
+
+
+def test_a_failed_query_reports_that_it_failed_and_not_why() -> None:
+    """The reason is the executor's own text, which a security review found
+    reaching an adviser's screen once already. It stays in the audit log."""
+    events = events_for(
+        "portfolio",
+        {
+            "sql_queries": [
+                {
+                    "sql": "SELECT 1",
+                    "row_count": 0,
+                    "duration_ms": 5000,
+                    "error": "canceling statement due to statement timeout",
+                }
+            ]
+        },
+    )
+
+    rendered = events[0].model_dump_json()
+    assert "timeout" not in rendered
+    assert "canceling" not in rendered
+    assert events[0].failed is True  # type: ignore[attr-defined]
+
+
+def test_a_guardrail_flag_reaches_the_stream() -> None:
+    """The event has been in the contract since Phase 4a with nothing emitting
+    it, so every flag the agents set existed only in the checkpoint."""
+    events = events_for(
+        "portfolio",
+        {
+            "messages": [type("M", (), {"content": "I could not put that to the records."})()],
+            "guardrail_flags": ["portfolio_no_answer"],
+        },
+    )
+
+    assert [e.type for e in events] == ["token", "guardrail"]  # type: ignore[attr-defined]
+    assert events[-1].flag == "portfolio_no_answer"  # type: ignore[attr-defined]
+
+
 def test_an_update_with_nothing_to_report_produces_no_events() -> None:
     """A node writing only bookkeeping must not emit an empty frame a client
     then has to filter."""

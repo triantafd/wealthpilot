@@ -368,6 +368,40 @@ function TurnView({
         </ul>
       ) : null}
 
+      {turn.queries.length > 0 ? (
+        <ul className="space-y-1" data-testid="queries">
+          {turn.queries.map((query, index) => (
+            <li
+              key={`${index}-${query.sql}`}
+              className="border-l-2 pl-3 text-xs text-muted-foreground"
+            >
+              <details>
+                {/* Collapsed: the figure is the answer and the statement is
+                    provenance, which is wanted exactly when it is doubted. */}
+                <summary className="cursor-pointer">
+                  {query.failed
+                    ? "this query did not complete"
+                    : `${query.rowCount} ${query.rowCount === 1 ? "row" : "rows"}`}
+                  {" · "}
+                  {query.ms}ms
+                </summary>
+                {/* The statement only. Why a query failed is the executor's
+                    own text and stays in the audit log — see `SqlEvent`. */}
+                <code className="mt-1 block font-mono break-all whitespace-pre-wrap">
+                  {query.sql}
+                </code>
+              </details>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {turn.flags.length > 0 ? (
+        <p className="text-xs text-muted-foreground" data-testid="flags">
+          {turn.flags.join(" · ")}
+        </p>
+      ) : null}
+
       {turn.approval ? (
         <div className="rounded-md border p-3" data-testid="approval">
           <div className="flex items-center gap-2">

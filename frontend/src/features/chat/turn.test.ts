@@ -16,6 +16,36 @@ import { applyEvent, newTurn, restore } from "./turn";
 const start = () => newTurn("Is there a floor on what we charge?");
 
 describe("applyEvent", () => {
+  it("keeps every query, in the order they were tried", () => {
+    // A refused first attempt and the one that answered are both part of what
+    // happened, so the second does not replace the first.
+    const refused: StreamEvent = {
+      type: "sql",
+      sql: "SELECT pg_sleep(1)",
+      rowCount: 0,
+      ms: 1,
+      failed: true,
+    };
+    const answered: StreamEvent = {
+      type: "sql",
+      sql: "SELECT total_value FROM v_account_summary",
+      rowCount: 1,
+      ms: 42,
+      failed: false,
+    };
+
+    const turn = applyEvent(applyEvent(start(), refused), answered);
+
+    expect(turn.queries.map((q) => q.failed)).toEqual([true, false]);
+    expect(turn.queries[1].rowCount).toBe(1);
+  });
+
+  it("collects the flags an agent raised", () => {
+    const turn = applyEvent(start(), { type: "guardrail", flag: "portfolio_no_answer" });
+
+    expect(turn.flags).toEqual(["portfolio_no_answer"]);
+  });
+
   it("records the route and its confidence", () => {
     const turn = applyEvent(start(), { type: "route", route: "research", confidence: 0.91 });
 

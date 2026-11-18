@@ -415,9 +415,21 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       through SQLAlchemy
 - [ ] **Grow** `actions_slice.jsonl` into `evals/datasets/actions.jsonl`
       (≥30 cases), and retire the slice file
-- [ ] **Extend** the SSE contract with whatever events the portfolio agent needs,
+- [x] **Extend** the SSE contract with whatever events the portfolio agent needs,
       updating `shared/stream-events.ts` and `backend/app/api/events.py` together
-      and keeping the contract test green
+      and keeping the contract test green.
+      Result: a `sql` event, one per query, carrying the statement, the row
+      count, the duration and a `failed` boolean — **never the error text**,
+      which is the executor's own words and stays in `audit_log.error`. It
+      does not contradict the answer prompt's rule against mentioning the
+      query: that rule is about the sentence, and this is provenance beside
+      it, as a citation is. Found while doing it: the `guardrail` event has
+      been in the contract since Phase 4a with **nothing emitting it**, so
+      every flag the agents set died in the checkpoint; it is emitted now.
+      Verified on the wire with a real model — route, sql, answer, done. A
+      reloaded turn still shows neither, because `GET /threads/{id}/turns`
+      carries no queries or flags; the same shape as the restored-error gap in
+      Phase 7 and worth closing with it
 
 ### From the SQL security review (2026-11-17)
 
