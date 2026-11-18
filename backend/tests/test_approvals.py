@@ -503,6 +503,42 @@ async def test_the_checkpoint_holds_json_not_a_pickled_model(
     assert state.values["pending_action"]["tool"] == "propose_rebalance"
 
 
+async def test_an_approved_rebalance_of_an_execution_only_account_still_refuses(
+    db_session: AsyncSession, checkpointer_dsn: str, an_execution_only_account: str
+) -> None:
+    """The tool's half of the mandate rule, and the only way to assert it: a
+    HIGH tool may not be called directly, even in a test.
+
+    The agent refuses such a proposal long before this, so reaching here means
+    every earlier defence has failed and a human has clicked approve anyway.
+    That is exactly when a rule the documents call absolute has to hold — and
+    no task may be written. It is also the regression test for a
+    `pending_action` restored from a checkpoint written before the rule
+    existed, which is the other way a proposal reaches the gate unrefused.
+    """
+    thread = f"t-{uuid.uuid4()}"
+    action = get("propose_rebalance").propose({"account_id": an_execution_only_account})
+
+    async with checkpointer(checkpointer_dsn) as saver:
+        graph = _gated_graph(saver, db_session)
+        state = initial_state("rebalance it", thread_id=thread, user_id="adviser-7")
+        state["pending_action"] = action.model_dump(by_alias=True)
+        await graph.ainvoke(state, thread_config(thread))
+
+        approval_id = (await list_approvals(db_session, status="pending"))[-1].id
+        await decide(db_session, approval_id, "approve", decided_by="adviser-7")
+        final = await graph.ainvoke(Command(resume="approve"), thread_config(thread))
+
+    assert any(f.startswith("action_failed:") for f in final["guardrail_flags"])
+    tasks = list((await db_session.execute(select(Task))).scalars().all())
+    assert tasks == []
+    rows = list((await db_session.execute(select(AuditLogEntry))).scalars().all())
+    assert "error" in [r.outcome for r in rows]
+    # The reason is on the record, so an investigation does not have to infer
+    # it from the absence of a task.
+    assert any("execution-only" in (r.error or "") for r in rows)
+
+
 async def test_a_tool_that_fails_after_approval_is_reported_not_raised(
     db_session: AsyncSession, checkpointer_dsn: str
 ) -> None:

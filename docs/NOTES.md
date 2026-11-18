@@ -254,7 +254,36 @@ trusting a single run.*
   needs auth to mean anything. **The output side does not** — comparing the
   `client_id`s in the returned rows against the ids the question named needs
   no identity at all, and is the seed of the Phase 6 output guard. Raised by
-  the security review of 2026-11-17.
+  the security review of 2026-11-17. **Widened 2026-11-18**: the action agent
+  now discloses an account's *mandate* on the same unscoped terms, because its
+  refusal names it — the same root, one more field.
+
+- **A suspended or closed account can still be rebalanced.** The execution-only
+      prohibition is item 1 of six in `mandates-and-rebalancing.md`'s prohibited
+      list; item 6 is trading on a `closed` or `suspended` account, and the
+      document is explicit — *"A rebalancing proposal must exclude any account
+      not in `active` status"*. Neither the tool nor the agent reads `status`.
+      The seed has the cases: `AC-00037` is closed and discretionary,
+      `AC-00106` suspended and discretionary, and `AC-00053` is suspended *and*
+      execution-only, so the new rule covers exactly one suspended account by
+      coincidence — the kind of partial coverage that reads as handled. The
+      lookup already fetches the row, so the fix is `Account.status` plus one
+      branch in each of two places, and the dataset cases to measure it.
+      Raised by the security review of 2026-11-18, outside that task's scope.
+      **Matters when:** the next mandate-shaped rule is implemented, or anyone
+      cites the prohibited list as authority again.
+
+- **The approval card does not show what makes the action legal.** The
+      summary an approver reads is an account id and a reason. The mandate is
+      now the field that decides whether the action may happen at all, and an
+      `advisory` account — which per the same document needs the client's
+      consent to that specific set of trades, something nothing checks — looks
+      identical on the card to a `discretionary` one. Cheap to add to
+      `_summarise`; not added in the same change that made the mandate matter,
+      because an approval card is read by a human under time pressure and
+      changing it deserves its own before and after. Raised 2026-11-18.
+      **Matters when:** a second HIGH tool arrives, or advisory consent is
+      implemented.
 
 - **`audit_log.result` holds the rows a query returned**, up to 16,000
   characters of client positions, with no retention policy. Deliberate — an

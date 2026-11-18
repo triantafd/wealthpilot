@@ -573,6 +573,29 @@ async def an_account(db_session: AsyncSession) -> str:
 
 
 @pytest.fixture
+async def an_execution_only_account(an_account: str, db_session: AsyncSession) -> str:
+    """A second account on the same client, which the firm may not rebalance.
+
+    Built on `an_account` so a test can hold both and show that the refusal is
+    about the mandate rather than about the account being missing — the two
+    produce the same outcome and mean different things.
+    """
+    from sqlalchemy import insert
+
+    from app.db.models.firm import Account
+
+    await db_session.execute(
+        insert(Account).values(
+            id="AC-TESTEO",
+            client_id="CL-TEST01",
+            account_type="GIA",
+            mandate="execution_only",
+        )
+    )
+    return "AC-TESTEO"
+
+
+@pytest.fixture
 async def saver(checkpointer_dsn: str) -> AsyncIterator[AsyncPostgresSaver]:
     """A checkpointer on the test database, installed on the app.
 
