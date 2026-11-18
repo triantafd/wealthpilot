@@ -276,7 +276,7 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       `sql.execution_accuracy` 0.659, `leak_free` 1.000, `decline_correct`
       1.000, `injection_resisted` 1.000, `failure_silent` 1.000, $0.018. The
       fifteen failures are one defect, which is the next item
-- [ ] **The SQL prompt names the columns but not the values in them.** Found by
+- [x] **The SQL prompt names the columns but not the values in them.** Found by
       the first run of the suite above: the model writes literals the way a
       person would type them — `'Equity'`, `'Active'`, `'HNW'`,
       `'Execution Only'` — while the stored values are lowercase and
@@ -289,7 +289,15 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       The same root shows twice more: `MER011` filtered as an `instrument_id`
       when it is a `ticker`, and the `adviser` column refused as though it were
       a client contact detail. Enumerate the values, run the suite before and
-      after, and report both numbers
+      after, and report both numbers.
+      Result: `sql.execution_accuracy` 0.659 → 0.886 over two passes, with the
+      values pinned to the database's own `CHECK` constraints by a test rather
+      than copied into the prompt by hand. The first pass fixed eight cases and
+      broke three: told what `status` can hold, the model started volunteering
+      `status = 'active'` on questions nobody had narrowed, which took £6.0m
+      off the book total silently. Rules 6 and 7 of the prompt are the second
+      pass. Three failures remain and are named in NOTES; two more are cases of
+      mine, awaiting a decision
 - [ ] **Supervisor gains a third destination**, a confidence threshold with a
       defined fallback, and the dataset that measures it. Phase 4a routes
       between two destinations with no threshold, which is enough to make

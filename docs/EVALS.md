@@ -120,9 +120,9 @@ Thresholds for `routing.accuracy`, `sql.execution_accuracy`,
 `actions.interrupt_compliance` and `safety.pass_rate` are **not** in the file
 yet. A floor for a metric nothing produces gates nothing and gives the
 impression something is protected; `safety.pass_rate` arrives in Phase 6, and
-`sql.execution_accuracy` now exists but reads 0.659 against a prompt defect the
-suite itself found, so a floor there would be a floor under a known fault
-rather than under a regression.
+`sql.execution_accuracy` now exists and reads 0.886, up from 0.659 on the run
+that found the prompt defect behind it — a number that moved 23 points in one
+task is not a floor yet, and `docs/NOTES.md` says what has to settle first.
 `routing.accuracy` is a special case — it reads 1.0000 across 15 runs, but
 Phase 4 grows that dataset from a 15-case slice to 60 or more and the number
 will fall for that reason alone, so a floor set now would fail on the commit

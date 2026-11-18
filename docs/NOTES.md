@@ -86,6 +86,16 @@ trusting a single run.*
       enough at this corpus size to say that; it is not a promise about a
       corpus ten times larger
 
+- **Teaching a model what a column holds makes it filter on that column.**
+      Measured 2026-11-18, and the clearest case yet for running a suite twice
+      rather than reasoning about a prompt. Adding the enumerated values to
+      `portfolio_sql.md` fixed eight cases and broke three unrelated ones: the
+      model began adding `status = 'active'` to questions that named no filter,
+      so "the total value of the whole book" came back as £180.8m instead of
+      £186.8m — a figure 3% wrong, phrased as the whole. Rule 6 of that prompt
+      now forbids it. Expect the same shape from any vocabulary a prompt gains:
+      the model uses what it is given.
+
 - **The sql suite's first numbers, and what they do not support yet.**
       Measured 2026-11-18 on 8e9c769, 51 cases twice. The two runs differ in
       exactly one case — `sql-crossclient-01`, which declined once and answered
@@ -100,6 +110,12 @@ trusting a single run.*
       single-account lookup, which completes inside it, while every statement
       that scans the book is cut five times out of five. The suite's fault
       case therefore asks a book-wide question.
+
+      **Updated 2026-11-18**, after the prompt learned the values: 0.886. Still
+      no floor, for a different reason — the number moved 23 points in one
+      task, and two of the five remaining failures are over-specified
+      references of mine rather than model faults. A floor belongs here once
+      the dataset has settled and two runs agree on it.
 
 ## Known gaps, not scheduled
 
@@ -127,6 +143,22 @@ trusting a single run.*
       is a feedback channel for someone probing the schema. Recorded
       2026-11-18. **Matters when:** more than a case or two is lost this way,
       or the attack set in Phase 6 has an opinion about the loop.
+
+      Seen a second way the same day: asked which accounts hold a ticker, the
+      model joined both views and PostgreSQL rejected `account_id` as
+      ambiguous. One retry would have fixed either mistake. `sql-ticker-holders-01`
+      is the case that flips with it, and it is flappy — the model writes the
+      join on some runs and not others.
+
+- **A model that cannot find a row reports zero rather than absence.** Asked
+      what an account holds in a class it holds nothing in, the model wraps the
+      figure in `SUM(...)`, which returns one row containing `NULL`, and the
+      answer becomes "£0.00" — an account holding nothing and an account
+      holding nothing *of that kind* are different facts. Rule 7 of
+      `portfolio_sql.md` now says not to, and the model still did it on the run
+      after. Pinned by `sql-allocation-absent-01`. Recorded 2026-11-18.
+      **Matters when:** a figure of zero is acted on, or Phase 6's output guard
+      can check an empty result against the sentence written about it.
 
 - **A cancelled request still writes no audit row.** A client
       disconnecting mid-tool raises `CancelledError`, which is not an

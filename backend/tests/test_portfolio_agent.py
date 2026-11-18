@@ -388,3 +388,79 @@ async def test_the_prompt_and_the_views_agree_on_the_columns(
     not_columns = set(ALLOWED_RELATIONS) | {"clients", "accounts", "holdings", "prices", "sql"}
     invented = sorted(quoted - columns - not_columns)
     assert not invented, f"the prompt names fields the views do not have: {invented}"
+
+
+#: Where each column the prompt enumerates gets its values from. Table-qualified
+#: because three tables have a `status` and the three lists are different —
+#: an account is active, an approval is pending, a task is open — so matching on
+#: the column name alone would compare the prompt against whichever came first.
+#: `risk_tolerance` is the view's name for `risk_profiles.tolerance`.
+VALUE_SOURCES = {
+    "asset_class": ("instruments", "asset_class"),
+    "status": ("accounts", "status"),
+    "mandate": ("accounts", "mandate"),
+    "account_type": ("accounts", "account_type"),
+    "segment": ("clients", "segment"),
+    "risk_tolerance": ("risk_profiles", "tolerance"),
+    "investment_objective": ("risk_profiles", "investment_objective"),
+    "capacity_for_loss": ("risk_profiles", "capacity_for_loss"),
+}
+
+
+def _prompt_values() -> dict[str, set[str]]:
+    """The prompt's value table, read as {column: values}.
+
+    The table is the machine-readable half of the prompt, which is why the
+    values are written as SQL literals: it is how the model should write them
+    and it keeps them out of the column check above, which looks for bare
+    identifiers in backticks.
+    """
+    found: dict[str, set[str]] = {}
+    for line in load_prompt("portfolio_sql").splitlines():
+        row = re.match(r"\|\s*`([a-z_]+)`\s*\|(.+)\|\s*$", line)
+        if row:
+            found[row.group(1)] = set(re.findall(r"`'([^']+)'`", row.group(2)))
+    return found
+
+
+async def test_the_prompt_and_the_database_agree_on_the_values(
+    db_session: AsyncSession,
+) -> None:
+    """The defect the sql suite found, pinned.
+
+    The prompt used to name the columns and not the values in them, so the
+    model wrote `status = 'Active'` where the database stores `active`. Eight
+    cases matched no rows and the answer reported that emptiness as fact —
+    "there are 200 accounts that are not active" — which is the most damaging
+    output this system can produce.
+
+    Read from the database's own `CHECK` constraints rather than from a list
+    kept here: those constraints are what make the values true, so a migration
+    that adds a status now fails this test instead of silently teaching the
+    model a vocabulary the firm no longer uses.
+    """
+    rows = await db_session.execute(
+        text(
+            "SELECT conrelid::regclass::text AS tbl, pg_get_constraintdef(oid) AS def "
+            "FROM pg_constraint WHERE contype = 'c' AND connamespace = 'public'::regnamespace"
+        )
+    )
+    allowed: dict[tuple[str, str], set[str]] = {}
+    for table, definition in rows.all():
+        column = re.search(r"\((\w+)\)::text = ANY", definition)
+        if column:
+            values = set(re.findall(r"'([^']+)'::character varying", definition))
+            allowed[(table, column.group(1))] = values
+    assert allowed, "no check constraints found; the migration did not run"
+
+    in_prompt = _prompt_values()
+    assert set(in_prompt) == set(VALUE_SOURCES), (
+        f"the prompt's value table and VALUE_SOURCES disagree: "
+        f"{sorted(set(in_prompt) ^ set(VALUE_SOURCES))}"
+    )
+
+    for column, source in VALUE_SOURCES.items():
+        assert in_prompt[column] == allowed[source], (
+            f"{column}: the prompt says {sorted(in_prompt[column])}, "
+            f"the database allows {sorted(allowed[source])}"
+        )
