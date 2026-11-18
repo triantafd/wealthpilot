@@ -101,18 +101,20 @@ trusting a single run.*
       is a property of the model, not of the dataset, so the trigger is a model
       change rather than more cases.
 
-- **`routing.accuracy` moved 3 points run to run, and then stopped.** Two runs
-      of the same commit scored 0.908 and 0.938, and the two cases that moved
-      were both book-wide aggregates — the borderline reading the supervisor
-      prompt then learned, not random cases. After that fix two further runs
-      agreed **case for case** at 0.954.
+- **`routing.accuracy` moved 3 points run to run, and the movement shrank to
+      one case rather than stopping.** Two runs of one commit scored 0.908 and
+      0.938, and the two cases that moved were both book-wide aggregates — the
+      borderline reading the supervisor prompt then learned, not random cases.
+      After that fix two runs agreed case for case at 0.954.
 
-      So the movement was not a property of the suite: it was three cases the
-      model could read two ways, and a prompt that said which reading was
-      meant removed it. Worth knowing before treating the next unstable metric
-      as irreducible noise — but a floor still belongs under the lower
-      observation, not the latest one, and `GATEABLE` keeps this out of the
-      gate. Measured 2026-11-18.
+      That looked like the end of it, and the next pair of runs — after the
+      fourth destination — disagreed again, on one case: *"what do we charge
+      AC-00001?"*, which went to research once and portfolio once. So the
+      honest statement is that this suite's instability is **specific cases the
+      model can read two ways**, not a property of the suite, and naming the
+      reading in the prompt removes them one at a time. A floor still belongs
+      under the lowest observation rather than the latest, and `GATEABLE` keeps
+      this metric out of the gate. Measured 2026-11-18.
 
 - **Teaching a model what a column holds makes it filter on that column.**
       Measured 2026-11-18, and the clearest case yet for running a suite twice

@@ -7,6 +7,7 @@ Phase 4a's shape:
 
     START -> supervisor -> research                -> END
                         -> portfolio               -> END
+                        -> conversation            -> END
                         -> propose_action -> request_approval
                                           -> approval_gate  -> END
                         -> out_of_scope             -> END
@@ -32,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.nodes.action import propose_action
 from app.agents.nodes.approval_gate import approval_gate, request_approval
+from app.agents.nodes.conversation import answer_from_thread
 from app.agents.nodes.portfolio import portfolio_agent
 from app.agents.nodes.research import research_agent
 from app.agents.nodes.supervisor import refuse_out_of_scope, supervise
@@ -43,6 +45,7 @@ from app.rag.embeddings import Embedder
 SUPERVISOR = "supervisor"
 RESEARCH = "research"
 PORTFOLIO = "portfolio"
+CONVERSATION = "conversation"
 PROPOSE_ACTION = "propose_action"
 REQUEST_APPROVAL = "request_approval"
 APPROVAL_GATE = "approval_gate"
@@ -59,6 +62,8 @@ def _destination(state: AgentState) -> str:
     route = state.get("route")
     if route == "portfolio":
         return PORTFOLIO
+    if route == "conversation":
+        return CONVERSATION
     if route == "action":
         return PROPOSE_ACTION
     if route == "out_of_scope":
@@ -129,12 +134,17 @@ def build_graph(
     async def gate_node(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         return await approval_gate(dict(state), session, thread_id=thread_of(config))
 
+    # No session, no model and no embedder: it answers out of the thread.
+    async def conversation_node(state: AgentState) -> dict[str, Any]:
+        return await answer_from_thread(dict(state))
+
     async def out_of_scope_node(state: AgentState) -> dict[str, Any]:
         return await refuse_out_of_scope(dict(state))
 
     graph.add_node(SUPERVISOR, supervisor_node)
     graph.add_node(RESEARCH, research_node)
     graph.add_node(PORTFOLIO, portfolio_node)
+    graph.add_node(CONVERSATION, conversation_node)
     graph.add_node(PROPOSE_ACTION, propose_node)
     graph.add_node(REQUEST_APPROVAL, request_node)
     graph.add_node(APPROVAL_GATE, gate_node)
@@ -147,12 +157,14 @@ def build_graph(
         {
             RESEARCH: RESEARCH,
             PORTFOLIO: PORTFOLIO,
+            CONVERSATION: CONVERSATION,
             PROPOSE_ACTION: PROPOSE_ACTION,
             OUT_OF_SCOPE: OUT_OF_SCOPE,
         },
     )
     graph.add_edge(RESEARCH, END)
     graph.add_edge(PORTFOLIO, END)
+    graph.add_edge(CONVERSATION, END)
     graph.add_edge(PROPOSE_ACTION, REQUEST_APPROVAL)
     graph.add_edge(REQUEST_APPROVAL, APPROVAL_GATE)
     graph.add_edge(APPROVAL_GATE, END)

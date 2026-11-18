@@ -157,6 +157,10 @@ async def propose_action(
             # last turn's action for approval. Found by the negative test
             # below, not by reasoning about it.
             "pending_action": None,
+            # Cleared for the same reason, and found the same way: citations
+            # replace, so a turn that cites nothing has to say so or the last
+            # research turn's sources are read as this one's.
+            "citations": [],
             "messages": [AIMessage(content=message)],
             "guardrail_flags": [f"action_not_proposed:{outcome}"],
             "usage": tokens,

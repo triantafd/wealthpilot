@@ -338,7 +338,7 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       `route-average-value-01` — which failed in *both* runs before — is the
       one that cannot be read as noise. Judged on those three rather than on
       the headline, because they are 4.6 points of a suite that was moving 3
-- [ ] **A question about the last answer has nowhere to go.** Observed in the
+- [x] **A question about the last answer has nowhere to go.** Observed in the
       app on 2026-10-19 and reproduced: ask the fee question, then "whre did
       you see that". The supervisor resolves the pronoun correctly —
       `standalone_question` came back as *"Where did you see that there is a
@@ -358,7 +358,15 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       signal; and the rewrite retrieves worse than the adviser's own phrasing
       (`fee-schedule#p1` fell out of the top 3 and the answer still cited it
       correctly from lower down), which is the known informal-phrasing gap
-      rather than anything new
+      rather than anything new.
+      Result: six provenance cases written first, measured at
+      `accuracy_conversation` **0.000** — five went to research, one to
+      portfolio — then the destination built and the same six at **1.000 in
+      both runs**. Overall 0.873 → 0.944/0.958. The node calls **no model and
+      runs no retrieval**: it assembles the answer from the verified citation
+      in state, so it cannot name a page the system never read. Reproduced end
+      to end afterwards with the real model, on the two messages from the
+      original observation
 - [ ] **An execution-only account must never be rebalanced — enforce it.**
       Settled against the corpus rather than left open: `mandates-and-
       rebalancing.md` says *"An `execution_only` account must **never** be

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.tools.sql  # noqa: F401  -- registers run_sql
 from app.agents.graph import (
+    CONVERSATION,
     OUT_OF_SCOPE,
     PORTFOLIO,
     PROPOSE_ACTION,
@@ -59,7 +60,7 @@ def test_no_route_the_supervisor_can_choose_lands_on_the_fallback() -> None:
     would quietly route to research, and this is what fails instead."""
     reached = {_destination({"route": route}) for route in typing.get_args(Route)}
 
-    assert reached == {RESEARCH, PORTFOLIO, PROPOSE_ACTION, OUT_OF_SCOPE}
+    assert reached == {RESEARCH, PORTFOLIO, CONVERSATION, PROPOSE_ACTION, OUT_OF_SCOPE}
 
 
 async def test_a_question_about_a_figure_reaches_the_portfolio_agent(

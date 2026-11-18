@@ -17,7 +17,14 @@ from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.graph import OUT_OF_SCOPE, PORTFOLIO, RESEARCH, _destination, compile_graph
+from app.agents.graph import (
+    CONVERSATION,
+    OUT_OF_SCOPE,
+    PORTFOLIO,
+    RESEARCH,
+    _destination,
+    compile_graph,
+)
 from app.agents.nodes.supervisor import (
     FALLBACK,
     MIN_CONFIDENCE,
@@ -157,6 +164,7 @@ async def test_a_parsing_failure_is_an_error_not_a_silent_default() -> None:
         ("action", "propose_action"),
         ("out_of_scope", OUT_OF_SCOPE),
         ("portfolio", PORTFOLIO),
+        ("conversation", CONVERSATION),
     ],
 )
 def test_each_route_maps_to_its_node(route: str, expected: str) -> None:

@@ -241,6 +241,12 @@ async def portfolio_agent(
             "messages": [AIMessage(content=message)],
             "sql_queries": traces,
             "guardrail_flags": ["portfolio_no_answer"],
+            # Cleared for the same reason `action.py` clears `pending_action`:
+            # the field replaces rather than accumulates, so omitting it leaves
+            # a *previous* turn's citations in state, where the history fold
+            # and the conversation agent both read them as this answer's
+            # sources. A figure has no document behind it.
+            "citations": [],
             "usage": tokens,
             "model_served": served,
         }
@@ -264,6 +270,7 @@ async def portfolio_agent(
     return {
         "messages": [AIMessage(content=answer)],
         "sql_queries": traces,
+        "citations": [],
         "usage": tokens,
         "model_served": served,
     }
