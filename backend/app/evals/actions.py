@@ -42,7 +42,7 @@ from app.agents.state import initial_state
 from app.evals.dataset import DATASETS_DIR, DatasetError
 from app.evals.metrics import cost_usd, mean
 
-DATASET = "actions_slice.jsonl"
+DATASET = "actions.jsonl"
 
 Outcome = Literal["propose", "ask_account", "refuse"]
 OUTCOMES: tuple[Outcome, ...] = ("propose", "ask_account", "refuse")

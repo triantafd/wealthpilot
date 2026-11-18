@@ -46,7 +46,7 @@ from langgraph.graph.message import add_messages
 # what it can actually serve, so the router cannot choose a destination with no
 # node behind it — see app/agents/nodes/. Keeping the state's own Literal
 # complete means adding that agent does not change the persisted shape.
-Route = Literal["research", "portfolio", "action", "out_of_scope"]
+Route = Literal["research", "portfolio", "conversation", "action", "out_of_scope"]
 
 
 def add_usage(left: dict[str, int] | None, right: dict[str, int] | None) -> dict[str, int]:

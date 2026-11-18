@@ -481,6 +481,48 @@ async def _stream_answer(
     return accumulator.final(), usage, accumulator.json_text
 
 
+async def stream_prose(
+    chat_model: BaseChatModel,
+    messages: list[SystemMessage | HumanMessage],
+    on_prose: ProseCallback | None = None,
+) -> tuple[str, TokenUsage]:
+    """Stream one plain-prose completion, reporting it as it arrives.
+
+    The unstructured sibling of `_stream_answer` above, for nodes whose answer
+    is prose rather than a schema. It exists so the two facts that cost an
+    afternoon to find — that usage rides a late chunk, and that `model_name`
+    arrives on a different, earlier one — are written down once.
+
+    Falls back to a single `ainvoke` when the model cannot stream, which is
+    what the fake chat model in the unit tests does.
+    """
+    if not hasattr(chat_model, "astream"):
+        message = await chat_model.ainvoke(messages)
+        text = chunk_text(getattr(message, "content", ""))
+        if text and on_prose is not None:
+            on_prose(text)
+        return text, TokenUsage.from_message(message)
+
+    parts: list[str] = []
+    usage = TokenUsage()
+    served: str | None = None
+    async for chunk in chat_model.astream(messages, config={"callbacks": langchain_callbacks()}):
+        delta = chunk_text(getattr(chunk, "content", ""))
+        if delta:
+            parts.append(delta)
+            if on_prose is not None:
+                on_prose(delta)
+        if getattr(chunk, "usage_metadata", None):
+            usage = TokenUsage.from_message(chunk)
+        reported = (getattr(chunk, "response_metadata", None) or {}).get("model_name")
+        if reported:
+            served = str(reported)
+
+    if served and usage.model != served:
+        usage = replace(usage, model=served)
+    return "".join(parts), usage
+
+
 async def generate_answer(
     chat_model: BaseChatModel,
     question: str,

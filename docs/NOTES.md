@@ -86,10 +86,109 @@ trusting a single run.*
       enough at this corpus size to say that; it is not a promise about a
       corpus ten times larger
 
+- **The supervisor's confidence cannot be used as a gate, and now there is
+      evidence rather than an absence of it.** On the 21-case slice the model
+      reported only 0.9 or 1.0 and got nothing wrong, so there was nothing to
+      calibrate against. The 65-case set was supposed to settle it, and it did,
+      in the other direction: across two runs **every wrong routing had
+      confidence 0.9 — and so did 39 of the correct ones**. The only separating
+      value would be 1.0, which would discard 39 right answers to catch 4 wrong
+      ones.
+
+      So `MIN_CONFIDENCE` stays at 0.5: a tripwire with a defined, tested
+      fallback, and not a parameter anybody should tune. Measured 2026-11-18.
+      **Revisit when:** a model reports a genuinely graded confidence — which
+      is a property of the model, not of the dataset, so the trigger is a model
+      change rather than more cases.
+
+- **`routing.accuracy` moved 3 points run to run, and the movement shrank to
+      one case rather than stopping.** Two runs of one commit scored 0.908 and
+      0.938, and the two cases that moved were both book-wide aggregates — the
+      borderline reading the supervisor prompt then learned, not random cases.
+      After that fix two runs agreed case for case at 0.954.
+
+      That looked like the end of it, and the next pair of runs — after the
+      fourth destination — disagreed again, on one case: *"what do we charge
+      AC-00001?"*, which went to research once and portfolio once. So the
+      honest statement is that this suite's instability is **specific cases the
+      model can read two ways**, not a property of the suite, and naming the
+      reading in the prompt removes them one at a time. A floor still belongs
+      under the lowest observation rather than the latest, and `GATEABLE` keeps
+      this metric out of the gate. Measured 2026-11-18.
+
+- **Teaching a model what a column holds makes it filter on that column.**
+      Measured 2026-11-18, and the clearest case yet for running a suite twice
+      rather than reasoning about a prompt. Adding the enumerated values to
+      `portfolio_sql.md` fixed eight cases and broke three unrelated ones: the
+      model began adding `status = 'active'` to questions that named no filter,
+      so "the total value of the whole book" came back as £180.8m instead of
+      £186.8m — a figure 3% wrong, phrased as the whole. Rule 6 of that prompt
+      now forbids it. Expect the same shape from any vocabulary a prompt gains:
+      the model uses what it is given.
+
+- **The sql suite's first numbers, and what they do not support yet.**
+      Measured 2026-11-18 on 8e9c769, 51 cases twice. The two runs differ in
+      exactly one case — `sql-crossclient-01`, which declined once and answered
+      once — so the other fifteen failures are reproducible and are defects
+      rather than noise. **No floor belongs in `thresholds.yaml` yet:** the
+      prompt fix those failures call for will move
+      `sql.execution_accuracy`, and a floor at today's 0.659 would be a floor
+      underneath a known defect.
+
+      `sql.failure_silent` read 0.000 on the first run, for a reason worth
+      keeping: a `statement_timeout` of one millisecond does **not** cut a
+      single-account lookup, which completes inside it, while every statement
+      that scans the book is cut five times out of five. The suite's fault
+      case therefore asks a book-wide question.
+
+      **Updated 2026-11-18**, after the prompt learned the values: 0.886. Still
+      no floor, for a different reason — the number moved 23 points in one
+      task, and two of the five remaining failures are over-specified
+      references of mine rather than model faults. A floor belongs here once
+      the dataset has settled and two runs agree on it.
+
 ## Known gaps, not scheduled
 
 *Real, and nobody is fixing them yet. The trigger line is the point: it turns
 "not now" into a condition rather than a shrug.*
+
+- **`average_cost` is null for every holding in the seeded book.** All 2,622
+      rows, so the column is in `v_holdings` and in the SQL prompt's schema
+      while holding nothing. A question about cost basis, an unrealised gain or
+      a return therefore gets a statement that is correct and a row that is
+      empty, and the answer prompt's "every figure comes from the rows" is the
+      only thing standing between that and an invented number. One eval case
+      (`sql-cost-basis-01`) pins the behaviour. Recorded 2026-11-18.
+      **Matters when:** the seed derives positions from transactions, or a case
+      needs a return.
+
+- **A `QueryFailed` is not retried, although a bad column name is as fixable as
+      a refusal.** Seen in the wild rather than argued: asked which accounts
+      hold `MER011`, the model selected `client_name` from `v_holdings`,
+      PostgreSQL answered that the column does not exist, and the turn ended
+      with nothing. A refusal would have been told what was wrong and allowed
+      one more attempt. Deliberate for a timeout — asking again costs another
+      five seconds to reach the same timeout — and merely untested for an
+      error that names a column. Not changed in passing, because the same loop
+      is a feedback channel for someone probing the schema. Recorded
+      2026-11-18. **Matters when:** more than a case or two is lost this way,
+      or the attack set in Phase 6 has an opinion about the loop.
+
+      Seen a second way the same day: asked which accounts hold a ticker, the
+      model joined both views and PostgreSQL rejected `account_id` as
+      ambiguous. One retry would have fixed either mistake. `sql-ticker-holders-01`
+      is the case that flips with it, and it is flappy — the model writes the
+      join on some runs and not others.
+
+- **A model that cannot find a row reports zero rather than absence.** Asked
+      what an account holds in a class it holds nothing in, the model wraps the
+      figure in `SUM(...)`, which returns one row containing `NULL`, and the
+      answer becomes "£0.00" — an account holding nothing and an account
+      holding nothing *of that kind* are different facts. Rule 7 of
+      `portfolio_sql.md` now says not to, and the model still did it on the run
+      after. Pinned by `sql-allocation-absent-01`. Recorded 2026-11-18.
+      **Matters when:** a figure of zero is acted on, or Phase 6's output guard
+      can check an empty result against the sentence written about it.
 
 - **A cancelled request still writes no audit row.** A client
       disconnecting mid-tool raises `CancelledError`, which is not an
@@ -146,6 +245,81 @@ trusting a single run.*
 
 ---
 
+- **A portfolio question is answered for any account id it names.** The
+  executor and `run_sql` had no caller until the portfolio agent, so the
+  authorisation gap recorded for Phase 9 is now reachable from free text:
+  `v_account_summary` carries `client_name`, `adviser` and `total_value` for
+  the whole book, and the only thing scoping a query today is rule 8 of
+  `portfolio_sql.md`, which is a prompt. Phase 9 owns the input side, which
+  needs auth to mean anything. **The output side does not** — comparing the
+  `client_id`s in the returned rows against the ids the question named needs
+  no identity at all, and is the seed of the Phase 6 output guard. Raised by
+  the security review of 2026-11-17. **Widened 2026-11-18**: the action agent
+  now discloses an account's *mandate* on the same unscoped terms, because its
+  refusal names it — the same root, one more field.
+
+- **PostgreSQL's own messages can still carry a value, and the redaction does
+      not catch them.** `redact_parameters` removes SQLAlchemy's
+      `[parameters: ...]` block, which is where a generated query's bound
+      values were landing. A constraint violation is different: asyncpg sends
+      *"Key (id)=(AC-00001) already exists"* as part of the message itself,
+      and no structural marker separates it from the rest. Low, because an id
+      of that shape is already in `audit_log.args` in full, so this is not a
+      new class of data — unlike bound parameters, which could be any value
+      from anywhere. Recorded 2026-11-18.
+      **Matters when:** a tool binds something the args column does not
+      already hold, or Phase 9 adds a table whose constraints quote client
+      data.
+
+- **An account id is case-sensitive, and an adviser is not.** `rebalance
+      ac-00001` refuses with "there is no account ac-00001": the lookup
+      compares `varchar` exactly, so a lower-cased id matches nothing. Safe —
+      it fails closed, and it cannot act on the wrong account — and wrong,
+      because no system a person uses treats an account number that way. The
+      fix is to normalise at the agent's boundary rather than in the query, so
+      the mandate and status checks keep reading the row that was found rather
+      than the string that was typed. Measured by `act-lowercase-id-01`, which
+      expects a proposal and fails. Recorded 2026-11-18.
+      **Matters when:** anybody uses the chat for more than a demo.
+
+- **A suspended or closed account can still be rebalanced.** The execution-only
+      prohibition is item 1 of six in `mandates-and-rebalancing.md`'s prohibited
+      list; item 6 is trading on a `closed` or `suspended` account, and the
+      document is explicit — *"A rebalancing proposal must exclude any account
+      not in `active` status"*. Neither the tool nor the agent reads `status`.
+      The seed has the cases: `AC-00037` is closed and discretionary,
+      `AC-00106` suspended and discretionary, and `AC-00053` is suspended *and*
+      execution-only, so the new rule covers exactly one suspended account by
+      coincidence — the kind of partial coverage that reads as handled. The
+      lookup already fetches the row, so the fix is `Account.status` plus one
+      branch in each of two places. Raised by the security review of
+      2026-11-18, outside that task's scope — and **now measured** rather than
+      only recorded: `act-status-closed-01` and `act-status-suspended-01` in
+      `actions.jsonl` expect a refusal, are tagged `expected-to-flip`, and
+      both fail today, which is 6.5 points of that suite.
+      **Matters when:** the next mandate-shaped rule is implemented, or anyone
+      cites the prohibited list as authority again.
+
+- **The approval card does not show what makes the action legal.** The
+      summary an approver reads is an account id and a reason. The mandate is
+      now the field that decides whether the action may happen at all, and an
+      `advisory` account — which per the same document needs the client's
+      consent to that specific set of trades, something nothing checks — looks
+      identical on the card to a `discretionary` one. Cheap to add to
+      `_summarise`; not added in the same change that made the mandate matter,
+      because an approval card is read by a human under time pressure and
+      changing it deserves its own before and after. Raised 2026-11-18.
+      **Matters when:** a second HIGH tool arrives, or advisory consent is
+      implemented.
+
+- **`audit_log.result` holds the rows a query returned**, up to 16,000
+  characters of client positions, with no retention policy. Deliberate — an
+  audit row that does not say what was read is not evidence — and the same is
+  true of the answer itself, which the checkpointer persists. The gap is that
+  nothing expires either. A `redact` hook on `ToolSpec` would let `run_sql`
+  audit `sql` and `row_count` without the rows, if the decision ever goes the
+  other way.
+
 ## Decisions taken
 
 ### Chunk sizes: not tried, deliberately
@@ -172,6 +346,12 @@ Worth recording as a limitation rather than a routing bug: a complete answer
 needs **both** sources, and the graph routes to one destination per turn. That
 is the case the supervisor's confidence threshold and fallback exist for, and
 it is the first question in the corpus that genuinely needs two agents.
+
+**Confirmed end to end on 2026-11-18**, once the destination existed to tempt
+it: asked through the compiled graph with a real model, that message routed to
+`research` at confidence 0.9 and came back with the 15%-over-30-days rule. The
+prediction and the behaviour agree, which is the only reason this stays a
+decision rather than a question.
 
 ### Self-approval is not acceptable — and the check is meaningless until auth
 

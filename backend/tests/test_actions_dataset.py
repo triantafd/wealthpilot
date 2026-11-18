@@ -8,7 +8,7 @@ says what is right for the firm; the agent follows in the next task.
 **How these cases must be run.** Straight to the action agent, bypassing the
 supervisor. Three cases are questions that reach it only by a routing mistake,
 and through the whole graph the supervisor would send them to `research` or
-`out_of_scope` — they would pass while testing nothing. `routing_slice.jsonl`
+`out_of_scope` — they would pass while testing nothing. `routing.jsonl`
 exercises the supervisor; this file exercises the action agent and the
 registry; the integration tests exercise the graph.
 
@@ -27,7 +27,9 @@ from typing import Any
 
 import pytest
 
-DATASET = Path(__file__).resolve().parents[2] / "evals" / "datasets" / "actions_slice.jsonl"
+from app.db.models.firm import MANDATES
+
+DATASET = Path(__file__).resolve().parents[2] / "evals" / "datasets" / "actions.jsonl"
 OUTCOMES = {"propose", "ask_account", "refuse"}
 
 CASES: list[dict[str, Any]] = [
@@ -53,6 +55,38 @@ def test_every_case_has_the_required_fields(case: dict[str, Any]) -> None:
     }
     assert case["message"].strip()
     assert case["expected_outcome"] in OUTCOMES
+
+
+def _seeded_mandate(account_id: str) -> str | None:
+    """The mandate `scripts/seed.py` gives an account, derived from its id.
+
+    The seed assigns `MANDATES[index % len(MANDATES)]` to `AC-{index:05d}`, so
+    the mandate of any seeded account is a property of its number and needs no
+    database. Checked against the development data when this was written:
+    AC-00001 discretionary, AC-00002 execution_only, AC-00003 advisory.
+    """
+    match = re.fullmatch(r"AC-(\d{5})", account_id)
+    if match is None:
+        return None
+    return MANDATES[int(match.group(1)) % len(MANDATES)]
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda c: c["id"])
+def test_no_case_expects_a_proposal_against_an_execution_only_account(
+    case: dict[str, Any],
+) -> None:
+    """The hole that let a case sit green while asserting the one thing the
+    documents prohibit absolutely: `act-rebalance-no-keyword-01` named
+    AC-00002 and expected a proposal, and nothing here could see it. The fix
+    is one dataset edit away from undoing itself without this."""
+    account = case.get("expected_account")
+    if case["expected_outcome"] != "propose" or not account:
+        return
+
+    assert _seeded_mandate(account) != "execution_only", (
+        f"{case['id']} expects a proposal against {account}, which the seed makes "
+        "execution-only — the firm may never rebalance it"
+    )
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c["id"])

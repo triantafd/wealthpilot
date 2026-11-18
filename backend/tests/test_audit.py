@@ -17,7 +17,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app import audit
-from app.audit import MAX_FIELD_CHARS, jsonable
+from app.audit import MAX_FIELD_CHARS, jsonable, redact_parameters
 from app.db.models.ops import AuditLogEntry
 from tests.conftest import _test_database_name, _url
 
@@ -139,3 +139,82 @@ async def test_an_ok_row_may_not_be_written_out_of_band(db_session: AsyncSession
             outcome="ok",
             out_of_band=True,
         )
+
+
+# --- Bound parameters ---------------------------------------------------------
+
+#: What SQLAlchemy actually produces for a failed generated query. Kept whole
+#: rather than paraphrased: the point of the function is to survive this exact
+#: shape, and a hand-written approximation of it proves nothing.
+DBAPI_ERROR = (
+    '(sqlalchemy.dialects.postgresql.asyncpg.ProgrammingError) column "x" does not exist\n'
+    "[SQL: SELECT total_value FROM v_account_summary WHERE account_id = $1 LIMIT 100]\n"
+    "[parameters: ('AC-00001',)]\n"
+    "(Background on this error at: https://sqlalche.me/e/20/f405)"
+)
+
+
+def test_the_values_go_and_the_statement_stays() -> None:
+    """A failure nobody can read is not evidence, so the statement is kept.
+    The values are what had no business being in the column."""
+    redacted = redact_parameters(DBAPI_ERROR)
+
+    assert "AC-00001" not in redacted
+    assert "SELECT total_value FROM v_account_summary" in redacted
+    assert 'column "x" does not exist' in redacted
+    assert "https://sqlalche.me" in redacted
+
+
+def test_the_same_values_leave_the_same_fingerprint() -> None:
+    """What makes this more than deletion: two failures on the same values are
+    still visibly the same failure, without the values being stored."""
+    other = DBAPI_ERROR.replace("AC-00001", "AC-00002")
+
+    assert redact_parameters(DBAPI_ERROR) == redact_parameters(DBAPI_ERROR)
+    assert redact_parameters(DBAPI_ERROR) != redact_parameters(other)
+
+
+def test_text_with_no_parameters_is_left_alone() -> None:
+    """Most errors in this column are not database errors at all."""
+    plain = "QueryRefused: function pg_sleep is not allowed"
+
+    assert redact_parameters(plain) == plain
+
+
+def test_the_executemany_shape_is_handled() -> None:
+    """A list of dicts rather than a tuple, with brackets of its own — which
+    is why the close is found from the right."""
+    text = "X: boom [SQL: INSERT ...] [parameters: [{'a': 'AC-1'}, {'a': 'AC-2'}]]"
+
+    redacted = redact_parameters(text)
+
+    assert "AC-1" not in redacted
+    assert "AC-2" not in redacted
+    assert "INSERT" in redacted
+
+
+def test_an_unclosed_block_still_loses_its_values() -> None:
+    """Fails closed. A truncated error is the likeliest way this arrives
+    malformed, and guessing that it is therefore safe is the wrong guess."""
+    redacted = redact_parameters("X: boom [SQL: SELECT 1] [parameters: ('AC-00001'")
+
+    assert "AC-00001" not in redacted
+
+
+async def test_a_recorded_failure_holds_no_bound_values(db_session: AsyncSession) -> None:
+    """The column itself, not the function. Redacted inside `write_audit` so
+    that a caller nobody has written yet cannot be the one that forgets."""
+    await audit.write_audit(
+        db_session,
+        event_type="call",
+        tool_name="run_sql",
+        tier="READ",
+        args={"query": "SELECT 1"},
+        outcome="error",
+        error=f"QueryFailed: {DBAPI_ERROR}",
+    )
+
+    row = (await db_session.execute(select(AuditLogEntry))).scalars().one()
+    assert row.error is not None
+    assert "AC-00001" not in row.error
+    assert "sha256:" in row.error

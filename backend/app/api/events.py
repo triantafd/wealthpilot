@@ -152,6 +152,34 @@ class CitationsEvent(ContractModel):
     items: list[Citation]
 
 
+class SqlEvent(ContractModel):
+    """One generated query the portfolio agent ran, as provenance.
+
+    The portfolio agent's equivalent of `retrieval` plus `citations`: a figure
+    with no visible source is a figure an adviser has to take on trust. One
+    event per attempt, so a refused first try is on the screen as well as in
+    the audit log.
+
+    **This does not contradict the answer prompt**, which forbids the model
+    from mentioning the query. That rule is about the sentence an adviser
+    reads, and it stands: the answer stays prose about a portfolio. Provenance
+    belongs beside the answer as structured metadata, exactly as a citation
+    does, not inside it.
+
+    **`failed` says that an attempt failed and never why.** The reason is the
+    executor's own text — a timeout, a rejected function, a column that does
+    not exist — and a security review found that text reaching an adviser's
+    screen once already. It stays in `audit_log.error`, where an investigation
+    can read it and an adviser cannot.
+    """
+
+    type: Literal["sql"] = "sql"
+    sql: str
+    row_count: int
+    ms: int
+    failed: bool = False
+
+
 class GuardrailEvent(ContractModel):
     type: Literal["guardrail"] = "guardrail"
     flag: str
@@ -176,6 +204,7 @@ StreamEvent = Annotated[
     | ApprovalRequiredEvent
     | ActionOutcomeEvent
     | CitationsEvent
+    | SqlEvent
     | GuardrailEvent
     | DoneEvent
     | ErrorEvent,
@@ -193,6 +222,7 @@ EVENT_MODELS: tuple[type[ContractModel], ...] = (
     ApprovalRequiredEvent,
     ActionOutcomeEvent,
     CitationsEvent,
+    SqlEvent,
     GuardrailEvent,
     DoneEvent,
     ErrorEvent,

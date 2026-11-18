@@ -73,6 +73,24 @@
         "required": true
       }
     },
+    "sql": {
+      "sql": {
+        "kind": "string",
+        "required": true
+      },
+      "rowCount": {
+        "kind": "number",
+        "required": true
+      },
+      "ms": {
+        "kind": "number",
+        "required": true
+      },
+      "failed": {
+        "kind": "boolean",
+        "required": true
+      }
+    },
     "guardrail": {
       "flag": {
         "kind": "string",

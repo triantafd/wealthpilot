@@ -9,8 +9,8 @@ All JSONL, one case per line, each with an `id` and `tags` (e.g. `easy`, `multi-
 | File | Fields | Min size |
 |---|---|---|
 | `rag_qa.jsonl` | `question`, `expected_answer`, `expected_sources: [{document_id, page}]` | 50 |
-| `routing.jsonl` | `message`, `expected_route` | 60 |
-| `sql.jsonl` | `question`, `client_id?`, `expected_rows` (or a reference SQL that is executed to produce them) | 40 |
+| `routing.jsonl` | `message`, `expected_route`, `why`, `tags`, `style`, `history?` | 60 |
+| `sql.jsonl` | `question`, `expects` (`rows`/`decline`/`failure`), `reference_sql`, `ordered`, `forbidden`, `why` | 40 |
 | `actions.jsonl` | `message`, `expected_outcome` (`propose`/`ask_account`/`refuse`), `expected_account`, `expected_tool`, `must_interrupt: bool`, `why` | 30 |
 | `safety.jsonl` | `message` or `poisoned_document`, `forbidden: [tool names or data patterns]` | 40 |
 
@@ -22,15 +22,28 @@ than from what a prompt currently says. That is what makes a dataset the
 authority — when a case fails, the system is wrong until someone argues
 otherwise, and a case is never reworded because it fails.
 
-The `_slice` files (`routing_slice.jsonl`, `actions_slice.jsonl`) are the
-Phase 4a versions, smaller than the sizes above. Phase 4 grows them into
-`routing.jsonl` and `actions.jsonl` and retires them.
+Both slice files are gone. `routing.jsonl` and `actions.jsonl` replaced them,
+and in each case the slice's cases were carried over **verbatim**: several
+record a defect that was found and fixed, and a reworded case is a different
+case.
 
-**`actions_slice.jsonl` runs against the action agent directly, not the
+**`actions.jsonl` runs against the action agent directly, not the
 graph.** Three of its cases are questions that reach the agent only by a
 routing mistake; through the whole graph the supervisor would divert them and
-they would pass while testing nothing. `routing_slice.jsonl` exercises the
+they would pass while testing nothing. `routing.jsonl` exercises the
 supervisor instead, and the integration tests exercise the two together.
+
+**`sql.jsonl` carries a reference statement, not expected rows.** Both it and
+the model's statement run through the same read-only executor and what is
+compared is what came back, because one correct answer can be written as a
+join, a subquery or a window function and a suite that diffs SQL text measures
+style. Rows are compared by value and not by column name, so an alias is not a
+failure; the headline accuracy also forgives *extra* columns, which is why
+each reference is written as the minimal statement that answers the question.
+Three of its cases are not answerable at all — a contact detail, a schema
+probe, a forced database failure — and are scored on what the adviser is shown
+instead. `app/evals/sql.py` holds the rest, including the one place the suite
+injects a fault.
 
 ## Metrics
 
@@ -40,7 +53,7 @@ supervisor instead, and the integration tests exercise the two together.
 | Answer | faithfulness, answer relevancy, context precision | Ragas |
 | Citations | citation validity | Quote appears verbatim in a cited chunk (deterministic) |
 | Routing | accuracy, confusion matrix | Exact match |
-| SQL | execution accuracy | Result rows equal expected rows (order-insensitive) |
+| SQL | **execution accuracy** (primary), rows_exact, decline_correct, leak_free, injection_resisted | The reference statement's rows, re-run and compared by value |
 | Actions | correct tool, interrupt compliance | HIGH tools must always interrupt |
 | Safety | pass rate | No forbidden tool call, no forbidden data in output |
 | Ops | p50/p95 latency, cost per query | From the run |
@@ -106,12 +119,16 @@ runs, and a real regression could land inside it.
 
 Thresholds for `routing.accuracy`, `sql.execution_accuracy`,
 `actions.interrupt_compliance` and `safety.pass_rate` are **not** in the file
-yet: those suites arrive in Phases 4 and 6. A floor for a metric nothing
-produces gates nothing and gives the impression something is protected.
-`routing.accuracy` is a special case — it reads 1.0000 across 15 runs, but
-Phase 4 grows that dataset from a 15-case slice to 60 or more and the number
-will fall for that reason alone, so a floor set now would fail on the commit
-that improves coverage.
+yet. A floor for a metric nothing produces gates nothing and gives the
+impression something is protected; `safety.pass_rate` arrives in Phase 6, and
+`sql.execution_accuracy` now exists and reads 0.886, up from 0.659 on the run
+that found the prompt defect behind it — a number that moved 23 points in one
+task is not a floor yet, and `docs/NOTES.md` says what has to settle first.
+`routing.accuracy` read 1.0000 across 15 runs of the 21-case slice, and that
+prediction has since been collected: on the 65-case set it is 0.938, and it
+moved 3 points between two runs of the same commit. A floor set from the slice
+would have failed on the commit that improved coverage, which is the general
+lesson — a floor measures the dataset as much as the system.
 
 ### Only deterministic metrics gate
 

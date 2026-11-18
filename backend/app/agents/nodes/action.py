@@ -30,7 +30,8 @@ from app.agents.nodes.research import last_question
 from app.agents.prompts import load_prompt
 from app.db.models import Account
 from app.rag.generate import TokenUsage
-from app.tools.registry import get
+from app.tools.actions.rebalance import FORBIDDEN_MANDATE, mandate_refusal
+from app.tools.registry import audit_denied, get
 
 # The tool this node can propose. Named rather than inferred, so adding a tool
 # to the registry does not silently make it proposable without a prompt that
@@ -91,8 +92,9 @@ async def propose_action(
     evaluate.
 
     **Code may only make the outcome more conservative.** It downgrades a
-    proposal to a refusal when the account does not exist, and to a question
-    when no id was extracted; it never turns a refusal into a proposal. The
+    proposal to a refusal when the account does not exist or its mandate
+    prohibits the action, and to a question when no id was extracted; it never
+    turns a refusal into a proposal. The
     model is the thing under test here, and a code path that proposed anyway
     would mask a prompt regression behind a green suite.
     """
@@ -136,12 +138,34 @@ async def propose_action(
         # The prompt forbids guessing an id, so a proposal without one is the
         # model contradicting itself. Asking is the conservative reading.
         outcome, detail = "ask_account", "Which account should I raise the rebalance for?"
-    elif outcome == "propose" and not await _account_exists(session, account_id):
-        # Validated here rather than inside the tool, which runs only after a
-        # human approves. Otherwise an approver is asked to authorise an
-        # impossible action, and the audit log holds an approved action that
-        # errored instead of a proposal that was never made.
-        outcome, detail = "refuse", f"there is no account {account_id}"
+    elif outcome == "propose":
+        # Both checks are here rather than inside the tool, which runs only
+        # after a human approves. Otherwise an approver is asked to authorise
+        # an impossible or prohibited action, and the audit log holds an
+        # approved action that errored instead of a proposal never made. The
+        # tool enforces them again regardless — see `MandateForbidsAction`.
+        mandate = await _account_mandate(session, account_id)
+        if mandate is None:
+            outcome, detail = "refuse", f"there is no account {account_id}"
+        elif mandate == FORBIDDEN_MANDATE:
+            # Code, not the prompt: the model cannot see a mandate, and this is
+            # the same principle as the downgrades below — code may make the
+            # outcome safer, never less safe. The sentence replaces whatever
+            # the model wrote, so a promise of action cannot reach the adviser.
+            outcome, detail = "refuse", mandate_refusal(account_id)
+            # An attempt at a prohibited action is a compliance event, and
+            # this is the path it will take thousands of times to one: the
+            # tool's own refusal is audited by `execute`, but a proposal
+            # stopped here never reaches it. Written out of band by
+            # `audit_denied`, so it survives whatever the turn does next.
+            await audit_denied(
+                session,
+                TOOL,
+                {"account_id": account_id},
+                reason=f"mandate {mandate!r} prohibits {TOOL}",
+                thread_id=state.get("thread_id"),
+                user_id=state.get("user_id"),
+            )
 
     if outcome != "propose":
         message = detail or "I cannot propose that action."
@@ -157,6 +181,10 @@ async def propose_action(
             # last turn's action for approval. Found by the negative test
             # below, not by reasoning about it.
             "pending_action": None,
+            # Cleared for the same reason, and found the same way: citations
+            # replace, so a turn that cites nothing has to say so or the last
+            # research turn's sources are read as this one's.
+            "citations": [],
             "messages": [AIMessage(content=message)],
             "guardrail_flags": [f"action_not_proposed:{outcome}"],
             "usage": tokens,
@@ -196,11 +224,14 @@ def _squash(text: str) -> str:
     return "".join(character for character in text.lower() if character.isalnum())
 
 
-async def _account_exists(session: AsyncSession, account_id: str) -> bool:
-    """Whether the account is real. Selects the id rather than the entity, so
-    nothing lands in the identity map to be read back stale later."""
-    found = await session.execute(select(Account.id).where(Account.id == account_id))
-    return found.scalar_one_or_none() is not None
+async def _account_mandate(session: AsyncSession, account_id: str) -> str | None:
+    """The account's mandate, or None when there is no such account.
+
+    One query for both questions, and columns rather than the entity, so
+    nothing lands in the identity map to be read back stale later.
+    """
+    found = await session.execute(select(Account.mandate).where(Account.id == account_id))
+    return found.scalar_one_or_none()
 
 
 def _unpack(response: Any) -> tuple[ActionDecision, Any]:

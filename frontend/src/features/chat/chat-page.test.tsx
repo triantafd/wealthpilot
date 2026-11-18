@@ -233,6 +233,19 @@ const RESEARCH_TURN = [
   { type: "done", usage: { inputTokens: 2612, outputTokens: 48, costUsd: 0.000421, ms: 2814 } },
 ];
 
+const PORTFOLIO_TURN = [
+  { type: "route", route: "portfolio", confidence: 1.0 },
+  {
+    type: "sql",
+    sql: "SELECT total_value FROM v_account_summary WHERE account_id = 'AC-00001' LIMIT 100",
+    rowCount: 1,
+    ms: 42,
+    failed: false,
+  },
+  { type: "token", text: "The total value of account AC-00001 is **£394,060.01**." },
+  { type: "done", usage: { inputTokens: 900, outputTokens: 30, costUsd: 0.00019, ms: 2100 } },
+];
+
 const ACTION_TURN = [
   { type: "route", route: "action", confidence: 0.88 },
   // The backend sends this on every action turn, including a proposal.
@@ -289,6 +302,22 @@ describe("ChatPage", () => {
     expect(screen.getByText(/Ask a question about the firm/i)).toBeInTheDocument();
     // The thing that distinguishes this from a chatbot, said up front.
     expect(screen.getByText(/pauses for approval/i)).toBeInTheDocument();
+  });
+
+  it("shows the query a figure came from, collapsed", async () => {
+    // The answer is the figure; the statement is provenance, wanted exactly
+    // when the figure is doubted. A reloaded turn shows neither — see
+    // `restore` in turn.ts.
+    vi.stubGlobal("fetch", stubFetch(PORTFOLIO_TURN));
+    renderChat();
+
+    await ask("what is AC-00001 worth?");
+
+    await waitFor(() => expect(screen.getByTestId("answer")).toBeInTheDocument());
+    const queries = screen.getByTestId("queries");
+    expect(queries).toHaveTextContent("1 row");
+    expect(queries).toHaveTextContent("42ms");
+    expect(queries).toHaveTextContent("v_account_summary");
   });
 
   it("shows the route, the answer and the citations", async () => {

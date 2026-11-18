@@ -133,12 +133,19 @@ type StreamEvent =
   | { type: "approval_required"; approvalId: string; action: ProposedAction }
   | { type: "action_outcome"; outcome: "propose" | "ask_account" | "refuse" }
   | { type: "citations"; items: { documentId: string; page: number; quote: string }[] }
+  | { type: "sql"; sql: string; rowCount: number; ms: number; failed: boolean }
   | { type: "guardrail"; flag: string }
   | { type: "done"; usage: { inputTokens: number; outputTokens: number; costUsd: number; ms: number } }
   | { type: "error"; message: string };
 ```
 
 Keep this in `shared/stream-events.ts` with a matching Pydantic model in `backend/app/api/events.py`. A contract test checks that both stay in sync.
+
+`sql` is the portfolio agent's `citations`: one per query it ran, so a figure
+has a visible source and a refused first attempt is not hidden by the one that
+answered. It carries **no error text** — `failed` says that an attempt failed
+and the reason stays in `audit_log.error`, because that reason is the
+executor's own words about a statement a model wrote.
 
 `token` arrives many times per turn. The research agent streams the answer as
 it is written, so most of these carry a delta to append; the last one of a turn

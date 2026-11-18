@@ -17,9 +17,9 @@ from typing import Any
 
 import pytest
 
-from app.agents.nodes.supervisor import SliceRoute
+from app.agents.state import Route
 
-DATASET = Path(__file__).resolve().parents[2] / "evals" / "datasets" / "routing_slice.jsonl"
+DATASET = Path(__file__).resolve().parents[2] / "evals" / "datasets" / "routing.jsonl"
 
 
 def cases() -> list[dict[str, Any]]:
@@ -48,7 +48,7 @@ def test_every_expected_route_is_one_the_supervisor_can_choose(case: dict[str, A
     forever and tell you nothing."""
     import typing
 
-    assert case["expected_route"] in typing.get_args(SliceRoute)
+    assert case["expected_route"] in typing.get_args(Route)
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c["id"])
@@ -71,9 +71,13 @@ def test_ids_are_unique() -> None:
 
 
 def test_every_route_is_represented() -> None:
+    """All four, read from `Route` rather than listed here: a destination added
+    to the graph with no case in this file is one nothing measures."""
+    import typing
+
     routes = {c["expected_route"] for c in CASES}
 
-    assert routes == {"research", "action", "out_of_scope"}
+    assert routes == set(typing.get_args(Route))
 
 
 def test_there_are_enough_deliberately_ambiguous_cases() -> None:
@@ -81,7 +85,36 @@ def test_there_are_enough_deliberately_ambiguous_cases() -> None:
     routing design is actually tested, so this is the count worth guarding."""
     ambiguous = [c for c in CASES if "ambiguous" in c["tags"]]
 
-    assert len(ambiguous) >= 4
+    assert len(ambiguous) >= 15
+
+
+def test_the_set_is_the_size_the_roadmap_asked_for() -> None:
+    """60 was not a round number picked for comfort: the 21-case slice scored
+    1.000 on every run, which says more about 21 easy questions than about the
+    router."""
+    assert len(CASES) >= 60
+
+
+def test_the_two_shapes_the_slice_had_none_of_are_here() -> None:
+    """An instruction naming no account, and a message carrying two requests.
+    Both were named in the roadmap because the slice could not have found a
+    defect in either."""
+    tagged = {tag for c in CASES for tag in c["tags"]}
+
+    assert {"no-account", "two-requests"} <= tagged
+
+
+def test_no_case_expecting_an_action_names_two_accounts_by_accident() -> None:
+    """One case deliberately names two, and the `why` says so. Any other would
+    be a case about the action agent's argument handling wearing a routing
+    case's clothes."""
+    plural = [
+        c
+        for c in CASES
+        if c["expected_route"] == "action" and len(set(re.findall(r"AC-\d+", c["message"]))) > 1
+    ]
+
+    assert [c["id"] for c in plural] == ["route-two-requests-two-accounts-01"]
 
 
 def test_both_registers_are_present() -> None:
@@ -96,7 +129,7 @@ def test_both_registers_are_present() -> None:
 def test_account_ids_look_like_the_seed_generates_them() -> None:
     """Routing never touches the database, so a wrong id here cannot fail a
     run — but an unrealistic one makes the set less credible, and the same ids
-    are reused by actions_slice.jsonl where they *are* looked up."""
+    are reused by the actions set, where they *are* looked up."""
     referenced = {m for c in CASES for m in re.findall(r"AC-\d+", c["message"])}
 
     assert referenced, "the action cases should name real accounts"
