@@ -5,7 +5,7 @@ the rule — it measures whether the model recognises a phrase it was handed. Th
 score goes up and means less, and nothing in the suite says so.
 
 This was real, not hypothetical: `action_propose.md` quoted seven of the
-sixteen `actions_slice.jsonl` messages and `supervisor.md` quoted six, which
+sixteen `actions.jsonl` messages (then the Phase 4a slice) and `supervisor.md` quoted six, which
 inflated both suites' first green runs. The numbers were re-measured after the
 examples were replaced.
 

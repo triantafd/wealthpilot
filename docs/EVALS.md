@@ -22,13 +22,12 @@ than from what a prompt currently says. That is what makes a dataset the
 authority — when a case fails, the system is wrong until someone argues
 otherwise, and a case is never reworded because it fails.
 
-`actions_slice.jsonl` is still the Phase 4a version, smaller than the size
-above; Phase 4 grows it into `actions.jsonl` and retires it. `routing.jsonl`
-has already been grown and the slice it replaced is deleted — the 21 cases it
-carried over are **verbatim**, because several of them record a defect that was
-found and fixed and a reworded case is a different case.
+Both slice files are gone. `routing.jsonl` and `actions.jsonl` replaced them,
+and in each case the slice's cases were carried over **verbatim**: several
+record a defect that was found and fixed, and a reworded case is a different
+case.
 
-**`actions_slice.jsonl` runs against the action agent directly, not the
+**`actions.jsonl` runs against the action agent directly, not the
 graph.** Three of its cases are questions that reach the agent only by a
 routing mistake; through the whole graph the supervisor would divert them and
 they would pass while testing nothing. `routing.jsonl` exercises the

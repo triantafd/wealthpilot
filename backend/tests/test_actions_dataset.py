@@ -29,7 +29,7 @@ import pytest
 
 from app.db.models.firm import MANDATES
 
-DATASET = Path(__file__).resolve().parents[2] / "evals" / "datasets" / "actions_slice.jsonl"
+DATASET = Path(__file__).resolve().parents[2] / "evals" / "datasets" / "actions.jsonl"
 OUTCOMES = {"propose", "ask_account", "refuse"}
 
 CASES: list[dict[str, Any]] = [

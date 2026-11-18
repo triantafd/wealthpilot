@@ -413,8 +413,16 @@ built `AgentState`, the checkpointer, the research agent, SSE streaming and the
       `hide_parameters` was considered and refused: it also hides them from
       local logs, leaves no correlator, and covers only errors that arrive
       through SQLAlchemy
-- [ ] **Grow** `actions_slice.jsonl` into `evals/datasets/actions.jsonl`
-      (≥30 cases), and retire the slice file
+- [x] **Grow** `actions_slice.jsonl` into `evals/datasets/actions.jsonl`
+      (≥30 cases), and retire the slice file.
+      Result: 31 cases, the 22 carried over verbatim, the slice deleted.
+      `actions.outcome_correct` 1.000 on 22 → **0.903** on 31, and all three
+      failures are cases written to fail: `act-status-closed-01` and
+      `act-status-suspended-01` measure the status prohibition nothing
+      implements, and `act-lowercase-id-01` measures a lookup that is
+      case-sensitive where an adviser is not. Nothing else regressed, which is
+      what makes the number readable — a gap a note records and no case
+      measures is a gap nobody will notice closing
 - [x] **Extend** the SSE contract with whatever events the portfolio agent needs,
       updating `shared/stream-events.ts` and `backend/app/api/events.py` together
       and keeping the contract test green.

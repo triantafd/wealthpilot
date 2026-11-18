@@ -271,6 +271,17 @@ trusting a single run.*
       already hold, or Phase 9 adds a table whose constraints quote client
       data.
 
+- **An account id is case-sensitive, and an adviser is not.** `rebalance
+      ac-00001` refuses with "there is no account ac-00001": the lookup
+      compares `varchar` exactly, so a lower-cased id matches nothing. Safe —
+      it fails closed, and it cannot act on the wrong account — and wrong,
+      because no system a person uses treats an account number that way. The
+      fix is to normalise at the agent's boundary rather than in the query, so
+      the mandate and status checks keep reading the row that was found rather
+      than the string that was typed. Measured by `act-lowercase-id-01`, which
+      expects a proposal and fails. Recorded 2026-11-18.
+      **Matters when:** anybody uses the chat for more than a demo.
+
 - **A suspended or closed account can still be rebalanced.** The execution-only
       prohibition is item 1 of six in `mandates-and-rebalancing.md`'s prohibited
       list; item 6 is trading on a `closed` or `suspended` account, and the
@@ -281,8 +292,11 @@ trusting a single run.*
       execution-only, so the new rule covers exactly one suspended account by
       coincidence — the kind of partial coverage that reads as handled. The
       lookup already fetches the row, so the fix is `Account.status` plus one
-      branch in each of two places, and the dataset cases to measure it.
-      Raised by the security review of 2026-11-18, outside that task's scope.
+      branch in each of two places. Raised by the security review of
+      2026-11-18, outside that task's scope — and **now measured** rather than
+      only recorded: `act-status-closed-01` and `act-status-suspended-01` in
+      `actions.jsonl` expect a refusal, are tagged `expected-to-flip`, and
+      both fail today, which is 6.5 points of that suite.
       **Matters when:** the next mandate-shaped rule is implemented, or anyone
       cites the prohibited list as authority again.
 
