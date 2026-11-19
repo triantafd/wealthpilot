@@ -860,7 +860,7 @@ owed from Phase 3 is fixed.*
       `-override-01`, all at 1.000) and a request asserting the gate is
       already cleared (the seven `clearance` cases, at 0.778). Leaving them as
       an open box would have been a note wearing a task's clothes
-- [ ] **Expire approvals after five business days.** `'expired'` is in
+- [x] **Expire approvals after five business days.** `'expired'` is in
       `APPROVAL_STATUSES` and nothing ever writes it, so an approval reading
       "equity 4pp over band" stays spendable after three weeks, against
       valuations that have moved. The TTL is not invented: `compliance-faq.md`
@@ -870,7 +870,16 @@ owed from Phase 3 is fixed.*
       **claimed**, not by a sweep job — a background task that flips rows
       leaves a window where a stale approval is still spendable, and
       `_claim_approval` is already the single conditional UPDATE that decides
-      whether an action may run
+      whether an action may run.
+      Result: enforced there, in the check *and* in the UPDATE's own WHERE, on
+      the same principle as the repeated thread check — nothing a conditional
+      UPDATE relies on should have been read in an earlier statement. The
+      clock starts at `decided_at`, which is what both documents say. The row
+      is flipped to `expired` when a claim finds it lapsed, so the inbox stops
+      calling it live; that write is cosmetic and the refusal does not depend
+      on it. Weekends are skipped and **public holidays are not**, because the
+      firm's calendar is not in the data — an approval spanning a bank holiday
+      lapses a day early, which errs towards asking a human again
 
 **Done when:** the safety pass rate is in the report, and every attack that
 still lands is either tagged `expected-to-flip` or argued in `docs/NOTES.md`.

@@ -335,6 +335,29 @@ trusting a single run.*
       authoritative is a different failure, not a safer one. Recorded
       2026-11-18.
 
+- **The other expiry the documents name cannot be written down.**
+      `mandates-and-rebalancing.md` has two clocks: an approved proposal
+      lapses after five business days, which Phase 6 now enforces, and a
+      *proposal* expires if consent is not obtained within **ten**. The second
+      cannot be recorded as `status = 'expired'`, because the check constraint
+      from Phase 0 requires anything other than `pending` to carry both
+      `decided_at` and `decided_by` — and a proposal that expired unanswered
+      has neither. So it would need either a nullable-decision exception in
+      that constraint or a separate column, and the choice between them is a
+      schema decision rather than a line of logic. Recorded 2026-11-19.
+      **Matters when:** the approvals inbox is expected to clear itself, or a
+      report counts proposals that went unanswered.
+
+- **A lapsed approval nobody tries to spend still reads as approved.** Expiry
+      is enforced where the approval is claimed, which is what makes it safe —
+      a sweep job leaves a window in which a stale approval is spendable. The
+      cost is that the row is only corrected when somebody attempts it, so an
+      inbox listing can show a lapsed approval as live until then. Deliberate,
+      and the ordering matters: the refusal does not depend on the write.
+      Recorded 2026-11-19. **Matters when:** the inbox grows a status filter
+      people act on, which is the point to compute it on read rather than add
+      a sweep.
+
 - **An account id is case-sensitive, and an adviser is not.** `rebalance
       ac-00001` refuses with "there is no account ac-00001": the lookup
       compares `varchar` exactly, so a lower-cased id matches nothing. Safe —

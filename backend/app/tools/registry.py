@@ -35,12 +35,14 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.events import ProposedAction, Tier
+from app.approvals import LAPSE_BUSINESS_DAYS, business_days_before, has_lapsed
 from app.audit import UNKNOWN_TIER, AuditTier, Outcome, write_audit
 from app.db.models.ops import AUDIT_OUTCOMES, Approval
 
@@ -194,6 +196,13 @@ async def _claim_approval(
       dangerous one.
     * **the arguments** — an approval for account A must not authorise account
       B. The approval is for a specific act, not for a capability.
+    * **the clock** — an approval lapses five business days after it was
+      granted. The firm's documents say so twice, and the FAQ answers the exact
+      case: an approval from three weeks ago authorises nothing, because the
+      valuations it was judged against have moved. Enforced here rather than by
+      a sweep job: a background task that flips rows leaves a window in which a
+      stale approval is still spendable, and this is the one statement that
+      decides whether an action runs.
     * **the thread** — an approval belongs to the conversation it was raised
       in. Not an escalation on its own, since tool and arguments must still
       match exactly and the claim is single-use: the worst case it prevents is
@@ -228,6 +237,7 @@ async def _claim_approval(
                 Approval.tool_name,
                 Approval.args,
                 Approval.consumed_at,
+                Approval.decided_at,
                 Approval.decided_by,
                 Approval.thread_id,
             ).where(Approval.id == approval_id)
@@ -249,6 +259,15 @@ async def _claim_approval(
         return denied("approval was granted for different arguments")
     if row.consumed_at is not None:
         return denied("approval has already been used")
+    if has_lapsed(row.decided_at):
+        # The row is flipped to `expired` so the inbox stops showing it as
+        # live. That is cosmetic: what makes this safe is the same cutoff in
+        # the UPDATE below, which holds whether or not this write survives the
+        # caller's transaction.
+        await session.execute(
+            update(Approval).where(Approval.id == approval_id).values(status="expired")
+        )
+        return denied(f"approval lapsed {LAPSE_BUSINESS_DAYS} business days after it was granted")
     if row.thread_id != thread_id:
         # Names only the thread that asked. The approval's own thread id is a
         # handle to someone else's conversation, and this string reaches the
@@ -262,10 +281,11 @@ async def _claim_approval(
                 Approval.id == approval_id,
                 Approval.status == "approved",
                 Approval.consumed_at.is_(None),
-                # Repeated from the check above rather than trusted from it:
-                # the point of a conditional UPDATE is that nothing it relies
-                # on was read in an earlier statement.
+                # Repeated from the checks above rather than trusted from
+                # them: the point of a conditional UPDATE is that nothing it
+                # relies on was read in an earlier statement.
                 Approval.thread_id == thread_id,
+                Approval.decided_at >= business_days_before(datetime.now(UTC), LAPSE_BUSINESS_DAYS),
             )
             .values(consumed_at=func.now())
             .returning(Approval.id)
