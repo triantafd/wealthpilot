@@ -28,6 +28,7 @@ but the schema does, and the grants cannot stop it because `pg_catalog` is
 world-readable. Only a check on the relations named in the query can.
 """
 
+import logging
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Final
@@ -454,6 +455,9 @@ def get_readonly_engine() -> AsyncEngine:
     return create_async_engine(get_settings().database_url_ro, pool_pre_ping=True)
 
 
+logger = logging.getLogger(__name__)
+
+
 async def run_select(
     sql: str, *, max_rows: int = MAX_ROWS, timeout_ms: int = TIMEOUT_MS
 ) -> SqlResult:
@@ -471,10 +475,13 @@ async def run_select(
             # into the next query on a pooled connection. The role carries the
             # same timeout, which covers a caller that does not set one; this
             # covers a caller that wants a shorter one.
-            await connection.execute(text(f"SET LOCAL statement_timeout = {int(timeout_ms)}"))
-            # Time is not the only resource a query spends: a recursive CTE can
-            # grow its worktable for the whole timeout window. `work_mem` is
-            # settable by any role, so it is set here.
+            # `work_mem` first, deliberately. Time is not the only resource a
+            # query spends: a recursive CTE can grow its worktable for the
+            # whole timeout window, and `work_mem` is settable by any role.
+            # Setting it *after* shrinking the clock put it inside its own
+            # budget — at `timeout_ms=1` the statement that got cancelled
+            # could be this SET rather than the caller's query, which made the
+            # timeout test pass without the query ever being submitted.
             #
             # `temp_file_limit` would be the other half and is deliberately
             # absent: it is SUSET in PostgreSQL, so this role cannot set it and
@@ -484,6 +491,7 @@ async def run_select(
             # running it. It belongs in `postgresql.conf` or behind a
             # `GRANT SET ON PARAMETER`, recorded as a follow-up.
             await connection.execute(text("SET LOCAL work_mem = '16MB'"))
+            await connection.execute(text(f"SET LOCAL statement_timeout = {int(timeout_ms)}"))
             result = await connection.execute(text(approved))
             rows = [dict(row) for row in result.mappings()]
     except SQLAlchemyError as exc:
@@ -497,33 +505,78 @@ async def run_select(
     )
 
 
+def _sqlstate(exc: SQLAlchemyError) -> str | None:
+    """The five-character error code, which is not localised.
+
+    Read off the driver's own exception rather than the SQLAlchemy wrapper:
+    measured against this database, `exc.orig` carries `sqlstate` for a failed
+    cast, a cancellation and a refused grant alike, while the wrapper's class
+    is only ever `DBAPIError` or `ProgrammingError`.
+    """
+    return getattr(getattr(exc, "orig", None), "sqlstate", None)
+
+
+#: The causes PostgreSQL distinguishes inside SQLSTATE 57014. The code alone
+#: cannot tell a statement timeout from an administrator's `pg_cancel_backend`,
+#: so the text is read to *refine* the message and never to decide it.
+_CANCEL_CAUSES: Final = (
+    "statement timeout",
+    "user request",
+    "lock timeout",
+    "conflict with recovery",
+)
+
+
 def _explain(exc: SQLAlchemyError, timeout_ms: int) -> str:
     """A message worth showing, out of a driver exception.
 
-    Nothing is redacted here and nothing needs to be: the statement carries no
-    bound parameters — it was rendered whole from the tree — so there are no
-    client values for Postgres to echo back. That is the one case the Phase 5
-    follow-up about `audit_log.error` does not have to cover.
+    **The server's own text is never returned.** PostgreSQL echoes the value
+    that offended it, and the value can come from a row:
+    `SELECT CAST(client_name AS DECIMAL) FROM v_account_summary` passes
+    validation — `CAST` is allowed and `DECIMAL` is not a forbidden target —
+    and fails with `invalid input syntax for type numeric: "<a client's
+    name>"`. Measured against the development database, not reasoned about.
+
+    That is a data channel the rest of the system cannot see. There is no
+    `SqlResult`, so `app/guardrails/cross_client.py` is never consulted; the
+    leaked token is a name rather than a `CL-`/`AC-` id, so it would not match
+    the guard's patterns anyway; and `MAX_ROWS` is irrelevant because the
+    carrier is the error string. It reaches the adviser, the model's next
+    prompt, and `audit_log.error`.
+
+    So the ladder dispatches on SQLSTATE, which is locale-independent — the
+    English phrases below only refine a message already chosen — and every
+    branch returns text this module wrote. The server's line goes to the
+    application log, where an operator can read it and a prompt cannot.
     """
     detail = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
-    if "statement timeout" in detail or "QueryCanceled" in type(exc).__name__:
-        return f"The query took longer than {timeout_ms / 1000:g}s and was stopped."
-    if "canceling statement" in detail:
-        # Postgres says "due to statement timeout" when it enforced the clock
-        # itself, and "due to user request" when something cancelled the
-        # backend — which is what asyncpg does when it gives up on a statement
-        # before the server has attributed it. At a one-millisecond timeout
-        # that is a race, and CI lost it where this machine wins it five times
-        # out of five: the branch above matched locally while this message
-        # arrived on the runner, as a raw driver string shown to an adviser.
-        #
-        # Worded for both causes. The timeout is the only thing in this
-        # codebase that cancels a read, so naming the limit is useful, but
-        # claiming the query *exceeded* it would be false if an operator
-        # cancelled the backend by hand.
-        return f"The query was stopped before it finished. The limit is {timeout_ms / 1000:g}s."
-    if "permission denied" in detail:
+    state = _sqlstate(exc)
+
+    # Logged rather than returned, which is the whole point: an operator needs
+    # the server's words and nothing downstream of here may have them.
+    logger.warning("read-only query failed (SQLSTATE %s): %s", state or "unknown", detail)
+
+    if state == "57014" or "canceling statement" in detail:
+        cause = next((candidate for candidate in _CANCEL_CAUSES if candidate in detail), None)
+        if cause == "statement timeout":
+            return f"The query took longer than {timeout_ms / 1000:g}s and was stopped."
+        # Everything else under 57014 is a cancellation this code did not ask
+        # for: an operator cancelling the backend, a lock timeout the server
+        # config set, a standby conflict. Saying the query exceeded the limit
+        # would be false, and saying nothing about the cause would make an
+        # external cancellation indistinguishable from a slow query in the
+        # audit log.
+        named = f" ({cause})" if cause else ""
+        return (
+            f"The query was stopped before it finished{named}. The limit is {timeout_ms / 1000:g}s."
+        )
+
+    if state == "42501" or "permission denied" in detail:
         # Reaching this means the allow-list let something through that the
-        # grants caught. Worth saying plainly rather than as a generic failure.
-        return f"The database refused the query: {detail}"
-    return f"The query failed: {detail}"
+        # grants caught. Worth telling the adviser plainly that it was refused
+        # rather than that it broke — but not *what* was refused: the server
+        # names the table, and a relation name is the schema this surface
+        # exists to keep out of an answer.
+        return "The database refused the query: the read-only role may not read what it asked for."
+
+    return f"The query could not be completed (SQLSTATE {state or 'unknown'})."
