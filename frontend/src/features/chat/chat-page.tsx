@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "cn";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
@@ -13,6 +14,7 @@ import { ask, createThread, decideApproval } from "@/lib/stream";
 import type { ActionOutcome } from "@shared/stream-events";
 
 import { useThreadTurns } from "./history";
+import { THREADS_KEY } from "./threads";
 import { applyEvent, newTurn, restore, type Turn, updateTurn } from "./turn";
 
 /**
@@ -61,6 +63,7 @@ export function ChatPage() {
 
   const { threadId: inUrl } = useParams<{ threadId: string }>();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   // The thread this page is currently driving. The URL is the source of truth;
   // this is how the page tells its own navigation apart from someone else's.
   //
@@ -138,9 +141,15 @@ export function ChatPage() {
         setTurns((current) => updateTurn(current, asked.id, (turn) => ({ ...turn, error: text })));
       } finally {
         setBusy(false);
+        // The sidebar's list changed: a new conversation is in it, or this one
+        // just moved to the top. In the `finally` rather than after the loop,
+        // because the backend indexes the thread *before* it streams — so a
+        // turn that failed is in the list too, and that is the conversation an
+        // adviser most wants to find again.
+        void queryClient.invalidateQueries({ queryKey: THREADS_KEY });
       }
     },
-    [busy, message, navigate],
+    [busy, message, navigate, queryClient],
   );
 
   const decide = useCallback(

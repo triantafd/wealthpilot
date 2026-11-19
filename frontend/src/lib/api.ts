@@ -186,6 +186,29 @@ export interface RestoredTurn {
   usage: RestoredUsage | null;
 }
 
+/**
+ * One conversation in the list, as `GET /threads` returns it.
+ *
+ * `first_question` is the adviser's own words, stored by the backend when the
+ * thread's first turn ran — so it is the label on the conversation, not a
+ * summary of it. It arrives collapsed to one line and cut to 300 characters;
+ * anything shown here still has to truncate, because 300 characters is a
+ * paragraph in a sidebar.
+ */
+export interface ThreadSummary {
+  thread_id: string;
+  first_question: string;
+  created_at: string;
+  /** When its last turn was sent. The list arrives ordered by this. */
+  last_active_at: string;
+  user_id: string | null;
+}
+
+/** The conversations, most recently active first. */
+export interface ThreadList {
+  threads: ThreadSummary[];
+}
+
 /** A thread, turn by turn. */
 export interface ThreadTurns {
   thread_id: string;

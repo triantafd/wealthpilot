@@ -44,7 +44,10 @@ function Address() {
  */
 function renderChat(route = "/chat") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  // The client is returned so a test can watch what the page invalidates: the
+  // sidebar's list is not rendered here, and asserting on the call is honest
+  // about which side of that seam this file owns.
+  const rendered = render(
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <SidebarProvider>
@@ -61,6 +64,7 @@ function renderChat(route = "/chat") {
       </TooltipProvider>
     </QueryClientProvider>,
   );
+  return { ...rendered, queryClient };
 }
 
 /** An SSE body from a list of events, split across chunks like a real one. */
@@ -454,6 +458,40 @@ describe("ChatPage", () => {
     renderChat();
 
     expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled();
+  });
+
+  it("refreshes the conversations list once a turn ends", async () => {
+    // The sidebar orders by when a thread last moved, and this turn moved one.
+    const { queryClient } = renderChat();
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    await ask("Is there a floor on what we charge?");
+
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["threads"] }),
+    );
+  });
+
+  it("refreshes the list even when the turn failed", async () => {
+    // The backend indexes the thread before it streams, so the conversation
+    // exists — and a failed one is the one an adviser comes back to.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const path = String(url);
+        if (path === "/api/threads" && init?.method === "POST") {
+          return new Response(JSON.stringify({ thread_id: "t-1" }), { status: 201 });
+        }
+        return new Response(JSON.stringify({ detail: "the model is down" }), { status: 500 });
+      }),
+    );
+    const { queryClient } = renderChat();
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    await ask("Is there a floor on what we charge?");
+
+    await waitFor(() => expect(screen.getByTestId("error")).toBeInTheDocument());
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["threads"] });
   });
 
   it("reuses one thread, so a follow-up continues the conversation", async () => {

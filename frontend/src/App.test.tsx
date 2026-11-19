@@ -7,6 +7,29 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "@/App";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
+/**
+ * A `fetch` that answers by path, for the shell's own requests.
+ *
+ * The app shell makes two on mount — `/api/health` for the footer and
+ * `/api/threads` for the conversations list — so a single
+ * `mockResolvedValue` hands the health body to both and the list crashes on a
+ * shape that is not its own. Anything unlisted rejects, which is what an
+ * endpoint a test did not think about should look like.
+ */
+function stubFetch(byPath: Record<string, unknown>) {
+  const fetchMock = vi.fn((input: unknown) => {
+    const path = String(input);
+    const body = Object.entries(byPath).find(([prefix]) => path.startsWith(prefix))?.[1];
+    return body === undefined
+      ? Promise.reject(new Error(`no stub for ${path}`))
+      : Promise.resolve({ ok: true, json: async () => body });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+const HEALTHY = { status: "ok", version: "0.1.0", env: "local" };
+
 /** A fresh client per test, with retries off so a failed fetch settles at once. */
 function renderApp(route = "/") {
   const queryClient = new QueryClient({
@@ -32,9 +55,9 @@ afterEach(() => {
 describe("app shell", () => {
   it("renders the sidebar with all five screens", () => {
     renderApp();
-    const nav = screen.getByRole("navigation");
+    const nav = screen.getByRole("navigation", { name: "Main" });
 
-    for (const label of ["Chat", "Approvals", "Documents", "Usage", "Evals"]) {
+    for (const label of ["New chat", "Approvals", "Documents", "Usage", "Evals"]) {
       expect(within(nav).getByRole("link", { name: label })).toBeInTheDocument();
     }
   });
@@ -79,7 +102,7 @@ describe("routing", () => {
 
   it("navigates when a sidebar link is clicked", async () => {
     renderApp("/chat");
-    const nav = screen.getByRole("navigation");
+    const nav = screen.getByRole("navigation", { name: "Main" });
 
     await userEvent.click(within(nav).getByRole("link", { name: "Approvals" }));
 
@@ -108,13 +131,7 @@ describe("backend status", () => {
   });
 
   it("reports the version and environment when the backend answers", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ status: "ok", version: "0.1.0", env: "local" }),
-      }),
-    );
+    stubFetch({ "/api/health": HEALTHY, "/api/threads": { threads: [] } });
 
     renderApp();
 
@@ -122,11 +139,7 @@ describe("backend status", () => {
   });
 
   it("calls the proxied /api path, not an absolute backend URL", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ status: "ok", version: "0.1.0", env: "local" }),
-    });
-    vi.stubGlobal("fetch", fetchMock);
+    const fetchMock = stubFetch({ "/api/health": HEALTHY, "/api/threads": { threads: [] } });
 
     renderApp();
     await screen.findByText(/v0\.1\.0/);

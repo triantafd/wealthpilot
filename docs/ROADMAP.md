@@ -969,10 +969,14 @@ chosen the way `SMOKE_IDS` was, not the set.
       a conversation whose turn failed is still listed. `GET /threads` orders
       by `last_active_at`. The title is stored verbatim and the endpoint is
       unauthenticated; see `docs/NOTES.md`
-- [ ] **The sidebar lists them.** The endpoint exists; nothing draws it. A
+- [x] **The sidebar lists them.** The endpoint exists; nothing draws it. A
       thread per row with its first question, newest first, and the current
       thread marked — plus whatever "Chat" should mean once there is a list to
-      go back to
+      go back to. **Result:** a "Conversations" group under its own nav
+      landmark, refreshed by the chat page when a turn ends so a continued
+      thread moves to the top. "Chat" became "New chat", which is what `/chat`
+      always did; and it no longer lights up inside a thread, a prefix match
+      nothing noticed while only one row could be current
 - [ ] **A turn that failed leaves no trace to restore.** An `error` event is
       sent over the stream and never written anywhere, so a reloaded turn that
       blew up comes back as a question with no answer and no error — it reads
