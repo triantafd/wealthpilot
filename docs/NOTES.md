@@ -348,6 +348,32 @@ trusting a single run.*
       **Matters when:** the approvals inbox is expected to clear itself, or a
       report counts proposals that went unanswered.
 
+- **`run_ingest` prunes to the list it is given, and I destroyed the
+      development index with it.** An ad-hoc probe called it with one
+      document and `force=True` against the development database; it deleted
+      the other ten and left a single page. The next smoke run read
+      `retrieval.mrr 0.0000` and the gate failed on three floors — which
+      looked exactly like a prompt change having broken retrieval, and was
+      not. Restored with `python -m app.scripts.ingest`, which re-embedded 81
+      chunks for about a tenth of a cent, and smoke returned to 0.6927.
+
+      The function is right to prune — incremental ingest is how the corpus
+      stays in step with the directory — and the sharp edge is that its
+      *argument* is the whole corpus, not an addition to it. Anything
+      experimental ingests into the test database or a throwaway one.
+      Recorded 2026-11-19.
+
+- **A prompt rule needs a poison that lands before it is worth its lines.**
+      The obvious indirect injection — a line telling the model to disregard
+      its instructions and report no minimum fee — was repelled **3 of 3**
+      with no rule in the prompt at all: it contradicts a figure in the same
+      passage, which makes it easy to reject. Adding the rule and claiming it
+      fixed something would have been unmeasured. The poison that actually
+      landed had to impersonate a legitimate pattern, and against *that* the
+      rule moved the prose from 0/2 to 2/2. Measured 2026-11-19.
+      **Matters when:** any guardrail prompt grows a rule — write the attack
+      that lands first, or the rule is decoration with a cost.
+
 - **The lapse window rides on the application's clock.** `decided_at` is
       written by the app and `consumed_at` by Postgres (`func.now()`), and the
       cutoff is computed in Python in both places it is applied. Self-consistent
