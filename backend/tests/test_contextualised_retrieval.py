@@ -140,33 +140,7 @@ async def test_the_rewrite_is_carried_whatever_the_route() -> None:
     assert update["standalone_question"] == "What is the weather in Edinburgh?"
 
 
-@pytest.fixture(scope="module")
-def live_model() -> Any:
-    """A chat model built inside this test's event loop.
-
-    Module-scoped, and so is the loop these tests run in. The provider client
-    holds an async connection pool bound to the loop that created it, so a
-    second test getting a fresh loop fails with "Event loop is closed" — which
-    looked like a model regression until the traceback was read, and which
-    clearing the `lru_cache` does not fix because the pool is inside the SDK's
-    client, not the cache.
-
-    Every other `@pytest.mark.llm` test in this project is the only one in its
-    file, which is why nothing hit this before. Pinning the loop is better than
-    keeping to one per file, because the next real-model test can just be
-    added.
-    """
-    from app.llm import get_chat_model
-
-    get_chat_model.cache_clear()
-    try:
-        yield get_chat_model()
-    finally:
-        get_chat_model.cache_clear()
-
-
 @pytest.mark.llm
-@pytest.mark.asyncio(loop_scope="module")
 async def test_the_real_supervisor_resolves_a_follow_up(live_model: Any) -> None:
     """One real call, because the value of this depends entirely on the model
     doing it well and a fake would only test the plumbing."""
@@ -178,7 +152,6 @@ async def test_the_real_supervisor_resolves_a_follow_up(live_model: Any) -> None
 
 
 @pytest.mark.llm
-@pytest.mark.asyncio(loop_scope="module")
 async def test_the_real_supervisor_leaves_a_standalone_question_alone(
     live_model: Any,
 ) -> None:

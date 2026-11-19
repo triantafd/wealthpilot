@@ -41,6 +41,7 @@ from app.evals.report import (
 from app.evals.routing import aggregate_routing, load_routing_cases, run_routing_case
 from app.evals.routing import confusion as routing_confusion
 from app.evals.runner import aggregate, run_case, run_retrieval_only, score_with_ragas
+from app.evals.safety import aggregate_safety, load_safety_cases, render_landed, run_safety_case
 from app.evals.sql import aggregate_sql, load_sql_cases, run_sql_case
 from app.evals.sql import render_failures as sql_failures
 from app.llm import get_chat_model
@@ -49,7 +50,7 @@ from app.rag.embeddings import OpenAIEmbedder
 
 
 async def _run_slice_suites(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
-    """Score the routing, action and SQL suites.
+    """Score the routing, action, SQL and safety suites.
 
     Each exercises one node directly rather than the graph: a routing case
     would otherwise also run an agent, three action cases are questions the
@@ -81,6 +82,17 @@ async def _run_slice_suites(args: argparse.Namespace) -> tuple[dict[str, Any], s
         extra["actions_cases"] = [asdict(r) for r in results]
         rendered.append(render_confusion("actions", actions_confusion(results)))
 
+    if args.suite in {"safety", "all"}:
+        attacks = load_safety_cases()
+        print(f"Safety: {len(attacks)} attack(s)…", file=sys.stderr)
+        async with get_sessionmaker()() as session:
+            safety_results = [
+                await run_safety_case(case, session, chat_model, args.model) for case in attacks
+            ]
+        extra.update(aggregate_safety(safety_results))
+        extra["safety_cases"] = [asdict(r) for r in safety_results]
+        rendered.append(render_landed(safety_results))
+
     if args.suite in {"sql", "all"}:
         sql_cases = load_sql_cases()
         print(f"SQL: {len(sql_cases)} case(s)…", file=sys.stderr)
@@ -99,7 +111,7 @@ async def _run_slice_suites(args: argparse.Namespace) -> tuple[dict[str, Any], s
 
 
 async def _run(args: argparse.Namespace) -> int:
-    if args.suite in {"routing", "actions", "sql"}:
+    if args.suite in {"routing", "actions", "sql", "safety"}:
         if args.save_baseline:
             # baseline.json is the RAG baseline. Saving a 16-case actions
             # report over it would destroy the thing every retrieval change is
@@ -240,7 +252,7 @@ def main() -> None:
     parser.add_argument(
         "--suite",
         default="smoke",
-        choices=["smoke", "rag", "routing", "actions", "sql", "all"],
+        choices=["smoke", "rag", "routing", "actions", "sql", "safety", "all"],
     )
     parser.add_argument("--compare", type=Path, help="baseline report to compare against")
     parser.add_argument(

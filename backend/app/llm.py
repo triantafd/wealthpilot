@@ -11,6 +11,7 @@ it, so the key is passed explicitly instead.
 """
 
 from functools import lru_cache
+from typing import Any
 
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
@@ -43,12 +44,27 @@ def _api_key_for(provider: str, settings: Settings) -> SecretStr:
 
 
 @lru_cache
-def get_chat_model(model: str | None = None, temperature: float = 0.0) -> BaseChatModel:
+def get_chat_model(
+    model: str | None = None,
+    temperature: float = 0.0,
+    **provider_kwargs: Any,
+) -> BaseChatModel:
     """The configured chat model.
 
     Temperature defaults to 0: an eval that cannot reproduce its own numbers
     cannot tell an improvement from noise. Callers that want variation ask for
     it explicitly.
+
+    `provider_kwargs` is a seam for the test suite and is passed by nothing in
+    production. `langchain_openai` hands every client it builds the **same**
+    module-level HTTP client, whose pool is bound to the event loop that first
+    used it — so a second real-model test in a fresh loop fails on a pool it
+    never opened, and closing that pool breaks every later test instead.
+    `tests/conftest.py` gives each test a provider client of its own through
+    here, which is what lets `uv run pytest -m llm` run as a set.
+
+    Forwarded rather than interpreted, so this stays provider-agnostic: which
+    arguments a provider wants is the fixture's business, not the factory's.
     """
     settings = get_settings()
     spec = model or settings.llm_model
@@ -62,4 +78,7 @@ def get_chat_model(model: str | None = None, temperature: float = 0.0) -> BaseCh
     provider, _ = spec.split(":", 1)
     key = _api_key_for(provider, settings)
 
-    return init_chat_model(spec, temperature=temperature, api_key=key.get_secret_value())
+    built: BaseChatModel = init_chat_model(
+        spec, temperature=temperature, api_key=key.get_secret_value(), **provider_kwargs
+    )
+    return built

@@ -87,16 +87,24 @@ def _chunk_refs(result: AnswerResult) -> list[dict[str, Any]]:
 
 
 def _citations(result: AnswerResult) -> list[dict[str, Any]]:
-    """Only citations whose quote was found verbatim in a retrieved passage.
+    """Only citations that hold up: the quote found, and in a document that was
+    actually retrieved.
 
-    `verify_citations` already decided this deterministically in Phase 1. An
-    unverified quote is exactly what the citation check exists to catch, so
-    passing one to the UI would undo that work.
+    `verify_citations` decided both deterministically in Phase 1, and this
+    filter used **only the first** — so a citation naming a document nobody
+    retrieved reached the adviser as provenance. Found by planting a line in a
+    document saying which document governed: the model quoted a real sentence
+    and attributed it to *Fee Schedule 2027*, which does not exist, and the
+    quote check passed it because the quote was genuine.
+
+    `CitationCheck.is_valid` is both halves, and `citations.validity` in the
+    eval report has always been computed from it — so the measurement knew
+    what the screen did not.
     """
     verified = {
         (check.citation.document_id, check.citation.page, check.citation.quote)
         for check in result.checks
-        if check.quote_found
+        if check.is_valid
     }
     return [
         {"documentId": c.document_id, "page": c.page, "quote": c.quote}

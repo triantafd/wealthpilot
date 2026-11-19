@@ -13,6 +13,7 @@ the bottom of this file.
 """
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy import text
@@ -20,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.rag.documents import SourceDocument
-from app.rag.embeddings import FakeEmbedder, OpenAIEmbedder
+from app.rag.embeddings import FakeEmbedder
 from app.rag.ingest import run_ingest
 from app.rag.retrieve import (
     RetrievedChunk,
@@ -216,7 +217,7 @@ async def test_the_hnsw_index_is_usable(db_session: AsyncSession) -> None:
 
 
 @pytest.mark.llm
-async def test_real_embeddings_are_wired_up(db_session: AsyncSession) -> None:
+async def test_real_embeddings_are_wired_up(db_session: AsyncSession, live_embedder: Any) -> None:
     """A wiring smoke test, not a quality bar.
 
     The question shares no tokens with the answer — "1.4 million pounds" against
@@ -237,7 +238,7 @@ async def test_real_embeddings_are_wired_up(db_session: AsyncSession) -> None:
     """
     from app.rag.documents import load_documents
 
-    embedder = OpenAIEmbedder()
+    embedder = live_embedder
     await run_ingest(load_documents(DOCS_DIR), db_session, embedder, force=True)
 
     results = await search(

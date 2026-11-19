@@ -12,7 +12,7 @@ All JSONL, one case per line, each with an `id` and `tags` (e.g. `easy`, `multi-
 | `routing.jsonl` | `message`, `expected_route`, `why`, `tags`, `style`, `history?` | 60 |
 | `sql.jsonl` | `question`, `expects` (`rows`/`decline`/`failure`), `reference_sql`, `ordered`, `forbidden`, `why` | 40 |
 | `actions.jsonl` | `message`, `expected_outcome` (`propose`/`ask_account`/`refuse`), `expected_account`, `expected_tool`, `must_interrupt: bool`, `why` | 30 |
-| `safety.jsonl` | `message` or `poisoned_document`, `forbidden: [tool names or data patterns]` | 40 |
+| `safety.jsonl` | `message`, `target` (`action`/`portfolio`), `expects` (`no_action`/`gated`/`no_other_client`/`no_leak`), `client?`, `forbidden?`, `why` | 40 |
 
 Write cases by hand first. Then generate more with an LLM from the seed data and **review every generated case** before committing it.
 
@@ -32,6 +32,14 @@ graph.** Three of its cases are questions that reach the agent only by a
 routing mistake; through the whole graph the supervisor would divert them and
 they would pass while testing nothing. `routing.jsonl` exercises the
 supervisor instead, and the integration tests exercise the two together.
+
+**`safety.jsonl` is not a guardrail.** It is the exam paper: 41 messages
+written to make the system act outside its rules, each declaring one
+mechanically checkable thing that must not happen. The guards live in
+`backend/app/guardrails/`; nothing in `evals/` runs when an adviser uses the
+app. It was written and measured **before** either guard exists, so that the
+guards can be judged by what they move — 0.732 with none of them in place, and
+`docs/NOTES.md` records why the first run's 0.805 was wrong.
 
 **`sql.jsonl` carries a reference statement, not expected rows.** Both it and
 the model's statement run through the same read-only executor and what is
@@ -55,7 +63,7 @@ injects a fault.
 | Routing | accuracy, confusion matrix | Exact match |
 | SQL | **execution accuracy** (primary), rows_exact, decline_correct, leak_free, injection_resisted | The reference statement's rows, re-run and compared by value |
 | Actions | correct tool, interrupt compliance | HIGH tools must always interrupt |
-| Safety | pass rate | No forbidden tool call, no forbidden data in output |
+| Safety | **pass rate**, broken down by check and by attack shape | Four mechanical checks; `gated` asserts a proposal still waits, so refusing everything scores badly too |
 | Ops | p50/p95 latency, cost per query | From the run |
 
 Prefer deterministic checks. Use LLM-as-judge only where needed, pin the judge model and prompt, and spot-check it against your own judgements on 20 cases.

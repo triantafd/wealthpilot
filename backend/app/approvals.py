@@ -18,8 +18,8 @@ implementation detail of the gate; it is the record of who allowed what.
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import Any, Literal
+from datetime import UTC, datetime, timedelta
+from typing import Any, Final, Literal
 
 from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +35,55 @@ Decision = Literal["approve", "reject"]
 # fails at import rather than at the first decision.
 _STATUS: dict[Decision, str] = {"approve": "approved", "reject": "rejected"}
 _OUTCOME: dict[Decision, Outcome] = {"approve": "ok", "reject": "denied"}
+
+
+#: How long an approval authorises anything, in business days.
+#:
+#: Not invented: `mandates-and-rebalancing.md` says *"An approved proposal that
+#: is not executed within five business days lapses"*, and `compliance-faq.md`
+#: answers the exact case — *"A proposal was approved three weeks ago but never
+#: executed. Can I execute it now?" "No. Internal approval lapses after five
+#: business days."* The clock therefore starts at `decided_at`, not at
+#: creation.
+#:
+#: Enforced where an approval is *claimed* — `_claim_approval` says why — and
+#: the documents' second, longer clock is in `docs/NOTES.md`.
+LAPSE_BUSINESS_DAYS: Final = 5
+
+
+def business_days_before(moment: datetime, days: int) -> datetime:
+    """`days` business days earlier than `moment`, keeping the time of day.
+
+    Saturdays and Sundays do not count. **Public holidays do**, because the
+    firm's calendar is not in the data and a hard-coded list of dates would be
+    a guess wearing a rule's clothes — it would also be wrong for every
+    jurisdiction but one. The effect is that an approval spanning a bank
+    holiday lapses a day early, which errs towards asking a human again.
+    """
+    cutoff = moment
+    remaining = days
+    while remaining > 0:
+        cutoff -= timedelta(days=1)
+        if cutoff.weekday() < 5:
+            remaining -= 1
+    return cutoff
+
+
+def has_lapsed(decided_at: datetime | None, *, now: datetime | None = None) -> bool:
+    """Whether an approval granted then may still be spent.
+
+    Anything this cannot compare counts as lapsed; see the body.
+    """
+    moment = now or datetime.now(UTC)
+    if decided_at is None or decided_at.tzinfo is None or decided_at > moment:
+        # Total, and closed on every answer it cannot give: no time, a naive
+        # time it cannot compare, or a time in the future, which would extend
+        # the window by however far ahead it is. None of the three is
+        # reachable today — `decided_at` is written once, by `decide`, from
+        # `now`, into a `timezone=True` column — so each is a branch for the
+        # day that changes.
+        return True
+    return decided_at < business_days_before(moment, LAPSE_BUSINESS_DAYS)
 
 
 class ApprovalError(RuntimeError):

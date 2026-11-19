@@ -265,20 +265,17 @@ def test_usage_accumulates_across_nodes() -> None:
 
 
 @pytest.mark.llm
-async def test_a_real_model_routes_these_as_the_prompt_says() -> None:
+async def test_a_real_model_routes_these_as_the_prompt_says(live_model: Any) -> None:
     """Excluded from the default run. Without it nothing checks that the prompt
     and the schema work against an actual model rather than a fake that agrees
     with us.
 
-    One test over all the cases rather than a parametrized one, for a reason
-    worth recording: `langchain_openai` caches its default httpx client
-    globally, so a second test in a fresh event loop raises "Event loop is
-    closed" on a client the first test created. Clearing our own
-    `get_chat_model` cache is not enough. One test is one loop is one client —
-    and it also reports every mismatch at once instead of the first.
+    One test over all the cases rather than a parametrized one, so every
+    mismatch is reported at once instead of the first. It used to be one test
+    because a second in a fresh loop raised "Event loop is closed"; the
+    `live_model` fixture closes the provider's client inside the loop that
+    opened it, which is what fixed that.
     """
-    from app.llm import get_chat_model
-
     cases = [
         ("what's the minimum annual advisory fee?", "research"),
         ("can a client hold crypto in an ISA?", "research"),
@@ -290,10 +287,9 @@ async def test_a_real_model_routes_these_as_the_prompt_says() -> None:
         ("cash is piling up in AC-0042, is that a problem?", "research"),
     ]
 
-    model = get_chat_model()
     wrong = []
     for message, expected in cases:
-        update = await supervise(initial_state(message, thread_id="t-1"), model)
+        update = await supervise(initial_state(message, thread_id="t-1"), live_model)
         if update["route"] != expected:
             wrong.append(
                 f"  {message!r}\n    expected {expected}, got {update['route']} "
