@@ -12,7 +12,7 @@ spendable.
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from pathlib import Path
 
 import pytest
 from langgraph.types import Command
@@ -90,6 +90,19 @@ def test_an_approval_with_no_decision_time_counts_as_lapsed() -> None:
     assert has_lapsed(None, now=WEDNESDAY)
 
 
+def test_a_future_decision_time_counts_as_lapsed() -> None:
+    """It would otherwise extend the window by however far ahead it is.
+    Unreachable — `decide` writes `now` — so this is the branch for the day
+    something else writes that column."""
+    assert has_lapsed(WEDNESDAY + timedelta(days=1), now=WEDNESDAY)
+
+
+def test_a_naive_decision_time_counts_as_lapsed() -> None:
+    """Comparing it would raise `TypeError`, which escapes the gate's
+    `except ToolError` as a 500 with nothing audited. Closed instead."""
+    assert has_lapsed(datetime(2026, 11, 17, 10, 0), now=WEDNESDAY)
+
+
 # --- Through the claim -------------------------------------------------------
 
 
@@ -141,10 +154,17 @@ async def test_a_lapsed_approval_authorises_nothing(
 
     # The whole point: no task, and the attempt is on the record.
     assert (await db_session.execute(select(func.count()).select_from(Task))).scalar_one() == 0
-    rows = list((await db_session.execute(select(AuditLogEntry))).scalars().all())
+    rows = list(
+        (await db_session.execute(select(AuditLogEntry).order_by(AuditLogEntry.id))).scalars().all()
+    )
     denied = [r for r in rows if r.outcome == "denied"]
     assert denied, "a refused HIGH call has to leave a row"
-    assert "lapsed" in (denied[-1].error or "")
+    # `any`, not `[-1]`: heap order is not an ordering, and `executions_for`
+    # orders by id for the same reason.
+    assert any("lapsed" in (r.error or "") for r in denied)
+    # The grant time is in the row, so an investigation does not have to join
+    # back to the approval to see how stale it was.
+    assert any("granted 20" in (r.error or "") for r in denied)
 
 
 @pytest.mark.usefixtures("an_account")
@@ -176,8 +196,15 @@ async def test_the_inbox_stops_calling_a_lapsed_approval_approved(
     db_session: AsyncSession, an_account: str
 ) -> None:
     """Cosmetic, and deliberately so: the refusal above does not depend on
-    this write. It is here because an inbox that lists a lapsed approval as
-    live invites somebody to try spending it again."""
+    this write.
+
+    What this proves is that the UPDATE was issued and is visible on this
+    connection, which never rolls back. In the running system the flip
+    survives because the gate swallows the refusal and the request commits;
+    on the path where resuming raises, it is rolled back and the row still
+    reads `approved`. The refusal holds either way — that is the ordering the
+    claim is written in.
+    """
     from app.tools.registry import ToolError, execute
 
     thread = f"t-{uuid.uuid4()}"
@@ -204,9 +231,10 @@ async def test_a_lapsed_approval_resumed_through_the_graph_runs_nothing(
     """The layer an adviser actually reaches. The approval is decided and the
     thread is resumed three weeks later, which is the scenario the FAQ
     answers."""
+    from app.agents.checkpointer import checkpointer
     from app.agents.state import initial_state, thread_config
     from app.tools.registry import get
-    from tests.test_approvals import _gated_graph, checkpointer
+    from tests.test_approvals import _gated_graph
 
     thread = f"t-{uuid.uuid4()}"
     action = get("propose_rebalance").propose({"account_id": an_account})
@@ -231,8 +259,54 @@ async def test_a_lapsed_approval_resumed_through_the_graph_runs_nothing(
     assert (await db_session.execute(select(func.count()).select_from(Task))).scalar_one() == 0
 
 
-def test_the_window_is_the_one_the_documents_name(_: Any = None) -> None:
-    """Five, from `mandates-and-rebalancing.md` and `compliance-faq.md`. A
-    number changed here without changing them would make the code and the
-    corpus disagree about the firm's own rule."""
+@pytest.mark.usefixtures("an_account")
+async def test_the_cutoff_in_the_statement_is_a_real_backstop(
+    db_session: AsyncSession, an_account: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The half of the change nothing was exercising.
+
+    The Python check is computed from an earlier `now` than the statement's,
+    so it is always the looser of the two and the clause in the UPDATE never
+    fires in this suite — remove it and every other test here still passes.
+    With the check disabled, that clause is the only thing left: the claim
+    must still refuse and no task may be written.
+
+    The *reason* is not asserted, because it cannot be here — the branch that
+    tells the clock from a race calls the same function this test disables, so
+    the refusal arrives labelled a race. That label is right whenever the
+    function is working, which is every path but this one.
+    """
+    from app.tools import registry
+    from app.tools.registry import ToolError, execute
+
+    thread = f"t-{uuid.uuid4()}"
+    approval_id = await _approved(db_session, thread, an_account, ago_days=6)
+    monkeypatch.setattr(registry, "has_lapsed", lambda *_, **__: False)
+
+    with pytest.raises(ToolError, match="not authorised"):
+        await execute(
+            db_session,
+            "propose_rebalance",
+            {"account_id": an_account},
+            approval_id=approval_id,
+            thread_id=thread,
+            user_id="adviser-7",
+        )
+
+    assert (await db_session.execute(select(func.count()).select_from(Task))).scalar_one() == 0
+
+
+def test_the_window_is_the_one_the_documents_name() -> None:
+    """The constant against the corpus, not against itself.
+
+    This asserted `5 == 5` while its docstring claimed to catch the code and
+    the documents disagreeing — it could not fail for the reason it named.
+    Whitespace is normalised because both passages wrap mid-sentence.
+    """
+    corpus = Path(__file__).resolve().parents[1] / "data" / "docs"
+    mandates = " ".join((corpus / "mandates-and-rebalancing.md").read_text().split())
+    faq = " ".join((corpus / "compliance-faq.md").read_text().split())
+
     assert LAPSE_BUSINESS_DAYS == 5
+    assert "not executed within five business days lapses" in mandates
+    assert "Internal approval lapses after five business days" in faq

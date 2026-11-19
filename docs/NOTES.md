@@ -348,6 +348,16 @@ trusting a single run.*
       **Matters when:** the approvals inbox is expected to clear itself, or a
       report counts proposals that went unanswered.
 
+- **The lapse window rides on the application's clock.** `decided_at` is
+      written by the app and `consumed_at` by Postgres (`func.now()`), and the
+      cutoff is computed in Python in both places it is applied. Self-consistent
+      on one instance, not across two with skewed clocks — and that skew is the
+      only thing that widens the window between the check and the statement
+      from microseconds to minutes. Nothing attacker-controlled: no request can
+      influence either clock. Pushing the cutoff into SQL off `func.now()` is
+      the fix if it ever matters. Raised by the security review of 2026-11-19.
+      **Matters when:** the backend runs on more than one instance.
+
 - **A lapsed approval nobody tries to spend still reads as approved.** Expiry
       is enforced where the approval is claimed, which is what makes it safe —
       a sweep job leaves a window in which a stale approval is spendable. The
@@ -356,7 +366,11 @@ trusting a single run.*
       and the ordering matters: the refusal does not depend on the write.
       Recorded 2026-11-19. **Matters when:** the inbox grows a status filter
       people act on, which is the point to compute it on read rather than add
-      a sweep.
+      a sweep. Second-order, from the same review: even when somebody does try
+      it, the flip only survives if the request commits — on the path where
+      resuming raises, it is rolled back and the row reads `approved` again.
+      The refusal holds either way, which is the ordering the claim is written
+      in.
 
 - **An account id is case-sensitive, and an adviser is not.** `rebalance
       ac-00001` refuses with "there is no account ac-00001": the lookup

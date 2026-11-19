@@ -19,7 +19,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,11 +46,9 @@ _OUTCOME: dict[Decision, Outcome] = {"approve": "ok", "reject": "denied"}
 #: business days."* The clock therefore starts at `decided_at`, not at
 #: creation.
 #:
-#: The firm's documents name a second, longer clock — a *proposal* expires if
-#: consent is not obtained within ten business days — which is a different
-#: thing with a different start, and `docs/NOTES.md` records why the schema
-#: cannot express it as `expired` today.
-LAPSE_BUSINESS_DAYS = 5
+#: Enforced where an approval is *claimed* — `_claim_approval` says why — and
+#: the documents' second, longer clock is in `docs/NOTES.md`.
+LAPSE_BUSINESS_DAYS: Final = 5
 
 
 def business_days_before(moment: datetime, days: int) -> datetime:
@@ -74,14 +72,17 @@ def business_days_before(moment: datetime, days: int) -> datetime:
 def has_lapsed(decided_at: datetime | None, *, now: datetime | None = None) -> bool:
     """Whether an approval granted then may still be spent.
 
-    A missing `decided_at` counts as lapsed. The schema's check constraint
-    makes that unreachable for an approved row — anything but `pending` carries
-    both a decider and a time — so this is the branch that fails closed if that
-    ever changes.
+    Anything this cannot compare counts as lapsed; see the body.
     """
-    if decided_at is None:
-        return True
     moment = now or datetime.now(UTC)
+    if decided_at is None or decided_at.tzinfo is None or decided_at > moment:
+        # Total, and closed on every answer it cannot give: no time, a naive
+        # time it cannot compare, or a time in the future, which would extend
+        # the window by however far ahead it is. None of the three is
+        # reachable today — `decided_at` is written once, by `decide`, from
+        # `now`, into a `timezone=True` column — so each is a branch for the
+        # day that changes.
+        return True
     return decided_at < business_days_before(moment, LAPSE_BUSINESS_DAYS)
 
 
