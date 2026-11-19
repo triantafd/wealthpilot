@@ -5,7 +5,9 @@ from app.db.models import Base
 from app.db.models.ops import RISK_TIERS
 from app.db.models.rag import EMBEDDING_DIM, Chunk
 
-# Every table named in ROADMAP Phase 0 task 4 and ARCHITECTURE section 2.
+# Every table named in ROADMAP Phase 0 task 4 and ARCHITECTURE section 2, plus
+# `threads` (Phase 7), which is the one table holding nothing the system needs
+# to run — only what a person needs to find a conversation again.
 EXPECTED_TABLES = {
     "accounts",
     "approvals",
@@ -18,6 +20,7 @@ EXPECTED_TABLES = {
     "prices",
     "risk_profiles",
     "tasks",
+    "threads",
     "transactions",
     "usage",
 }

@@ -958,14 +958,21 @@ chosen the way `SMOKE_IDS` was, not the set.
 
 *Phase 5 makes the app usable; this makes it good.*
 
-- [ ] **A thread list, so a conversation can be returned to.** The chat URL
-      carries its thread id since Phase 5, and the sidebar's "Chat" link goes
-      to `/chat` — a new conversation — so leaving a thread means losing the
-      way back to it unless the adviser kept the URL. Needs an endpoint that
-      lists a thread per row with its first question and when it last moved;
-      `checkpoints` has the threads but nothing names them, so the first
-      question has to come out of the earliest checkpoint or a column of its
-      own
+- [x] **An endpoint that lists the conversations.** The chat URL carries its
+      thread id since Phase 5, and the sidebar's "Chat" link goes to `/chat` —
+      a new conversation — so leaving a thread means losing the way back to it
+      unless the adviser kept the URL. `checkpoints` has the threads but
+      nothing names them, so the first question has to come out of the earliest
+      checkpoint or a column of its own. **Result:** a column of its own —
+      `threads` (migration `6ca1a09e1fef`), written by `POST
+      /threads/{id}/messages` before it streams and in a session of its own, so
+      a conversation whose turn failed is still listed. `GET /threads` orders
+      by `last_active_at`. The title is stored verbatim and the endpoint is
+      unauthenticated; see `docs/NOTES.md`
+- [ ] **The sidebar lists them.** The endpoint exists; nothing draws it. A
+      thread per row with its first question, newest first, and the current
+      thread marked — plus whatever "Chat" should mean once there is a list to
+      go back to
 - [ ] **A turn that failed leaves no trace to restore.** An `error` event is
       sent over the stream and never written anywhere, so a reloaded turn that
       blew up comes back as a question with no answer and no error — it reads

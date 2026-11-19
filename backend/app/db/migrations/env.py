@@ -18,7 +18,13 @@ from app.db.models import Base
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # `disable_existing_loggers=False`, which is not fileConfig's default: the
+    # default sets `disabled = True` on every logger that already exists, and a
+    # caller that runs alembic in-process has usually built its own already.
+    # The test suite migrates inside the pytest process, so without this every
+    # `app.*` logger imported before the first migration went silent — found
+    # when a test asserting on a logged warning saw no records at all.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Set at runtime rather than in alembic.ini, so the password stays out of git
 # and migrations hit the same database as the app by default.

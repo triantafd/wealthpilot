@@ -1,7 +1,9 @@
-"""Approvals, audit log and usage: the operational side of the schema.
+"""Approvals, audit log, usage and the thread index: the operational side.
 
-These three are what make the agent auditable — every HIGH-risk action that
-paused, every tool that ran, and what each request cost.
+The first three are what make the agent auditable — every HIGH-risk action
+that paused, every tool that ran, and what each request cost. `threads` is
+different in kind: it holds nothing the system needs to run, only what a
+person needs to find a conversation again.
 """
 
 import uuid
@@ -19,6 +21,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -194,3 +197,39 @@ class UsageRecord(Base, TimestampMixin):
     # counts unpriced requests separately instead (see app/pricing.py).
     cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     latency_ms: Mapped[int | None] = mapped_column(Integer)
+
+
+class ChatThread(Base, TimestampMixin):
+    """One conversation, so the adviser can find it again.
+
+    **Why this table exists at all.** The checkpointer already stores every
+    thread, and `app/agents/checkpointer.py` says plainly that its tables are
+    not ours. They also carry no name: the first question of a conversation is
+    inside a serialised checkpoint, in a format the library owns, so listing
+    twenty threads by title would mean twenty history walks and a dependency on
+    a shape nobody promised us. This is the label on the spine, written once by
+    the handler that runs the turn.
+
+    Nothing reads it to answer a question or to run an action. Losing the whole
+    table would cost the sidebar and nothing else, which is the test of whether
+    a row belongs here.
+    """
+
+    __tablename__ = "threads"
+    __table_args__ = (
+        # The list's only query: most recently active first.
+        Index("ix_threads_last_active_at", "last_active_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    first_question: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Whoever the request said it was. A claim, not an identity — the same
+    #: thing `audit_log.user_id` holds, and for the same reason: there is no
+    #: authentication yet (ROADMAP Phase 9). Nullable because the endpoint does
+    #: not require it.
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Bumped on every turn, so the list is ordered by what the adviser last
+    #: touched rather than by when they started it.
+    last_active_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

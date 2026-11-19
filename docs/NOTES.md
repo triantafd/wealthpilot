@@ -158,6 +158,19 @@ trusting a single run.*
 *Real, and nobody is fixing them yet. The trigger line is the point: it turns
 "not now" into a condition rather than a shrug.*
 
+- **The test suite still ships spans to Langfuse.** `_tracing_disabled` blanks
+      the credentials and its docstring claims that keeps questions out of the
+      cloud. It does not: at interpreter shutdown Langfuse's resource manager
+      flushes, the OTLP exporter POSTs the batch to whatever `LANGFUSE_HOST`
+      is, and the server answers 401 — so the payload leaves the machine and is
+      only rejected on arrival. Blank keys stop the data being *stored*, not
+      sent. The failure was invisible until `disable_existing_loggers=False`
+      (below) let the exporter's own error through; nothing about the request
+      is new. Found 2026-11-19. **Matters when:** a test's question is
+      something more than "what does a trade cost?", or `LANGFUSE_HOST` points
+      somewhere that accepts anonymous writes. The fix is for the fixture to
+      stop the client being built at all rather than to empty its keys.
+
 - **`average_cost` is null for every holding in the seeded book.** All 2,622
       rows, so the column is in `v_holdings` and in the SQL prompt's schema
       while holding nothing. A question about cost basis, an unrealised gain or
@@ -395,6 +408,19 @@ trusting a single run.*
       **Matters when:** the approvals inbox is expected to clear itself, or a
       report counts proposals that went unanswered.
 
+- **Running alembic in-process silences every logger that already exists.**
+      `logging.config.fileConfig()` defaults to
+      `disable_existing_loggers=True`, which sets `disabled = True` on each
+      one, and `app/db/migrations/env.py` calls it. The suite migrates inside
+      the pytest process, so every `app.*` logger imported before the first
+      migration was dead for the whole run: `caplog` saw no records at all,
+      and the warning `app/tools/sql/executor.py` logs *instead of* returning
+      a server's message went nowhere under test. Fixed 2026-11-19 with
+      `disable_existing_loggers=False`. Production never hit it — there,
+      alembic is a separate process — and the quirk fails silently, because a
+      disabled logger raises nothing and drops the record. Measured
+      2026-11-19.
+
 - **An injected provider client makes `ChatOpenAI` stop asking for token
       usage.** Measured while fixing `pytest -m llm`: with the client it
       builds itself, `stream_usage` is `True` and usage arrives on a late
@@ -556,6 +582,26 @@ therefore attached to the authentication work in Phase 9, where `decided_by`
 starts coming from an authenticated principal, and it is listed there.
 
 ---
+
+### The thread list is unscoped, and its titles are verbatim
+
+`threads.first_question` stores the adviser's question as typed, and adviser
+questions routinely name clients and accounts. That is a second copy of
+client-identifying text outside `audit_log`, with no retention policy. And
+`GET /threads` hands out every conversation's opening question to an
+unauthenticated caller — until now reading what was asked needed the thread's
+id.
+
+Shipped that way anyway, 2026-11-19. The title *is* the feature, and truncating
+does not help: a client's name is in the first few words, not the last. A
+`user_id` filter on the endpoint was considered and rejected as worse than
+nothing — `user_id` arrives in the request body and the server cannot check it
+(Phase 9), so filtering on it would make the hole look closed. The gap is the
+same one `app/api/threads.py`'s docstring records for `/approvals` and
+`/threads/{id}/turns`, and it closes with authentication or not at all.
+
+**Revisit when** Phase 9 lands: a thread has to belong to someone, and this is
+one of the three endpoints that must then check it.
 
 ## Considered and not planned
 
