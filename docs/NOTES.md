@@ -66,8 +66,14 @@ trusting a single run.*
       `33e7026` and in none of three on `0abe814` with retrieval byte-identical
       — so two of the suite's five refusal cases are coin-flips. `GATEABLE` in
       `app/evals/report.py` is a label that enforces nothing today, which is
-      the only reason this has not already bitten. Either Phase 6 lands first
-      or this metric starts report-only, stated in `thresholds.yaml`
+      the only reason this has not already bitten. **Phase 6 did not fix it**,
+      so the second option is the only one left: the metric starts report-only,
+      stated in `thresholds.yaml`. Measured 2026-11-19, the flip no longer
+      reproduces at all — 6 of 6 correct refusals across both passage orders —
+      and the fix for it was rejected because it cost a correctness case;
+      `docs/EXPERIMENTS.md` has the four-way isolation. A metric that was a
+      coin-flip twice and is steady today, on an alias the provider moves, is
+      exactly what must not carry a floor
 
 ---
 

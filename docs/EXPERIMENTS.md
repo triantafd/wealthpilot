@@ -942,3 +942,72 @@ than as an edit. It is the suite's **second** knife-edge refusal case beside
 the bistable `refusal-poa-policy-01`, i.e. two of five refusal cases are
 coin-flips — direct evidence for the Phase 8 decision not to gate on
 `answer.refusal_correct` before Phase 6.
+
+## Phase 6 — Refusal hardening by passage order: measured and rejected
+
+Phase 3 left a defect to fix here. `refusal-poa-policy-01` refused correctly
+under one retrieval configuration and answered confidently about a different
+subject under another, **with the same six passages retrieved** and only ranks
+1 and 2 swapped. The plan was to take rank out of the prompt: render the
+passages sorted by document and page, so two configurations that find the same
+passages produce a byte-identical request and no rank change can move an answer.
+
+**The defect does not reproduce on today's configuration.** Retrieve the six
+passages for that question, then answer twice — in rank order, and with ranks 1
+and 2 swapped — three runs each: 6 of 6 correct refusals. The bistability was
+measured on 2026-10-13 and 2026-10-19, and `docs/NOTES.md` already records that
+`LLM_MODEL` is an alias the provider moves under us. Nothing was fixed, because
+nothing fell over.
+
+The change was implemented anyway, for the property rather than the case, and
+then **measured out**. Two smoke runs either side:
+
+| Metric | Before (2 runs) | After (2 runs) |
+|---|---|---|
+| `retrieval.mrr` | 0.693 | 0.693 |
+| `retrieval.hit_at_1` | 0.600 | 0.600 |
+| `answer.refusal_correct` | 1.000 | 1.000 |
+| `citations.validity` | 0.963 | 1.000 |
+| `answer.must_include` | **0.889** | **0.852** |
+
+Retrieval cannot move — the ordering is applied when the prompt is rendered and
+`AnswerResult.retrieved` is untouched. `citations.validity` moved inside the
+0.926–1.000 band seven runs had already measured with retrieval fixed, so it is
+not a result. `answer.must_include` lost one case in both runs:
+`concentration-sector-01`, whose retrieval was byte-identical before and after.
+
+Two changes had gone in together — the ordering and a prompt paragraph saying
+the order is not a ranking — so the case was run four ways, three runs each:
+
+| | rank order | document order |
+|---|---|---|
+| old prompt | **3/3** | 0/3 |
+| new prompt | **3/3** | 0/3 |
+
+Unambiguous, and the prompt line is worth nothing: the ordering alone costs the
+case, 6/6 against 0/6.
+
+**Why it costs it is the finding.** Under rank order the model answers from
+`compliance-faq#p2` and gives the 15% single-sector cap. Under document order
+`client-restrictions#p1` sorts first — and the model answers about that client's
+Energy exclusion instead: confident, correctly cited, and about a neighbouring
+subject. That is the *same* failure the power-of-attorney case showed. So
+sorting does not remove the anchoring on passage 1; it only changes which
+passage wins, and it decides that by **alphabet**: `client-restrictions` <
+`compliance-faq`. The ranker had a reason to put the right passage first and the
+model used it, 6 times out of 6. The alphabet has no reason at all.
+
+So this replaces one ranker with a worse one, and it was reverted. What the
+measurement leaves standing:
+
+- **The defect is anchoring on the first passage, not rank order as such.**
+  Order mattering is a *feature* while the ranker is right, which here it is.
+  A fix has to make the model judge each passage against the question's
+  subject, and the prompt paragraph that asked it to do exactly that moved
+  nothing — 0/3 either way. That is the second prompt attempt in this project
+  to fail on anchoring, after the two on prose references.
+- **Boilerplate stripping (Phase 3) stays reverted**, and now for a measured
+  reason rather than a suspicion: a rank-only change is worth about one
+  correctness case in either direction on a 27-case suite, so its +1.4 hit@1
+  cannot be read off `must_include` at this suite size. The unlock that
+  justified this item does not exist.

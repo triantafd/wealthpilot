@@ -821,19 +821,28 @@ owed from Phase 3 is fixed.*
       module-scoped loop that worked around it is gone, which is what lets a
       real-model test use the function-scoped database session: the injection
       file has two of them, the first file in the project with more than one
-- [ ] Harden refusal against passage order. `refusal-poa-policy-01` refused
-      correctly under one retrieval config and answered confidently and
-      irrelevantly under another, **with the same six passages retrieved** and
-      only ranks 1 and 2 swapped. A confident wrong answer is the worst output
-      this system has, so the defect stays; the **measurement was cut on
-      2026-11-18**. It asked for the `out-of-scope` and `adversarial` tags
-      under several retrieval configurations, which is days of runs for a side
-      project. The narrow version: make the refusal not depend on rank order,
-      then run the existing suite twice before and twice after, judged on that
-      case and its tag rather than on a sweep. Boilerplate stripping (Phase 3)
-      becomes adoptable once this holds — worth +1.4 hit@1 at no runtime cost,
-      reverted only for this, and that unlock is the payoff justifying the
-      item at all
+- [x] Harden refusal against passage order — **measured, and the fix
+      rejected.** `refusal-poa-policy-01` refused correctly under one retrieval
+      config and answered confidently about another subject under another,
+      with the same six passages and only ranks 1 and 2 swapped. The narrow
+      version agreed on 2026-11-18 was to make the refusal not depend on rank
+      and judge it on that case rather than on a sweep.
+      Result: the flip **does not reproduce** on today's configuration — 6 of 6
+      correct refusals across both orders — and `LLM_MODEL` is an alias the
+      provider moves, which `docs/NOTES.md` already records. Taking rank out
+      of the prompt was implemented for the property anyway and then measured
+      out: it costs `concentration-sector-01` 6/6 against 0/6 with retrieval
+      byte-identical, because sorting by document and page does not remove the
+      anchoring on the first passage — it only changes which passage wins, and
+      decides that by alphabet. The ranker had a reason; the alphabet has
+      none. Reverted, with the four-way isolation and the numbers in
+      `docs/EXPERIMENTS.md`. **The boilerplate-stripping unlock does not
+      exist**: a rank-only change is worth about one correctness case either
+      way on 27, so +1.4 hit@1 cannot be read off `must_include` at this suite
+      size. What is left is a real finding for a later phase — the defect is
+      anchoring on passage 1, not rank order, and the prompt paragraph that
+      asked the model to judge each passage against the question's subject
+      moved nothing, 0/3 either way
 - [x] Indirect injection test: a seeded document containing hidden instructions.
       Result: it found a real defect, and not the one being looked for. The
       poison that lands is not an argument with the passage — it impersonates
