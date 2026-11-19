@@ -508,6 +508,20 @@ def _explain(exc: SQLAlchemyError, timeout_ms: int) -> str:
     detail = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
     if "statement timeout" in detail or "QueryCanceled" in type(exc).__name__:
         return f"The query took longer than {timeout_ms / 1000:g}s and was stopped."
+    if "canceling statement" in detail:
+        # Postgres says "due to statement timeout" when it enforced the clock
+        # itself, and "due to user request" when something cancelled the
+        # backend — which is what asyncpg does when it gives up on a statement
+        # before the server has attributed it. At a one-millisecond timeout
+        # that is a race, and CI lost it where this machine wins it five times
+        # out of five: the branch above matched locally while this message
+        # arrived on the runner, as a raw driver string shown to an adviser.
+        #
+        # Worded for both causes. The timeout is the only thing in this
+        # codebase that cancels a read, so naming the limit is useful, but
+        # claiming the query *exceeded* it would be false if an operator
+        # cancelled the backend by hand.
+        return f"The query was stopped before it finished. The limit is {timeout_ms / 1000:g}s."
     if "permission denied" in detail:
         # Reaching this means the allow-list let something through that the
         # grants caught. Worth saying plainly rather than as a generic failure.

@@ -565,6 +565,38 @@ def test_the_row_cap_cannot_be_raised_by_asking() -> None:
 async def test_the_timeout_cannot_be_disabled_by_asking(readonly: None, a_portfolio: str) -> None:
     """`statement_timeout = 0` means *no limit* in PostgreSQL, so a model
     supplying 0 — which reads as "be generous" — would remove it entirely.
-    Clamped, so 0 becomes the shortest timeout rather than none."""
-    with pytest.raises(SqlFailed, match="longer than"):
+    Clamped, so 0 becomes the shortest timeout rather than none.
+
+    Matched on "stopped", not on "longer than": at the clamped one
+    millisecond, whether Postgres reports its own timeout or asyncpg cancels
+    the backend first is a race, and this assertion failed on CI while passing
+    five times out of five here. What the test is for is that the query does
+    not run — both messages say it was stopped, and
+    `test_an_abrupt_cancellation_still_reads_as_a_stop` pins the second one
+    without needing to win a race.
+    """
+    with pytest.raises(SqlFailed, match="stopped"):
         await run_select(RUNAWAY, timeout_ms=0)
+
+
+def test_an_abrupt_cancellation_still_reads_as_a_stop() -> None:
+    """The branch the race exposed, tested without the race.
+
+    Postgres attributes a cancellation to the statement timeout only when it
+    enforced the clock itself; when the driver cancels the backend first the
+    server says "due to user request" instead. This exact line came off the
+    CI runner, where it reached the adviser as `The query failed:` followed by
+    a driver string.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from app.tools.sql.executor import _explain
+
+    reported = SQLAlchemyError(
+        "(sqlalchemy.dialects.postgresql.asyncpg.Error) canceling statement due to user request"
+    )
+
+    message = _explain(reported, 1)
+
+    assert "stopped" in message
+    assert "asyncpg" not in message, f"a driver string reached the adviser: {message!r}"
