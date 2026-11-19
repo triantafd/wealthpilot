@@ -11,6 +11,7 @@ with another LLM would make the metric as unreliable as the thing it measures.
 """
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -277,7 +278,9 @@ async def test_an_empty_index_produces_a_refusal_not_an_invention(
 
 
 @pytest.mark.llm
-async def test_real_model_answers_with_a_verbatim_citation(db_session: AsyncSession) -> None:
+async def test_real_model_answers_with_a_verbatim_citation(
+    db_session: AsyncSession, live_model: Any, live_embedder: Any
+) -> None:
     """The whole pipeline against the real provider. Opt in: `uv run pytest -m llm`.
 
     Also the only place the streaming is checked against OpenAI rather than a
@@ -286,19 +289,17 @@ async def test_real_model_answers_with_a_verbatim_citation(db_session: AsyncSess
     token usage survives streaming. Both are assertions below, and both were
     things the spike had to measure before this was built.
     """
-    from app.llm import get_chat_model
     from app.rag.documents import load_documents
-    from app.rag.embeddings import OpenAIEmbedder
 
     docs = load_documents(DOCS_DIR)
-    embedder = OpenAIEmbedder()
+    embedder = live_embedder
     await run_ingest(docs, db_session, embedder)
 
     deltas: list[str] = []
     result = await answer_question(
         db_session,
         embedder,
-        get_chat_model(),
+        live_model,
         "What is the minimum annual advisory fee?",
         on_prose=deltas.append,
     )

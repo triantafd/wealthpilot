@@ -669,6 +669,77 @@ SQL_FIXTURE_PRICE_DATE = date(2026, 1, 2)
 
 
 @pytest.fixture
+async def live_model() -> AsyncIterator[Any]:
+    """A real chat model, closed inside the loop that opened it.
+
+    This is what makes `uv run pytest -m llm` work as a set. The provider's
+    client holds an httpx pool bound to the running loop; left to the garbage
+    collector, it is finalised during some *later* test, calls
+    `loop.call_soon` on the loop that has since closed, and raises "Event loop
+    is closed" — inside a test that did nothing wrong. Every real-model test
+    in this suite used to be the only one in its file for that reason, and one
+    file worked around it with a module-scoped loop, which then could not use
+    the function-scoped database session.
+
+    The fix is **not** to close the client the model came with: measured, that
+    one is shared, and closing it makes every later test fail with "Cannot
+    send a request, as the client has been closed".
+
+    Nor is a per-test `httpx` client enough, which was tried: injecting any
+    client makes `ChatOpenAI` stop assuming the provider is OpenAI, and token
+    usage disappears from the stream. Both are handled below.
+
+    Both arguments, because `ChatOpenAI` sends requests through the first and
+    only closes the second; passing one leaves the other on the shared
+    default. That is provider-specific knowledge, which is why it lives here
+    rather than in `get_chat_model`.
+    """
+    from openai import AsyncOpenAI
+
+    from app.config import get_settings
+    from app.llm import get_chat_model
+
+    key = get_settings().openai_api_key
+    if key is None:
+        pytest.fail("OPENAI_API_KEY must be set for a test marked `llm`")
+    client = AsyncOpenAI(api_key=key.get_secret_value())
+    get_chat_model.cache_clear()
+    try:
+        # `stream_usage` as well, because `ChatOpenAI` sets it itself only when
+        # it built the client: given one, it will not assume it is talking to
+        # OpenAI, so `include_usage` is never requested and token counts come
+        # back empty. Measured — default client `stream_usage=True`, injected
+        # client `None` — and `test_generate` is what caught it, answering
+        # correctly and failing on `usage.output_tokens > 0`.
+        yield get_chat_model(
+            async_client=client.chat.completions,
+            root_async_client=client,
+            stream_usage=True,
+        )
+    finally:
+        await client.close()
+        get_chat_model.cache_clear()
+
+
+@pytest.fixture
+async def live_embedder() -> AsyncIterator[Any]:
+    """The same, for embeddings: its own `AsyncOpenAI`, its own pool."""
+    from openai import AsyncOpenAI
+
+    from app.config import get_settings
+    from app.rag.embeddings import OpenAIEmbedder
+
+    key = get_settings().openai_api_key
+    if key is None:
+        pytest.fail("OPENAI_API_KEY must be set for a test marked `llm`")
+    client = AsyncOpenAI(api_key=key.get_secret_value())
+    try:
+        yield OpenAIEmbedder(client=client)
+    finally:
+        await client.close()
+
+
+@pytest.fixture
 async def readonly(test_database: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
     """Point the executor's engine at the test database.
 

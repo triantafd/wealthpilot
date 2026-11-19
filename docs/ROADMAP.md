@@ -800,7 +800,7 @@ owed from Phase 3 is fixed.*
       still failing are both tagged `expected-to-flip`: they need to know who
       is asking, which is Phase 9. `sql.execution_accuracy` unchanged at
       0.886, so no legitimate question is blocked
-- [ ] **`uv run pytest -m llm` fails as a set, and CLAUDE.md documents it.**
+- [x] **`uv run pytest -m llm` fails as a set, and CLAUDE.md documents it.**
       Each of the four files holding a real-model test passes alone; run
       together, one fails with "Event loop is closed". The provider client
       holds a connection pool bound to the loop that created it, and clearing
@@ -811,7 +811,16 @@ owed from Phase 3 is fixed.*
       the workaround: a module-scoped loop plus a module-scoped model fixture.
       Housekeeping rather than a guardrail, and in this phase only because it
       is small and the fix is already identified: a test suite that cannot run
-      as a set is a visible flaw in a project whose pitch is that tests matter
+      as a set is a visible flaw in a project whose pitch is that tests matter.
+      Result: **7 passed** as a set, from 1 failed and 5 passed. The cause was
+      not what the note above guessed: every `ChatOpenAI` shares one HTTP
+      client, so the pool belongs to whichever loop touched it first. Each
+      test now gets a provider client of its own through a `**provider_kwargs`
+      seam in `get_chat_model` — `tests/conftest.py` holds the reasoning and
+      `docs/NOTES.md` the two attempts that failed on the way. The
+      module-scoped loop that worked around it is gone, which is what lets a
+      real-model test use the function-scoped database session: the injection
+      file has two of them, the first file in the project with more than one
 - [ ] Harden refusal against passage order. `refusal-poa-policy-01` refused
       correctly under one retrieval config and answered confidently and
       irrelevantly under another, **with the same six passages retrieved** and

@@ -348,6 +348,20 @@ trusting a single run.*
       **Matters when:** the approvals inbox is expected to clear itself, or a
       report counts proposals that went unanswered.
 
+- **An injected provider client makes `ChatOpenAI` stop asking for token
+      usage.** Measured while fixing `pytest -m llm`: with the client it
+      builds itself, `stream_usage` is `True` and usage arrives on a late
+      chunk; given any client — `http_async_client` or an SDK one — it is
+      `None`, because the class will no longer assume the endpoint is
+      OpenAI's, so `include_usage` is never requested. The answer streams
+      correctly and `usage.output_tokens` is 0.
+
+      `test_generate` is what caught it, and only because it asserts usage
+      rather than just the answer. Anything that injects a client has to pass
+      `stream_usage=True` as well, which `tests/conftest.py` now does — and
+      the general lesson is that a test asserting an answer would have passed
+      while the eval's cost column quietly went to zero. Measured 2026-11-19.
+
 - **`run_ingest` prunes to the list it is given, and I destroyed the
       development index with it.** An ad-hoc probe called it with one
       document and `force=True` against the development database; it deleted

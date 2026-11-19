@@ -19,7 +19,12 @@ docker compose up -d db
 uv sync
 uv run uvicorn app.main:app --reload
 uv run pytest                      # unit + integration, without LLM tests
-uv run pytest -m llm               # opt in to tests that call a real provider
+uv run pytest -m llm               # opt in to tests that call a real provider;
+                                   # such a test takes the `live_model` or
+                                   # `live_embedder` fixture, which gives it a
+                                   # provider client of its own — without that
+                                   # the set fails on a connection pool bound
+                                   # to an earlier test's event loop
 # Database tests drop, recreate and migrate their own `wealthpilot_test`
 # database on every run, so they never read or write your development data.
 uv run ruff check . && uv run ruff format .
