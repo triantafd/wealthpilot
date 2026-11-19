@@ -18,12 +18,14 @@ from decimal import Decimal
 from typing import Final
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.tools.sql import executor
 from app.tools.sql.executor import (
     MAX_ROWS,
     SqlFailed,
     SqlRejected,
+    _explain,
     run_select,
     validate,
 )
@@ -565,6 +567,126 @@ def test_the_row_cap_cannot_be_raised_by_asking() -> None:
 async def test_the_timeout_cannot_be_disabled_by_asking(readonly: None, a_portfolio: str) -> None:
     """`statement_timeout = 0` means *no limit* in PostgreSQL, so a model
     supplying 0 — which reads as "be generous" — would remove it entirely.
-    Clamped, so 0 becomes the shortest timeout rather than none."""
-    with pytest.raises(SqlFailed, match="longer than"):
+    Clamped, so 0 becomes the shortest timeout rather than none.
+
+    Matched on the clamped value rather than on the wording. At one
+    millisecond, whether Postgres reports its own timeout or something cancels
+    the backend first is a race — this assertion read "longer than" and failed
+    on CI while passing five times out of five here — and both messages now
+    carry the limit. `0.001s` is also the only assertion that pins the clamp
+    itself: with it removed the timeout would be *none*, and a test matching
+    on "stopped" would hang rather than fail.
+    """
+    with pytest.raises(SqlFailed, match=r"0\.001s"):
         await run_select(RUNAWAY, timeout_ms=0)
+
+
+# --------------------------------------------------------------------------
+# What the error message is allowed to say
+# --------------------------------------------------------------------------
+#
+# `_explain` writes the only text that survives a failure: `run_sql` wraps it
+# in `QueryFailed`, the registry records it in `audit_log.error`, and the model
+# reads it as a tool result. Everything the server said goes to the log
+# instead — these pin that it does not go anywhere else.
+
+
+def test_a_failed_cast_cannot_carry_a_value_out_in_the_error() -> None:
+    """The channel the Phase 7 security review found, verified against the
+    development database before being closed.
+
+    `SELECT CAST(client_name AS DECIMAL) FROM v_account_summary` passes
+    validation — `CAST` is allowed and `DECIMAL` is not a forbidden target —
+    and PostgreSQL answers `invalid input syntax for type numeric: "Hamish
+    Lindqvist"`. One arbitrary value per query, and nothing else in the system
+    sees it: there is no `SqlResult`, so the cross-client guard is never
+    consulted, and a name is not a `CL-` id so its patterns would not match
+    even if it were.
+    """
+    reported = SQLAlchemyError(
+        "(sqlalchemy.dialects.postgresql.asyncpg.Error) invalid input syntax "
+        'for type numeric: "Hamish Lindqvist"\n'
+        "[SQL: SELECT CAST(client_name AS DECIMAL) FROM v_account_summary LIMIT 100]\n"
+        "[parameters: ()]"
+    )
+
+    message = _explain(reported, 5000)
+
+    assert "Hamish" not in message, f"a client's name reached the adviser: {message!r}"
+    assert "v_account_summary" not in message, f"the schema reached the adviser: {message!r}"
+    assert "asyncpg" not in message
+
+
+def test_an_abrupt_cancellation_still_reads_as_a_stop() -> None:
+    """The branch the race exposed, tested without the race.
+
+    Postgres attributes a cancellation to the statement timeout only when it
+    enforced the clock itself; when something cancels the backend first the
+    server says "due to user request" instead. This line came off the CI
+    runner, where it reached the adviser as `The query failed:` followed by a
+    driver string. The `[SQL: ...]` tail is part of the fixture because
+    keeping it out of the message is the other half of what this function
+    does.
+    """
+    reported = SQLAlchemyError(
+        "(sqlalchemy.dialects.postgresql.asyncpg.Error) canceling statement due to user request\n"
+        "[SQL: SELECT * FROM v_holdings WHERE account_id = 'AC-EX01' LIMIT 100]\n"
+        "[parameters: ()]"
+    )
+
+    message = _explain(reported, 1)
+
+    assert (
+        message == "The query was stopped before it finished (user request). The limit is 0.001s."
+    )
+    assert "v_holdings" not in message
+
+
+@pytest.mark.parametrize(
+    ("cause", "named"),
+    [
+        ("lock timeout", "lock timeout"),
+        ("conflict with recovery", "conflict with recovery"),
+        ("user request", "user request"),
+    ],
+)
+def test_a_cancellation_that_is_not_the_timeout_does_not_claim_it_was(
+    cause: str, named: str
+) -> None:
+    """All of these are SQLSTATE 57014, and only one of them is our clock.
+    Reporting an operator's cancellation as "took longer than 5s" would send
+    an investigation after a slow query that never existed — and `_explain`'s
+    output is the whole of what `audit_log.error` keeps.
+    """
+    reported = SQLAlchemyError(
+        f"(sqlalchemy.dialects.postgresql.asyncpg.Error) canceling statement due to {cause}"
+    )
+
+    message = _explain(reported, 5000)
+
+    assert "longer than" not in message
+    assert named in message
+
+
+def test_a_refused_grant_does_not_name_the_table() -> None:
+    """The grants catching something the allow-list let through is worth
+    telling the adviser about; *which* relation it was is the schema, and
+    keeping the schema out of an answer is what this whole surface is for."""
+    reported = SQLAlchemyError(
+        "(sqlalchemy.dialects.postgresql.asyncpg.ProgrammingError) "
+        "permission denied for table clients"
+    )
+
+    message = _explain(reported, 5000)
+
+    assert "refused" in message
+    assert "clients" not in message
+
+
+def test_an_unrecognised_failure_says_only_its_code() -> None:
+    """The fall-through, which used to return the server's line verbatim."""
+    reported = SQLAlchemyError("(asyncpg.Error) something the server said about a value")
+
+    message = _explain(reported, 5000)
+
+    assert message == "The query could not be completed (SQLSTATE unknown)."

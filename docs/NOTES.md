@@ -264,18 +264,57 @@ trusting a single run.*
   now discloses an account's *mandate* on the same unscoped terms, because its
   refusal names it — the same root, one more field.
 
-- **PostgreSQL's own messages can still carry a value, and the redaction does
-      not catch them.** `redact_parameters` removes SQLAlchemy's
-      `[parameters: ...]` block, which is where a generated query's bound
-      values were landing. A constraint violation is different: asyncpg sends
-      *"Key (id)=(AC-00001) already exists"* as part of the message itself,
-      and no structural marker separates it from the rest. Low, because an id
-      of that shape is already in `audit_log.args` in full, so this is not a
-      new class of data — unlike bound parameters, which could be any value
-      from anywhere. Recorded 2026-11-18.
-      **Matters when:** a tool binds something the args column does not
-      already hold, or Phase 9 adds a table whose constraints quote client
-      data.
+- **PostgreSQL's own messages can carry a value, and calling that Low was
+      wrong.** `redact_parameters` removes SQLAlchemy's `[parameters: ...]`
+      block, which is where a generated query's bound values were landing. A
+      server message is different: asyncpg sends *"Key (id)=(AC-00001) already
+      exists"* as part of the message itself, with no structural marker to
+      separate. Recorded 2026-11-18 as Low, on the reasoning that an id of
+      that shape is already in `audit_log.args` in full.
+      **That reasoning was too narrow, found 2026-11-19.** The value the
+      server echoes is chosen by whoever wrote the query, not by the
+      constraint: `SELECT CAST(client_name AS DECIMAL) FROM v_account_summary`
+      passes validation and comes back *invalid input syntax for type numeric:
+      "<a client's name>"* — one arbitrary column value per query, and a name
+      is not in `args` and never was. Verified against the development
+      database. The read path's guards cannot see it either: there is no
+      `SqlResult`, so `cross_client.check` is never called, and a name is not
+      a `CL-` id so its patterns would not match if it were.
+      **Closed** in `_explain`, which now dispatches on SQLSTATE and returns
+      only text this codebase wrote; the server's line goes to a module logger
+      where an operator can read it and a prompt cannot. The tool path is
+      therefore fixed for every value-echoing error at once, rather than for
+      the casts that were the way in.
+
+- **The statement that is validated is not byte-for-byte the statement that
+      runs.** `run_select` executes `text(approved)`, and `text()` re-parses
+      the string: a rendered literal containing a colon after a non-word
+      character — `'AC :X01'` — becomes a bind parameter named `X01`, which is
+      then never supplied. Verified 2026-11-19. It **fails closed** today,
+      with `StatementError` before anything executes, so this is a gap rather
+      than a hole — but "validate one string, execute another" is the class
+      the module docstring says the file exists to prevent, and the
+      `SqlResult.sql` an adviser is shown as provenance is not what ran. It
+      also means a legitimate question about a name containing `` :`` cannot
+      be answered. The fix is one line, `connection.exec_driver_sql(approved)`,
+      which hands the DBAPI the validated bytes and additionally refuses
+      multi-statement strings in asyncpg's own prepare — but it skips the
+      dialect's bind handling, so it needs its own test and a run of the `sql`
+      suite. Not scheduled; no phase currently open owns it.
+      **Matters when:** a corpus or seed gains an instrument or client name
+      with a colon in it, or anyone relies on the displayed SQL being the
+      executed SQL.
+
+- **The relation allow-list permits a cast that the grants do not stop.**
+      `CAST(<a text column> AS DECIMAL)` is accepted — `CAST` is in the
+      function allow-list and `DECIMAL` is not a forbidden target — and its
+      only purpose in a generated query is to fail. Blocking the error channel
+      (above) removes the payoff, which is why that was done first: it closes
+      every value-echoing error rather than the casts that were one way in.
+      Narrowing the cast rules is the upstream half and is a separate
+      decision, because refusing a numeric cast of a column whose type the
+      validator does not know would also refuse legitimate arithmetic.
+      Recorded 2026-11-19.
 
 - **The attack set measures the pipeline, not a node, and that had to be made
       true twice.** `safety.jsonl` puts each case to the agent its check
