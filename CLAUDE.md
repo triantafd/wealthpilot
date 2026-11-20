@@ -45,6 +45,13 @@ uv run --project backend --group evals python evals/run.py --suite all \
 # frontend (run from frontend/)
 pnpm dev
 pnpm lint && pnpm typecheck && pnpm test
+pnpm test:e2e                      # Playwright, against the real backend. It
+                                   # starts both servers itself; the backend
+                                   # builds its own `<db>_e2e` database and
+                                   # fakes only the model and the embedder, so
+                                   # it needs Postgres up and no API key.
+                                   # First run: `pnpm exec playwright install
+                                   # chromium`.
 ```
 
 ## Working rules

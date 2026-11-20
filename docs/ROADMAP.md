@@ -1043,7 +1043,17 @@ chosen the way `SMOKE_IDS` was, not the set.
       update's loses the order. One consequence: a turn that retrieves and
       then fails while writing now reports the search it really did, where
       before it reported nothing
-- [ ] Playwright smoke test: ask → stream → approve
+- [x] Playwright smoke test: ask → stream → approve. **Result:** one spec in
+      `frontend/e2e/`, against the **real** backend on a database of its own —
+      `backend/tests/e2e/server.py` rebuilds it, seeds it and substitutes a
+      fake model and embedder, which are the only two sources of
+      non-determinism and the only two the app already has a seam for. It
+      costs nothing to run, so it is in CI on every pull request rather than
+      behind a button. The scenario adds a reload at the end, which is what
+      makes it worth the scaffolding: it crosses the checkpointer, the
+      approvals table and the usage table at once. Proved it catches
+      something by putting back the `preview` proxy bug it found — 160 jsdom
+      tests stayed green, the browser test went red
 
 **Done when:** a 2-minute screen recording shows the whole flow. Put it at the top of the README.
 

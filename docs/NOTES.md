@@ -184,6 +184,19 @@ trusting a single run.*
       renderer — show the first rows and let the reader open the rest — not in
       the cap, which exists for the executor's own reasons.
 
+- **The jsdom tests cannot see the backend, and there is one browser test
+      between them and the API.** All 160 frontend tests stub `fetch` with
+      JSON written by hand, so a field the backend renames stays green
+      everywhere until someone opens the app. Demonstrated 2026-11-20 rather
+      than argued: removing the `preview` proxy left all 160 passing and only
+      the Playwright spec red. That spec covers one path — ask, stream,
+      approve, reload — so every other REST shape the page reads is still
+      agreed by hand on both sides. **Matters when:** a response model
+      changes, or a second screen starts reading something the browser test
+      never visits. The cheap fix is not more browser tests but generating
+      the frontend's types from the OpenAPI schema the backend already
+      publishes.
+
 ## Known gaps, not scheduled
 
 *Real, and nobody is fixing them yet. The trigger line is the point: it turns
