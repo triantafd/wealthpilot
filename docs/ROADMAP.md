@@ -1116,6 +1116,20 @@ the thresholds are set once the answer path, including streaming, is stable.*
       set-returning function in `FROM` is refused today only because sqlglot
       gives those nodes an empty table name — an accident of the library that
       a test now pins, not a decision it made for us
+- [ ] **Run the approved SQL through the driver, not through `text()`.** The
+      same argument as the pin above, one layer lower: `validate()` returns an
+      approved string and `run_select` then hands it to `sqlalchemy.text()`,
+      which parses it again for bind parameters and can rewrite what actually
+      executes. Two parsers, and the one that approved the statement is not
+      the one that renders it. Measured 2026-11-20, the trigger is narrow —
+      `::numeric`, `'10:30'` and `'a:b'` are all left alone, because a colon
+      preceded by a word character or another colon is not a placeholder, so
+      only a literal like `' :ref'` fires it — and when it fires the query
+      raises and the turn declines rather than answering wrongly. So this is
+      not a live hole; it is a validation boundary with a second opinion
+      behind it. `connection.exec_driver_sql(approved)` sends the bytes
+      sqlglot approved, with a test that a statement containing a placeholder
+      runs unchanged
 - [ ] Post the metrics table as a PR comment
 
 ## Phase 9 — AWS deployment (1 week) · **Optional**

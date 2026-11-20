@@ -626,6 +626,29 @@ same one `app/api/threads.py`'s docstring records for `/approvals` and
 **Revisit when** Phase 9 lands: a thread has to belong to someone, and this is
 one of the three endpoints that must then check it.
 
+### `validate()` does not refuse a numeric cast of a text column
+
+Asked after the SQL security review: should the validator reject
+`CAST(notes AS numeric)` — a cast that cannot succeed — rather than let it
+reach PostgreSQL?
+
+**No.** There is no defect under the question. The cast fails at the server,
+`run_select` turns the `SQLAlchemyError` into a `SqlFailed`, and the turn
+declines — the same ending a refusal would produce, one round trip later. What
+a check would cost is the point: to know that `notes` is text, `validate()`
+needs the schema's column types, which means a copy of the catalog inside the
+validator. That copy goes stale at the next migration, and a stale copy
+refuses *correct* queries — the failure mode is silent and on the honest path,
+where the one we have today is loud and on the broken one.
+
+The boundary's job is to decide what a query may *reach*, not whether it will
+succeed. Mixing the two makes every schema change a change to a security
+control.
+
+**Revisit when** a cast like this is observed costing a real answer rather than
+a declined one — a column the model believes is numeric and is not, often
+enough to show up in the SQL suite.
+
 ## Considered and not planned
 
 *Cut on purpose. Each one is defensible work; none of it changes what the
