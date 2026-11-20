@@ -103,6 +103,11 @@ export function restore(wire: RestoredTurn, index: number): Turn {
         : undefined,
     retrievedCount: wire.retrieved_count,
     answer: wire.answer ?? undefined,
+    // The same field a live failure sets, so a restored failed turn is drawn
+    // by the same branch as one that failed on screen. Until the backend kept
+    // it, a failed turn came back as a question with no answer — which is what
+    // an answer still being written looks like.
+    error: wire.error ?? undefined,
     citations: wire.citations,
     outcome: outcomeOf(wire.action_outcome),
     approval:
@@ -125,11 +130,11 @@ export function restore(wire: RestoredTurn, index: number): Turn {
     // where that is turned into words.
     executed: decision && approval ? approval.execution : undefined,
     executionSpent: decision && approval ? approval.consumed_at !== null : undefined,
-    // Empty, because `GET /threads/{id}/turns` does not carry either yet: the
-    // queries and the flags live in `audit_log` and the checkpoint, and the
-    // fold reads neither. So a reloaded conversation shows the answer without
-    // the query behind it — the same shape as the restored-error gap in
-    // Phase 7, and worth closing with it rather than separately.
+    // Empty, because `GET /threads/{id}/turns` does not carry either yet: both
+    // accumulate in the state, so the fold would have to slice them per turn
+    // the way it already slices `messages`. So a reloaded portfolio answer
+    // shows the figure without the query behind it. Recorded in
+    // `docs/NOTES.md`; nobody is fixing it yet.
     queries: [],
     flags: [],
     // A string on the wire; see `RestoredUsage`.

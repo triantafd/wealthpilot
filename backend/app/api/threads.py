@@ -29,17 +29,25 @@ read back who approved an action and what it did, which until now needed
 unauthenticated too, and lists every approval rather than one thread's — but
 once there is authentication, a thread has to belong to someone and this
 endpoint has to check it.
+
+`GET /threads` widens it again, and differently: reading a conversation needed
+its id, and the list hands out every conversation's opening question without
+one. Those questions name clients. The decision to ship it unscoped rather
+than filter on an unverifiable `user_id` is in `docs/NOTES.md`.
 """
 
+import logging
 import uuid
 from collections.abc import AsyncIterator
+from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agents.state import thread_config
 from app.api.approvals import Approval, public_approval
@@ -48,7 +56,10 @@ from app.api.stream import stream_turn
 from app.approvals import ApprovalNotFoundError, executions_for, get_approval
 from app.db.session import get_session, get_sessionmaker
 from app.history import MAX_CHECKPOINTS, TurnRecord, attach_usage, fold_turns, role_of
+from app.threads import DEFAULT_LIMIT, list_threads, record_turn
 from app.usage import usage_for_thread
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["threads"])
 
@@ -57,6 +68,26 @@ class Thread(BaseModel):
     """A conversation."""
 
     thread_id: str
+
+
+class ThreadListItem(BaseModel):
+    """One row of the sidebar's list."""
+
+    thread_id: str
+    first_question: str = Field(
+        description="The question that started the conversation, as its label."
+    )
+    created_at: datetime
+    last_active_at: datetime = Field(
+        description="When the thread's last turn was sent. The list is ordered by this."
+    )
+    user_id: str | None = None
+
+
+class ThreadList(BaseModel):
+    """The conversations, most recently active first."""
+
+    threads: list[ThreadListItem]
 
 
 class MessageRequest(BaseModel):
@@ -115,6 +146,13 @@ class Turn(BaseModel):
 
     question: str
     answer: str | None = None
+    error: str | None = Field(
+        None,
+        description=(
+            "Why the turn failed, in the same redacted words the `error` stream event "
+            "carried. A turn that answered and then failed carries both."
+        ),
+    )
     route: str | None = None
     route_confidence: float | None = None
     retrieved_count: int = 0
@@ -163,6 +201,54 @@ async def create_thread() -> Thread:
     return Thread(thread_id=str(uuid.uuid4()))
 
 
+@router.get("/threads", summary="The conversations, newest first")
+async def get_threads(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    limit: Annotated[
+        int, Query(ge=1, le=200, description="How many rows at most, newest first.")
+    ] = DEFAULT_LIMIT,
+) -> ThreadList:
+    """Every conversation that has had a turn, so one can be returned to.
+
+    A thread appears here once `POST /threads/{id}/messages` has run for it,
+    not when `POST /threads` handed out its id: an id with no turn is a
+    conversation nobody started.
+    """
+    return ThreadList(
+        threads=[
+            ThreadListItem.model_validate(summary, from_attributes=True)
+            for summary in await list_threads(session, limit=limit)
+        ]
+    )
+
+
+async def _index_thread(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    thread_id: str,
+    question: str,
+    user_id: str | None,
+) -> None:
+    """Put the thread in the list, in a session of its own, before the stream.
+
+    Two reasons it is not the streaming session's write. That session rolls
+    back when a turn raises, and a conversation that failed is precisely one an
+    adviser wants to find again; and it commits after the last event, so a
+    thread would be missing from the list for as long as its first answer takes
+    to write.
+
+    Nothing here is on the path of answering, so nothing here may stop one —
+    hence the swallow. The adviser loses a row in a sidebar; the alternative is
+    losing the answer.
+    """
+    try:
+        async with sessionmaker() as session:
+            await record_turn(session, thread_id=thread_id, question=question, user_id=user_id)
+            await session.commit()
+    except SQLAlchemyError:
+        logger.warning("could not index thread %s", thread_id, exc_info=True)
+
+
 @router.post("/threads/{thread_id}/messages", summary="Send a message; responds with SSE")
 async def post_message(
     request: Request,
@@ -185,6 +271,10 @@ async def post_message(
     sessionmaker = getattr(request.app.state, "sessionmaker", None) or get_sessionmaker()
     embedder = getattr(request.app.state, "embedder", None)
     chat_model = getattr(request.app.state, "chat_model", None)
+
+    await _index_thread(
+        sessionmaker, thread_id=thread_id, question=body.message, user_id=body.user_id
+    )
 
     async def frames() -> AsyncIterator[str]:
         # Its own session: see the module docstring.
@@ -306,6 +396,7 @@ async def _public_turn(session: AsyncSession, turn: TurnRecord) -> Turn:
     return Turn(
         question=turn.question,
         answer=turn.answer,
+        error=turn.error,
         route=turn.route,
         route_confidence=turn.route_confidence,
         retrieved_count=turn.retrieved_count,

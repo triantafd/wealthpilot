@@ -147,6 +147,48 @@ async def test_a_restored_turn_says_the_same_thing_the_stream_said(
     assert turn["usage"]["latency_ms"] is not None
 
 
+async def test_a_turn_that_failed_comes_back_as_a_failure(
+    client: AsyncClient, db_session: AsyncSession, saver: Any
+) -> None:
+    """The one place a restored turn used to say less than the stream did.
+
+    A question with no answer and no error is the shape of an answer still
+    being written, so a reloaded page reported a turn that blew up as one that
+    went missing. Compared against the event again, because the two have to
+    agree about what the reader was told.
+    """
+    embedder = await _seed(db_session)
+    thread = f"t-{uuid.uuid4()}"
+
+    class Broken:
+        def with_structured_output(self, schema: type, **_: object) -> "Broken":
+            return self
+
+        async def ainvoke(self, messages: Any, **_: object) -> Any:
+            raise RuntimeError("provider exploded")
+
+    events = [
+        event
+        async for event in stream_turn(
+            db_session,
+            saver,
+            thread_id=thread,
+            question="what is the trade charge?",
+            user_id="adviser-7",
+            embedder=embedder,
+            chat_model=Broken(),  # type: ignore[arg-type]
+        )
+    ]
+    await _turn(db_session, saver, embedder, thread, "ask again", answer="It is £9.95 per trade.")
+
+    turns = (await client.get(f"/threads/{thread}/turns")).json()["turns"]
+
+    assert turns[0]["answer"] is None
+    assert turns[0]["error"] == events[-1].message
+    assert turns[1]["answer"] == "It is £9.95 per trade."
+    assert turns[1]["error"] is None, "a failure must not follow the conversation"
+
+
 async def test_a_turn_that_proposed_an_action_carries_what_it_did(
     client: AsyncClient, db_session: AsyncSession, saver: Any
 ) -> None:

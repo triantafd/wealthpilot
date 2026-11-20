@@ -157,6 +157,101 @@ jobs:
       - name: Build
         run: pnpm build
 
+  e2e:
+    name: Browser
+    runs-on: ubuntu-latest
+
+    # Unlike the eval gate this costs nothing: the model and the embedder are
+    # faked, so there is no API key and no bill, and it runs on every pull
+    # request like the other two.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: wealthpilot
+          POSTGRES_PASSWORD: wealthpilot
+          POSTGRES_DB: wealthpilot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wealthpilot -d wealthpilot"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      APP_ENV: ci
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: wealthpilot
+      POSTGRES_PASSWORD: wealthpilot
+      # The launcher appends `_e2e` and builds that database itself, so this
+      # names the one it is a sibling of rather than the one it uses.
+      POSTGRES_DB: wealthpilot
+      # Migration ffa5261360c4 creates the read-only role and fails without
+      # them, and the launcher runs every migration.
+      POSTGRES_RO_USER: wealthpilot_ro
+      POSTGRES_RO_PASSWORD: wealthpilot_ro
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --frozen
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache the browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          # Keyed on the lockfile, because the browser build a given
+          # @playwright/test expects is pinned to its version — a cache hit
+          # against a different one is a browser Playwright refuses to drive.
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+
+      - name: Install the browser
+        working-directory: frontend
+        # `--with-deps` because a bare runner has none of the shared libraries
+        # Chromium links against. No-op when the cache hit.
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Test
+        working-directory: frontend
+        run: pnpm test:e2e
+
+      - name: Keep the report
+        # On failure only: a trace and a video of a passing run is 20MB of
+        # artifact nobody opens.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-${{ github.run_id }}
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          retention-days: 7
+
   evals:
     name: Evals
     runs-on: ubuntu-latest

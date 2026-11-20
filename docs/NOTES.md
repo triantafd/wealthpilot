@@ -153,10 +153,111 @@ trusting a single run.*
       references of mine rather than model faults. A floor belongs here once
       the dataset has settled and two runs agree on it.
 
+- **`ASGITransport` runs the app to completion, so no test with the test
+      client can model a client disconnect.** Measured 2026-11-20 on
+      `POST /threads/{id}/messages`: reading one SSE frame and closing the
+      response leaves exactly the same state as reading every frame — one
+      `usage` row and five checkpoints either way. So an abort test written
+      with the `client` fixture would pass whether or not anything aborts.
+      Asking the question needs either a hand-rolled ASGI call with
+      `http.disconnect` on the receive channel, or a real uvicorn.
+
+- **The `sql` suite's reports cannot be used to measure how an answer is
+      formatted.** `_short()` in `app/evals/sql.py` does `" ".join(text.split())`
+      before the answer lands in the committed report, which is right for
+      reading one and destroys every newline. Measured 2026-11-20: all 51
+      answers in three `sql` reports contain zero newlines, while a real
+      portfolio answer read out of a checkpoint the same day has **64** and a
+      properly formed markdown table. The `rag` suite stores `result.answer`
+      verbatim, so the 75-answer measurement behind `inline-markdown.tsx`
+      stands. For anything about shape rather than content, read a checkpoint,
+      not a report.
+
+- **A portfolio answer can put a hundred rows in one chat bubble.**
+      `run_select` caps at `MAX_ROWS = 100` and the prompt asks the model to
+      say when a list was cut, so the figures are honest — but
+      `sql-reviews-overdue-01` hit that cap, and after 2026-11-20 those rows
+      render as a real table rather than as text, which makes a single answer
+      taller than several screens. Seen in the browser on a 60-row answer.
+      Nothing is wrong; it is unusable. **Matters when:** anyone works through
+      a conversation with more than one such answer in it. The fix is in the
+      renderer — show the first rows and let the reader open the rest — not in
+      the cap, which exists for the executor's own reasons.
+
+- **The jsdom tests cannot see the backend, and there is one browser test
+      between them and the API.** All 160 frontend tests stub `fetch` with
+      JSON written by hand, so a field the backend renames stays green
+      everywhere until someone opens the app. Demonstrated 2026-11-20 rather
+      than argued: removing the `preview` proxy left all 160 passing and only
+      the Playwright spec red. That spec covers one path — ask, stream,
+      approve, reload — so every other REST shape the page reads is still
+      agreed by hand on both sides. **Matters when:** a response model
+      changes, or a second screen starts reading something the browser test
+      never visits. The cheap fix is not more browser tests but generating
+      the frontend's types from the OpenAPI schema the backend already
+      publishes.
+
 ## Known gaps, not scheduled
 
 *Real, and nobody is fixing them yet. The trigger line is the point: it turns
 "not now" into a condition rather than a shrug.*
+
+- **`awaiting` on a restored turn says "paused at an approval" and also "this
+      is where it died".** The field is `snapshot.next`, and its description in
+      `GET /threads/{id}/turns` promises the first: non-empty means an approval
+      the reader can still decide. But a turn that raised is paused too — it
+      folds to `awaiting: ["supervisor"]`, measured 2026-11-20 — so the field
+      now carries two unrelated facts. Harmless today because the chat page
+      reads it only together with a pending approval, and because `error`
+      arrived in the same turn and distinguishes the two cases for anything
+      that needs to. **Matters when:** a second reader of the field treats
+      non-empty as "resumable", or a resume-after-failure path is built, which
+      would need to tell a pause from a crash.
+
+- **A restored turn shows neither the queries behind its figures nor the flags
+      the agents raised.** `sql_queries` and `guardrail_flags` are both in the
+      checkpoint, so the data is there; the fold does not carry them because
+      both *accumulate*, and a per-turn value means slicing them the way
+      `fold_turns` already slices `messages`. So a reloaded portfolio answer
+      is a number with no visible source, which is precisely what the `sql`
+      stream event exists to prevent, and a mandate that stopped an action
+      reads as ordinary prose. Recorded 2026-11-20, when `error` closed the
+      other half of the same gap. **Matters when:** anyone is expected to audit
+      a conversation after the fact rather than while it streams.
+
+- **A turn cancelled at a checkpoint write appears to leave the
+      checkpointer's connection unusable — not established, and the reason it
+      is here.** `AsyncPostgresSaver.from_conn_string` opens a **single**
+      `AsyncConnection`, not a pool, so every checkpoint read and write in the
+      process shares one connection. Driving `POST /threads/{id}/messages` as
+      raw ASGI with an `http.disconnect` on the receive channel, 2026-11-20,
+      cancelled the turn and then every following read failed with
+      `psycopg.OperationalError: another command is already in progress` —
+      retried at 0.0s, 0.1s, 0.5s and 2.0s, all four. If that is what happens
+      in production, one adviser closing a tab mid-answer breaks approvals and
+      history for everyone until the process restarts.
+      **What was not established:** the probe's disconnect arrives before the
+      first frame rather than mid-answer (`frames=[]`, `checkpoints=0`), so
+      what was cancelled was the turn's *first* checkpoint write, and the
+      probe hand-rolls the ASGI call instead of going through uvicorn. So the
+      shape is suspicious and the blast radius is unmeasured. **Matters when:**
+      anything is deployed, or before the Playwright test closes a tab
+      mid-stream. Confirming it needs a real uvicorn and a client that hangs
+      up; note `app/agents/checkpointer.py`'s docstring says "it owns its own
+      connection pool", which is where the wrong mental model came from.
+
+- **The test suite still ships spans to Langfuse.** `_tracing_disabled` blanks
+      the credentials and its docstring claims that keeps questions out of the
+      cloud. It does not: at interpreter shutdown Langfuse's resource manager
+      flushes, the OTLP exporter POSTs the batch to whatever `LANGFUSE_HOST`
+      is, and the server answers 401 — so the payload leaves the machine and is
+      only rejected on arrival. Blank keys stop the data being *stored*, not
+      sent. The failure was invisible until `disable_existing_loggers=False`
+      (below) let the exporter's own error through; nothing about the request
+      is new. Found 2026-11-19. **Matters when:** a test's question is
+      something more than "what does a trade cost?", or `LANGFUSE_HOST` points
+      somewhere that accepts anonymous writes. The fix is for the fixture to
+      stop the client being built at all rather than to empty its keys.
 
 - **`average_cost` is null for every holding in the seeded book.** All 2,622
       rows, so the column is in `v_holdings` and in the SQL prompt's schema
@@ -395,6 +496,19 @@ trusting a single run.*
       **Matters when:** the approvals inbox is expected to clear itself, or a
       report counts proposals that went unanswered.
 
+- **Running alembic in-process silences every logger that already exists.**
+      `logging.config.fileConfig()` defaults to
+      `disable_existing_loggers=True`, which sets `disabled = True` on each
+      one, and `app/db/migrations/env.py` calls it. The suite migrates inside
+      the pytest process, so every `app.*` logger imported before the first
+      migration was dead for the whole run: `caplog` saw no records at all,
+      and the warning `app/tools/sql/executor.py` logs *instead of* returning
+      a server's message went nowhere under test. Fixed 2026-11-19 with
+      `disable_existing_loggers=False`. Production never hit it — there,
+      alembic is a separate process — and the quirk fails silently, because a
+      disabled logger raises nothing and drops the record. Measured
+      2026-11-19.
+
 - **An injected provider client makes `ChatOpenAI` stop asking for token
       usage.** Measured while fixing `pytest -m llm`: with the client it
       builds itself, `stream_usage` is `True` and usage arrives on a late
@@ -556,6 +670,75 @@ therefore attached to the authentication work in Phase 9, where `decided_by`
 starts coming from an authenticated principal, and it is listed there.
 
 ---
+
+### The thread list is unscoped, and its titles are verbatim
+
+`threads.first_question` stores the adviser's question as typed, and adviser
+questions routinely name clients and accounts. That is a second copy of
+client-identifying text outside `audit_log`, with no retention policy. And
+`GET /threads` hands out every conversation's opening question to an
+unauthenticated caller — until now reading what was asked needed the thread's
+id.
+
+Shipped that way anyway, 2026-11-19. The title *is* the feature, and truncating
+does not help: a client's name is in the first few words, not the last. A
+`user_id` filter on the endpoint was considered and rejected as worse than
+nothing — `user_id` arrives in the request body and the server cannot check it
+(Phase 9), so filtering on it would make the hole look closed. The gap is the
+same one `app/api/threads.py`'s docstring records for `/approvals` and
+`/threads/{id}/turns`, and it closes with authentication or not at all.
+
+**Revisit when** Phase 9 lands: a thread has to belong to someone, and this is
+one of the three endpoints that must then check it.
+
+### `validate()` does not refuse a numeric cast of a text column
+
+Asked after the SQL security review: should the validator reject
+`CAST(notes AS numeric)` — a cast that cannot succeed — rather than let it
+reach PostgreSQL?
+
+**No.** There is no defect under the question. The cast fails at the server,
+`run_select` turns the `SQLAlchemyError` into a `SqlFailed`, and the turn
+declines — the same ending a refusal would produce, one round trip later. What
+a check would cost is the point: to know that `notes` is text, `validate()`
+needs the schema's column types, which means a copy of the catalog inside the
+validator. That copy goes stale at the next migration, and a stale copy
+refuses *correct* queries — the failure mode is silent and on the honest path,
+where the one we have today is loud and on the broken one.
+
+The boundary's job is to decide what a query may *reach*, not whether it will
+succeed. Mixing the two makes every schema change a change to a security
+control.
+
+**Revisit when** a cast like this is observed costing a real answer rather than
+a declined one — a column the model believes is numeric and is not, often
+enough to show up in the SQL suite.
+
+### `react-markdown` was not adopted for tables
+
+Asked when portfolio answers started writing markdown tables, 2026-11-20: take
+`react-markdown` with `remark-gfm`, or write a block parser?
+
+**The block parser**, in `src/lib/markdown-blocks.tsx`. Not on bundle size, and
+not on taste. `inline-markdown.tsx` renders untrusted text — an answer is model
+output built from the corpus, which is where an injection would put a link —
+and its guarantee is that a link, an image or a `<script>` in an answer
+*cannot* be one, because no URL is ever parsed and nothing but React elements
+is ever produced. `react-markdown` does not render raw HTML, but it does render
+links and images. It can be told not to, with `disallowedElements`, and that is
+exactly the difference: the guarantee would become "configured not to render
+links" rather than "cannot render one" — an allow-list someone has to maintain
+across dependency bumps, which is what the original file was written to avoid.
+
+The need is also one construct. Measured the same day: 8 of 51 `sql` answers
+write a table, 0 of 75 `rag` answers do, and neither writes a list, a heading
+or a block quote.
+
+**Revisit when** answers grow a second block construct. At that point this
+argument loses to the cost of hand-writing a parser one construct at a time,
+and `react-markdown` behind a strict `allowedElements` is the right call —
+the guarantee is weaker, but a weak guarantee that is reviewed beats a strong
+one nobody can maintain.
 
 ## Considered and not planned
 

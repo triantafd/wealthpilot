@@ -111,6 +111,7 @@ Rules: validate inputs with Pydantic before execution; gather context with READ 
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/threads` | New conversation |
+| GET | `/threads` | The conversations, most recently active first — what the sidebar lists |
 | POST | `/threads/{id}/messages` | Send a message; responds with an SSE stream |
 | GET | `/threads/{id}` | History, as role and content |
 | GET | `/threads/{id}/turns` | History turn by turn: route, citations, approval and cost — what a reloaded chat page restores from |

@@ -958,31 +958,57 @@ chosen the way `SMOKE_IDS` was, not the set.
 
 *Phase 5 makes the app usable; this makes it good.*
 
-- [ ] **A thread list, so a conversation can be returned to.** The chat URL
-      carries its thread id since Phase 5, and the sidebar's "Chat" link goes
-      to `/chat` — a new conversation — so leaving a thread means losing the
-      way back to it unless the adviser kept the URL. Needs an endpoint that
-      lists a thread per row with its first question and when it last moved;
-      `checkpoints` has the threads but nothing names them, so the first
-      question has to come out of the earliest checkpoint or a column of its
-      own
-- [ ] **A turn that failed leaves no trace to restore.** An `error` event is
+- [x] **An endpoint that lists the conversations.** The chat URL carries its
+      thread id since Phase 5, and the sidebar's "Chat" link goes to `/chat` —
+      a new conversation — so leaving a thread means losing the way back to it
+      unless the adviser kept the URL. `checkpoints` has the threads but
+      nothing names them, so the first question has to come out of the earliest
+      checkpoint or a column of its own. **Result:** a column of its own —
+      `threads` (migration `6ca1a09e1fef`), written by `POST
+      /threads/{id}/messages` before it streams and in a session of its own, so
+      a conversation whose turn failed is still listed. `GET /threads` orders
+      by `last_active_at`. The title is stored verbatim and the endpoint is
+      unauthenticated; see `docs/NOTES.md`
+- [x] **The sidebar lists them.** The endpoint exists; nothing draws it. A
+      thread per row with its first question, newest first, and the current
+      thread marked — plus whatever "Chat" should mean once there is a list to
+      go back to. **Result:** a "Conversations" group under its own nav
+      landmark, refreshed by the chat page when a turn ends so a continued
+      thread moves to the top. "Chat" became "New chat", which is what `/chat`
+      always did; and it no longer lights up inside a thread, a prefix match
+      nothing noticed while only one row could be current
+- [x] **A turn that failed leaves no trace to restore.** An `error` event is
       sent over the stream and never written anywhere, so a reloaded turn that
       blew up comes back as a question with no answer and no error — it reads
       as an answer that went missing rather than one that failed, which is the
       one place a restored turn says less than the stream did. The honest fix
       is for the turn to record that it failed: either a column the fold can
       read, or the error as a message in the state so it is in the checkpoint
-      like everything else the page draws
-- [ ] **Abort the stream when the conversation changes.** Opening another
+      like everything else the page draws. **Result:** an `error` field on
+      `AgentState`, written by `stream_turn` with `aupdate_state` after the
+      `error` event and carrying the same redacted text, folded into
+      `TurnRecord.error` and drawn by the branch that already renders a live
+      failure. A field rather than a message, because the fold reads the last
+      non-human message as the answer. Recording it cannot fail a turn: the
+      write is swallowed and logged, like the thread index
+- [x] **Abort the stream when the conversation changes.** Opening another
       thread mid-answer clears the transcript but leaves the `ask()` loop
       running: `busy` stays true until it finishes, and its events land on a
       turn id that is no longer in the list, so they are silently dropped.
       Nothing breaks — which is why this is polish and not a Phase 5 fix — but
       the composer is disabled for an answer nobody will read. An
       `AbortController` kept beside `driving`, aborted in the same effect that
-      clears the turns
-- [ ] **A portfolio answer's table renders as literal pipes.** The trigger
+      clears the turns. **Result:** that, plus the same abort on unmount —
+      leaving for `/approvals` is the same situation and the effect cannot see
+      it. `ask()` already took a `signal` and nothing ever passed one. An
+      abort is no longer written onto the turn as an error, because it is not
+      one. Both tests were checked red with the abort removed. Found on the
+      way and **not** fixed here: `ASGITransport` runs the app to completion
+      whether the client reads one frame or all of them, so no test with the
+      test client can model a disconnect — and a turn cancelled at a
+      checkpoint write appears to leave the checkpointer's connection
+      unusable for the rest of the process. Both in `docs/NOTES.md`
+- [x] **A portfolio answer's table renders as literal pipes.** The trigger
       `src/lib/inline-markdown.tsx` names in its own docstring — *"if answers
       ever grow tables, they will show literally and this becomes a reason to
       adopt a real parser"* — has now fired: `portfolio_answer.md` asks for a
@@ -994,14 +1020,40 @@ chosen the way `SMOKE_IDS` was, not the set.
       same no-HTML, no-URL guarantee, or a table-only block parser. Note what
       the current file buys: it renders untrusted text as React elements and
       nothing else, so a link or a `<script>` in an answer *cannot* be one. Any
-      replacement has to keep that
-- [ ] Put `retrieval` back in front of the answer in the timeline. Token
+      replacement has to keep that. **Result:** the block parser, in
+      `src/lib/markdown-blocks.tsx` — `react-markdown` does render links and
+      images, so keeping the guarantee would have meant configuring it off
+      rather than its being impossible. Four rules decide what is a table, and
+      each one is pinned by a test that was checked against a mutation of it;
+      three of the first tests passed for the wrong reason and are rewritten.
+      Verified in the browser on a real 60-row answer. Measured first: 8 of
+      the 51 `sql` answers write a table, 0 of the 75 `rag` ones do
+- [x] Put `retrieval` back in front of the answer in the timeline. Token
       streaming left it behind: the deltas come from the research node while it
       runs, and `retrieved` only lands with the node's update, so the badge
       appears after the prose it preceded. The fix is to write retrieval to the
       custom stream too, which means stopping the node's update from emitting
-      it a second time — the same duplicate-event problem `route` already had
-- [ ] Playwright smoke test: ask → stream → approve
+      it a second time — the same duplicate-event problem `route` already had.
+      **Result:** `on_retrieved` beside `on_prose` in `answer_question`, fired
+      between `search` and `generate_answer`, so the order is execution order
+      rather than timing. The duplicate is prevented at the source rather than
+      by a seen-already flag: `retrieval` is now built only from the custom
+      stream, the way `route` is built only from the supervisor. Both halves
+      checked by mutation — removing the write loses the event, restoring the
+      update's loses the order. One consequence: a turn that retrieves and
+      then fails while writing now reports the search it really did, where
+      before it reported nothing
+- [x] Playwright smoke test: ask → stream → approve. **Result:** one spec in
+      `frontend/e2e/`, against the **real** backend on a database of its own —
+      `backend/tests/e2e/server.py` rebuilds it, seeds it and substitutes a
+      fake model and embedder, which are the only two sources of
+      non-determinism and the only two the app already has a seam for. It
+      costs nothing to run, so it is in CI on every pull request rather than
+      behind a button. The scenario adds a reload at the end, which is what
+      makes it worth the scaffolding: it crosses the checkpointer, the
+      approvals table and the usage table at once. Proved it catches
+      something by putting back the `preview` proxy bug it found — 160 jsdom
+      tests stayed green, the browser test went red
 
 **Done when:** a 2-minute screen recording shows the whole flow. Put it at the top of the README.
 
@@ -1099,6 +1151,20 @@ the thresholds are set once the answer path, including streaming, is stable.*
       set-returning function in `FROM` is refused today only because sqlglot
       gives those nodes an empty table name — an accident of the library that
       a test now pins, not a decision it made for us
+- [ ] **Run the approved SQL through the driver, not through `text()`.** The
+      same argument as the pin above, one layer lower: `validate()` returns an
+      approved string and `run_select` then hands it to `sqlalchemy.text()`,
+      which parses it again for bind parameters and can rewrite what actually
+      executes. Two parsers, and the one that approved the statement is not
+      the one that renders it. Measured 2026-11-20, the trigger is narrow —
+      `::numeric`, `'10:30'` and `'a:b'` are all left alone, because a colon
+      preceded by a word character or another colon is not a placeholder, so
+      only a literal like `' :ref'` fires it — and when it fires the query
+      raises and the turn declines rather than answering wrongly. So this is
+      not a live hole; it is a validation boundary with a second opinion
+      behind it. `connection.exec_driver_sql(approved)` sends the bytes
+      sqlglot approved, with a test that a statement containing a placeholder
+      runs unchanged
 - [ ] Post the metrics table as a PR comment
 
 ## Phase 9 — AWS deployment (1 week) · **Optional**

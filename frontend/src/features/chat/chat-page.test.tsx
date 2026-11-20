@@ -44,7 +44,10 @@ function Address() {
  */
 function renderChat(route = "/chat") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  // The client is returned so a test can watch what the page invalidates: the
+  // sidebar's list is not rendered here, and asserting on the call is honest
+  // about which side of that seam this file owns.
+  const rendered = render(
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <SidebarProvider>
@@ -61,6 +64,7 @@ function renderChat(route = "/chat") {
       </TooltipProvider>
     </QueryClientProvider>,
   );
+  return { ...rendered, queryClient };
 }
 
 /** An SSE body from a list of events, split across chunks like a real one. */
@@ -112,9 +116,20 @@ const RESTORED_ANSWER = {
   citations: [{ documentId: "fee-schedule", page: 1, quote: "a minimum annual fee of £1,500" }],
   action_outcome: null,
   approval: null,
+  error: null,
   awaiting: [],
   started_at: "2026-10-19T10:00:00Z",
   usage: { input_tokens: 2612, output_tokens: 48, cost_usd: "0.000421", latency_ms: 2814 },
+};
+
+/** A turn that blew up, as the backend now stores and returns it. */
+const RESTORED_FAILURE = {
+  ...RESTORED_ANSWER,
+  question: "what does AC-0042 hold?",
+  answer: null,
+  citations: [],
+  error: "RuntimeError: provider exploded",
+  usage: null,
 };
 
 /** A turn reloaded while its approval is still waiting at the gate. */
@@ -456,6 +471,40 @@ describe("ChatPage", () => {
     expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled();
   });
 
+  it("refreshes the conversations list once a turn ends", async () => {
+    // The sidebar orders by when a thread last moved, and this turn moved one.
+    const { queryClient } = renderChat();
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    await ask("Is there a floor on what we charge?");
+
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["threads"] }),
+    );
+  });
+
+  it("refreshes the list even when the turn failed", async () => {
+    // The backend indexes the thread before it streams, so the conversation
+    // exists — and a failed one is the one an adviser comes back to.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const path = String(url);
+        if (path === "/api/threads" && init?.method === "POST") {
+          return new Response(JSON.stringify({ thread_id: "t-1" }), { status: 201 });
+        }
+        return new Response(JSON.stringify({ detail: "the model is down" }), { status: 500 });
+      }),
+    );
+    const { queryClient } = renderChat();
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    await ask("Is there a floor on what we charge?");
+
+    await waitFor(() => expect(screen.getByTestId("error")).toBeInTheDocument());
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["threads"] });
+  });
+
   it("reuses one thread, so a follow-up continues the conversation", async () => {
     const fetchMock = stubFetch(RESEARCH_TURN);
     vi.stubGlobal("fetch", fetchMock);
@@ -585,6 +634,100 @@ describe("ChatPage", () => {
       expect(calls).toContain("/api/threads/t-1/messages");
     });
   });
+  describe("leaving a conversation mid-answer", () => {
+    /** An answer that has started and not finished. */
+    const HALF_ANSWERED = [
+      { type: "route", route: "research", confidence: 0.9 },
+      { type: "token", text: "The minimum annual advisory fee is " },
+    ];
+
+    /**
+     * A `fetch` whose stream stays open until the caller's signal is aborted,
+     * and that hands back the signals it was given.
+     *
+     * The stub has to wire the abort itself: a `Response` built in a test is
+     * not connected to the signal the way the platform's is, so without this
+     * the page would go on reading a stream nothing could stop and the test
+     * would pass whether or not the page aborts anything.
+     */
+    function stubHeldFetch() {
+      const encoder = new TextEncoder();
+      const signals: AbortSignal[] = [];
+
+      return {
+        signals,
+        fetchMock: vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+          const path = typeof url === "string" ? url : url.toString();
+
+          if (path === "/api/threads" && init?.method === "POST") {
+            return new Response(JSON.stringify({ thread_id: "t-1" }), { status: 201 });
+          }
+          if (path.endsWith("/turns")) {
+            const thread = path.replace("/api/threads/", "").replace("/turns", "");
+            return new Response(
+              JSON.stringify({ thread_id: thread, turns: [], truncated: false }),
+              { status: 200 },
+            );
+          }
+          if (path.includes("/messages")) {
+            const signal = init?.signal ?? null;
+            if (signal) signals.push(signal);
+            return new Response(
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  for (const event of HALF_ANSWERED) {
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+                  }
+                  signal?.addEventListener("abort", () =>
+                    controller.error(new DOMException("aborted", "AbortError")),
+                  );
+                },
+              }),
+              { status: 200, headers: { "Content-Type": "text/event-stream" } },
+            );
+          }
+          return new Response("{}", { status: 200 });
+        }),
+      };
+    }
+
+    it("stops reading the answer when another conversation is opened", async () => {
+      // The bug: clearing the transcript left the loop running, so its events
+      // landed on a turn id no longer in the list and were dropped in silence
+      // — while `busy` kept the composer disabled for an answer nobody would
+      // ever read.
+      const { fetchMock, signals } = stubHeldFetch();
+      vi.stubGlobal("fetch", fetchMock);
+      renderChat("/chat/t-restored");
+
+      await ask("what is the fee floor?");
+      await waitFor(() => expect(screen.getByTestId("route")).toBeInTheDocument());
+      expect(screen.getByRole("button", { name: "Working…" })).toBeDisabled();
+
+      await userEvent.click(screen.getByRole("link", { name: "another thread" }));
+
+      await waitFor(() => expect(signals[0].aborted).toBe(true));
+      // The composer comes back, which is the part an adviser notices.
+      await waitFor(() => expect(screen.getByRole("button", { name: "Ask" })).toBeInTheDocument());
+      // An abort is not a failure, and the turn it belonged to is gone anyway.
+      expect(screen.queryByTestId("error")).not.toBeInTheDocument();
+    });
+
+    it("stops reading when the page itself goes away", async () => {
+      // The same situation the effect above cannot see: the address does not
+      // change on the way out to /approvals, the component does.
+      const { fetchMock, signals } = stubHeldFetch();
+      vi.stubGlobal("fetch", fetchMock);
+      const { unmount } = renderChat("/chat/t-restored");
+
+      await ask("what is the fee floor?");
+      await waitFor(() => expect(screen.getByTestId("route")).toBeInTheDocument());
+      unmount();
+
+      expect(signals[0].aborted).toBe(true);
+    });
+  });
+
   describe("restoring a conversation", () => {
     it("brings back the questions, answers, citations and cost of a reloaded thread", async () => {
       // The refresh case, end to end: nothing is typed, and the conversation
@@ -607,6 +750,21 @@ describe("ChatPage", () => {
       expect(screen.getByTestId("done")).toHaveTextContent("2814ms");
       expect(screen.getByTestId("done")).toHaveTextContent("$0.000421");
       expect(screen.queryByTestId("restoring")).not.toBeInTheDocument();
+    });
+
+    it("says a reloaded turn failed, rather than showing it as unanswered", async () => {
+      // Before the backend kept the error, this turn came back as a question
+      // on its own — the same shape as an answer still being written.
+      vi.stubGlobal(
+        "fetch",
+        stubFetch(RESEARCH_TURN, { turns: { "t-restored": [RESTORED_FAILURE] } }),
+      );
+      renderChat("/chat/t-restored");
+
+      await waitFor(() => expect(screen.getByTestId("error")).toBeInTheDocument());
+      expect(screen.getByTestId("error")).toHaveTextContent("provider exploded");
+      expect(screen.getByText("what does AC-0042 hold?")).toBeInTheDocument();
+      expect(screen.queryByTestId("answer")).not.toBeInTheDocument();
     });
 
     it("lets a restored approval be decided, since the gate is still waiting", async () => {

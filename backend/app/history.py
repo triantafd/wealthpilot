@@ -21,7 +21,8 @@ turn's answer to the question after it.
 
 **Why the last snapshot of a segment is the turn.** The replacing fields
 (`route`, `retrieved`, `citations`, `action_outcome`, `approval_id`,
-`action_result`) are all reset by `initial_state` at the top of every turn, and
+`action_result`, `error`) are all reset by `initial_state` at the top of every
+turn, and
 LangGraph applies the input through the same reducers — so at the end of a
 segment they hold this turn's values and nothing earlier. `messages`
 accumulates instead, which is why the fold carries a running count and slices.
@@ -128,6 +129,11 @@ class TurnRecord:
     awaiting: tuple[str, ...]
     started_at: datetime | None
     usage: TurnUsage | None = None
+    # Why the turn ended, when it ended badly, redacted — the text the `error`
+    # stream event carried, written back into the state by `app/api/stream.py`.
+    # Without it a failed turn restores as a question with no answer, which is
+    # what an answer still being written looks like.
+    error: str | None = None
 
 
 def role_of(message: Any) -> str:
@@ -216,6 +222,7 @@ def fold_turns(snapshots: Sequence[Snapshot]) -> list[TurnRecord]:
                 approval_id=values.get("approval_id"),
                 awaiting=tuple(final.next or ()),
                 started_at=_parsed(segment[0].created_at),
+                error=values.get("error"),
             )
         )
 

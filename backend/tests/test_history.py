@@ -43,6 +43,13 @@ def _loop(values: dict[str, Any], at: float = 0.0, next: tuple[str, ...] = ()) -
     return Snap(values, {"source": "loop"}, next, _at(at).isoformat())
 
 
+def _update(values: dict[str, Any], at: float = 0.0, next: tuple[str, ...] = ()) -> Snap:
+    """What `graph.aupdate_state` leaves behind, which is how a failure is
+    recorded. Measured rather than assumed: it is one more checkpoint, its
+    `source` is `"update"`, and it keeps the `next` of the one before it."""
+    return Snap(values, {"source": "update"}, next, _at(at).isoformat())
+
+
 @dataclass
 class Row:
     """A `usage` row, as `usage_for_thread` returns it."""
@@ -220,6 +227,63 @@ def test_a_turn_with_no_answer_reports_none() -> None:
 
     assert turns[0].answer is None
     assert turns[0].action_outcome == "propose"
+
+
+def test_a_failed_turn_carries_why_it_failed() -> None:
+    """The point of the field. Without it this is a question with no answer,
+    which is the shape of an answer still being written."""
+    turns = fold_turns(
+        [
+            _input({"messages": []}),
+            _loop({"messages": [HumanMessage("what does AC-1 hold?")]}, 1, ("supervisor",)),
+            _update(
+                {
+                    "messages": [HumanMessage("what does AC-1 hold?")],
+                    "error": "QueryFailed: the query was cancelled",
+                },
+                2,
+                ("supervisor",),
+            ),
+        ]
+    )
+
+    assert turns[0].answer is None
+    assert turns[0].error == "QueryFailed: the query was cancelled"
+
+
+def test_a_turn_that_worked_carries_no_error() -> None:
+    """`error` is reset by `initial_state`, so a failure on one turn must not
+    follow the conversation. Asserted on the fold as well, because a `.get` on
+    a key a previous turn wrote is exactly how it would."""
+    q1, q2 = HumanMessage("the one that failed"), HumanMessage("the one that worked")
+    turns = fold_turns(
+        [
+            _input({"messages": []}),
+            _update({"messages": [q1], "error": "RuntimeError: boom"}, 1),
+            _input({"messages": [q1], "error": "RuntimeError: boom"}, 10),
+            _loop({"messages": [q1, q2, AIMessage("£9.95.")], "error": None}, 11),
+        ]
+    )
+
+    assert [turn.error for turn in turns] == ["RuntimeError: boom", None]
+    assert turns[1].answer == "£9.95."
+
+
+def test_an_answer_written_before_the_failure_is_still_the_answer() -> None:
+    """A turn can answer and then fail — citation verification after the prose,
+    say. Both are shown, because hiding either would describe a turn that did
+    not happen."""
+    question = HumanMessage("what does a trade cost?")
+    turns = fold_turns(
+        [
+            _input({"messages": []}),
+            _loop({"messages": [question, AIMessage("£9.95.")]}, 1),
+            _update({"messages": [question, AIMessage("£9.95.")], "error": "ValueError: x"}, 2),
+        ]
+    )
+
+    assert turns[0].answer == "£9.95."
+    assert turns[0].error == "ValueError: x"
 
 
 def test_a_role_is_read_off_the_type_name() -> None:

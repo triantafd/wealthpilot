@@ -14,6 +14,8 @@ from httpx import AsyncClient
 from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.graph import compile_graph
+from app.agents.state import thread_config
 from app.api.events import (
     ActionOutcomeEvent,
     ApprovalRequiredEvent,
@@ -24,7 +26,7 @@ from app.api.events import (
     TokenEvent,
     as_sse,
 )
-from app.api.stream import INTERRUPT_NODE, events_for, stream_turn, usage_for
+from app.api.stream import INTERRUPT_NODE, _custom_event, events_for, stream_turn, usage_for
 from app.rag.documents import SourceDocument
 from app.rag.embeddings import FakeEmbedder
 from app.rag.generate import Citation
@@ -74,13 +76,21 @@ def test_a_route_without_a_confidence_is_reported_as_zero() -> None:
 
 
 def test_retrieved_passages_become_a_retrieval_event() -> None:
-    events = events_for(
-        "research",
-        {"retrieved": [{"id": 1, "documentId": "fee-schedule", "page": 2, "score": 0.91}]},
+    """From the custom stream, which is the only thing that carries them now."""
+    event = _custom_event(
+        {"retrieval": [{"id": 1, "documentId": "fee-schedule", "page": 2, "score": 0.91}]}
     )
 
-    assert isinstance(events[0], RetrievalEvent)
-    assert events[0].chunks[0].document_id == "fee-schedule"
+    assert isinstance(event, RetrievalEvent)
+    assert event.chunks[0].document_id == "fee-schedule"
+
+
+def test_a_node_update_carrying_retrieved_produces_no_event() -> None:
+    """It used to, and that is why the provenance badge arrived after the
+    answer: an update is reported once the node has returned, while the prose
+    streams out of the middle of it. Reading it here as well would now send
+    the event twice — the bug `route` had."""
+    assert events_for("research", {"retrieved": [{"id": 1, "documentId": "x", "page": 2}]}) == []
 
 
 def test_the_answer_and_its_citations_become_two_events_in_reading_order() -> None:
@@ -315,6 +325,11 @@ async def test_a_research_turn_streams_route_then_answer_then_done(
     assert "token" in kinds
     assert "citations" in kinds
     assert kinds[-1] == "done"
+    # Provenance before the prose it supports. The whole point of writing the
+    # passages from inside the node: read off the node's update instead, the
+    # badge lands after the answer and explains something already read.
+    assert kinds.index("retrieval") < kinds.index("token")
+    assert kinds.count("retrieval") == 1, "one search, one badge"
 
 
 async def test_an_answer_streams_in_pieces_then_the_cleaned_text_replaces_it(
@@ -491,6 +506,97 @@ async def test_an_error_event_carries_no_bound_parameters(db_session: AsyncSessi
     message = events[-1].message  # type: ignore[attr-defined]
     assert "AC-00001" not in message
     assert "sha256:" in message
+
+
+async def test_a_failed_turn_records_why_in_its_own_checkpoint(
+    db_session: AsyncSession,
+) -> None:
+    """So a reload can draw it. Until it did, a failed turn restored as a
+    question with no answer — the shape of an answer still being written.
+
+    The stored text is asserted to *be* the event's, not merely to mention the
+    failure: a restored turn is read by the same adviser as a live one, so the
+    redaction has to survive the trip through the checkpoint.
+    """
+
+    class Broken:
+        def with_structured_output(self, schema: type, **_: object) -> "Broken":
+            return self
+
+        async def ainvoke(self, messages: Any, **_: object) -> Any:
+            raise RuntimeError(
+                "(asyncpg.ProgrammingError) column does not exist "
+                "[SQL: SELECT 1 WHERE account_id = $1] [parameters: ('AC-00001',)]"
+            )
+
+    saver = InMemorySaver()
+    thread = f"t-{uuid.uuid4()}"
+    broken = Broken()
+
+    events = [
+        e
+        async for e in stream_turn(
+            db_session,
+            saver,
+            thread_id=thread,
+            question="cost?",
+            embedder=FakeEmbedder(),
+            chat_model=broken,  # type: ignore[arg-type]
+        )
+    ]
+
+    graph = compile_graph(
+        db_session,
+        saver,
+        embedder=FakeEmbedder(),
+        chat_model=broken,  # type: ignore[arg-type]
+    )
+    snapshot = await graph.aget_state(thread_config(thread))
+
+    assert events[-1].type == "error"  # type: ignore[attr-defined]
+    assert snapshot.values["error"] == events[-1].message  # type: ignore[attr-defined]
+    assert "AC-00001" not in snapshot.values["error"]
+
+
+async def test_a_checkpoint_that_cannot_be_written_still_explains_the_failure(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The record of a failure is worth less than the account of it. A reader
+    looking at a half-drawn answer needs the `error` event; the checkpoint only
+    matters on the next reload."""
+
+    class Broken:
+        def with_structured_output(self, schema: type, **_: object) -> "Broken":
+            return self
+
+        async def ainvoke(self, messages: Any, **_: object) -> Any:
+            raise RuntimeError("provider exploded")
+
+    async def refuse(*_: object, **__: object) -> None:
+        raise RuntimeError("the checkpointer is gone")
+
+    monkeypatch.setattr(
+        "langgraph.graph.state.CompiledStateGraph.aupdate_state", refuse, raising=True
+    )
+
+    with caplog.at_level("WARNING", logger="app.api.stream"):
+        events = [
+            e
+            async for e in stream_turn(
+                db_session,
+                InMemorySaver(),
+                thread_id=f"t-{uuid.uuid4()}",
+                question="cost?",
+                embedder=FakeEmbedder(),
+                chat_model=Broken(),  # type: ignore[arg-type]
+            )
+        ]
+
+    assert events[-1].type == "error"  # type: ignore[attr-defined]
+    assert "provider exploded" in events[-1].message  # type: ignore[attr-defined]
+    assert any("could not record the failed turn" in r.message for r in caplog.records)
 
 
 # --- Over HTTP ---------------------------------------------------------------

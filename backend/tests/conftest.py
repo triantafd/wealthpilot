@@ -648,7 +648,7 @@ async def _no_committed_leftovers(test_database: str) -> AsyncIterator[None]:
     engine = create_async_engine(_url(_test_database_name(), driver="asyncpg"))
     try:
         async with engine.begin() as connection:
-            for table in ("usage", "audit_log", "approvals", "tasks"):
+            for table in ("usage", "audit_log", "approvals", "tasks", "threads"):
                 await connection.execute(text(f"DELETE FROM {table}"))  # noqa: S608
     finally:
         await engine.dispose()

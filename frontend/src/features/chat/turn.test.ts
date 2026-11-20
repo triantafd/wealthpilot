@@ -221,6 +221,7 @@ const ANSWERED: RestoredTurn = {
   citations: [{ documentId: "fee-schedule", page: 1, quote: "a minimum annual fee of £1,500" }],
   action_outcome: null,
   approval: null,
+  error: null,
   awaiting: [],
   started_at: "2026-10-19T10:00:00Z",
   // A string, as Pydantic serialises the NUMERIC column.
@@ -360,6 +361,15 @@ describe("restore", () => {
     // otherwise reach `OutcomeNotice` and be shown as one it does.
     expect(restore({ ...ANSWERED, action_outcome: "something_new" }, 0).outcome).toBeUndefined();
     expect(restore({ ...ANSWERED, action_outcome: "refuse" }, 0).outcome).toBe("refuse");
+  });
+
+  it("brings a failed turn back as a failure, not as a missing answer", () => {
+    // The gap this closed: a question with no answer and no error is what an
+    // answer still being written looks like.
+    const turn = restore({ ...ANSWERED, answer: null, error: "RuntimeError: boom" }, 0);
+
+    expect(turn.answer).toBeUndefined();
+    expect(turn.error).toBe("RuntimeError: boom");
   });
 
   it("shows no route rather than a route with no confidence", () => {

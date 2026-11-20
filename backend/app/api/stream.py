@@ -31,12 +31,14 @@ exactly one `token` event, with `replace` set, which is the same thing it sent
 before any of this existed.
 """
 
+import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.graph import compile_graph
@@ -63,6 +65,8 @@ from app.pricing import cost_of
 from app.rag.embeddings import Embedder
 from app.usage import record_usage
 
+logger = logging.getLogger(__name__)
+
 # LangGraph reports an interrupt under this synthetic node name.
 INTERRUPT_NODE = "__interrupt__"
 
@@ -84,9 +88,18 @@ def _route_event(update: dict[str, Any]) -> RouteEvent | None:
     )
 
 
-def _retrieval_event(update: dict[str, Any]) -> RetrievalEvent | None:
-    chunks = update.get("retrieved")
-    if not chunks:
+def _retrieval_event(chunks: Any) -> RetrievalEvent | None:
+    """The passages, from whatever carried them.
+
+    Fed from the **custom** stream and nowhere else. It used to be built from
+    the research node's update, which is why the provenance badge arrived
+    after the answer: an update is reported once the node has returned, while
+    the prose streams out of the middle of it. The node now writes the
+    passages the moment it has them — see `retrieval_writer` — and reading
+    them here as well would send the same event twice, which is the bug
+    `route` had and the reason it is tied to one node.
+    """
+    if not chunks or not isinstance(chunks, list):
         return None
     return RetrievalEvent(chunks=[RetrievedChunkRef.model_validate(c) for c in chunks])
 
@@ -126,19 +139,21 @@ def _token_event(update: dict[str, Any]) -> TokenEvent | None:
     return None
 
 
-def _custom_event(payload: Any) -> TokenEvent | None:
+def _custom_event(payload: Any) -> ContractModel | None:
     """A node's mid-run write, as a contract event.
 
-    The only producer today is the research agent's prose callback. An
-    unrecognised payload is ignored rather than raised on: a node writing
-    something this layer does not know about should not end a turn that is
-    already streaming to a reader.
+    Two producers, both in the research agent: the prose callback and the
+    retrieval one. An unrecognised payload is ignored rather than raised on: a
+    node writing something this layer does not know about should not end a
+    turn that is already streaming to a reader.
 
-    Whitespace is not stripped, and emptiness is the only thing rejected: a
-    delta of " " is a word boundary in the answer.
+    Whitespace is not stripped from a token, and emptiness is the only thing
+    rejected: a delta of " " is a word boundary in the answer.
     """
     if not isinstance(payload, dict):
         return None
+    if "retrieval" in payload:
+        return _retrieval_event(payload["retrieval"])
     text = payload.get("token")
     return TokenEvent(text=text) if isinstance(text, str) and text else None
 
@@ -211,7 +226,6 @@ def events_for(node: str, chunk: Any) -> list[ContractModel]:
     # Annotated so mypy infers the union of every builder's return rather than
     # the first one's.
     builders: list[Callable[[dict[str, Any]], ContractModel | None]] = [
-        _retrieval_event,
         _action_outcome_event,
         _token_event,
         _citations_event,
@@ -301,7 +315,9 @@ async def stream_turn(
         # goes to a screen. A database error carries the statement and the
         # values bound into it, and an adviser is the last person who should
         # read either.
-        yield ErrorEvent(message=redact_parameters(f"{type(exc).__name__}: {exc}"))
+        message = redact_parameters(f"{type(exc).__name__}: {exc}")
+        await _remember_failure(graph, thread_id=thread_id, message=message)
+        yield ErrorEvent(message=message)
         return
 
     elapsed_ms = (time.perf_counter() - started) * 1000
@@ -315,6 +331,34 @@ async def stream_turn(
         model_served=model_served,
     )
     yield DoneEvent(usage=usage_for(totals, elapsed_ms=elapsed_ms))
+
+
+async def _remember_failure(
+    graph: CompiledStateGraph[Any, Any, Any],
+    *,
+    thread_id: str,
+    message: str,
+) -> None:
+    """Write the failure into the turn's state, so a reload can draw it.
+
+    The checkpoint, not a table: everything else the restored page shows — the
+    route, the citations, the outcome — is folded out of the state, and a turn's
+    own account of why it ended belongs beside them rather than in a second
+    store the fold would have to join against by time.
+
+    The same redacted text the `error` event carries. A restored turn is read by
+    the same adviser as a live one, so it cannot be the place the raw driver
+    message resurfaces.
+
+    Swallowed, like the thread index: this runs while a turn is already failing,
+    and the event that explains the failure matters more than the record of it.
+    Logged rather than silent, because a checkpointer that cannot be written is
+    the kind of thing that also breaks the next turn.
+    """
+    try:
+        await graph.aupdate_state(thread_config(thread_id), {"error": message})
+    except Exception:
+        logger.warning("could not record the failed turn on thread %s", thread_id, exc_info=True)
 
 
 async def _record(
