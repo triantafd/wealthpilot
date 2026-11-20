@@ -22,9 +22,11 @@
  * `_` as a delimiter would italicise the gap between two of them. Underscores
  * are literal text here.
  *
- * What this does not do: lists, tables, headings, links, images, raw HTML,
- * block quotes. If answers ever grow them, they will show literally and this
- * becomes a reason to adopt a real parser rather than to extend this file.
+ * What this does not do: lists, headings, links, images, raw HTML, block
+ * quotes. They show literally. Tables were on that list until portfolio
+ * answers started writing them; they are handled a layer up, in
+ * `markdown-blocks.tsx`, which explains why that is a block problem and not
+ * an extension of this file.
  */
 
 import type { ReactNode } from "react";

@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ApiError } from "@/lib/api";
 import { Inline } from "@/lib/inline-markdown";
+import { Blocks } from "@/lib/markdown-blocks";
 import { ask, createThread, decideApproval } from "@/lib/stream";
 import type { ActionOutcome } from "@shared/stream-events";
 
@@ -382,11 +383,12 @@ function TurnView({
       <OutcomeNotice outcome={turn.outcome} />
 
       {turn.answer ? (
-        <p className="text-sm leading-relaxed whitespace-pre-wrap" data-testid="answer">
-          {/* The model emphasises figures: `**£1,500**`. `whitespace-pre-wrap`
-              stays, so a newline still shows the day an answer has one. */}
-          <Inline text={turn.answer} />
-        </p>
+        // A div, not a p: a portfolio answer can contain a table, and a table
+        // inside a paragraph is invalid HTML. `whitespace-pre-wrap` moved onto
+        // the paragraphs inside; see lib/markdown-blocks.tsx.
+        <div className="space-y-2 text-sm leading-relaxed" data-testid="answer">
+          <Blocks text={turn.answer} />
+        </div>
       ) : null}
 
       {turn.citations.length > 0 ? (

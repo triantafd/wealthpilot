@@ -1008,7 +1008,7 @@ chosen the way `SMOKE_IDS` was, not the set.
       test client can model a disconnect — and a turn cancelled at a
       checkpoint write appears to leave the checkpointer's connection
       unusable for the rest of the process. Both in `docs/NOTES.md`
-- [ ] **A portfolio answer's table renders as literal pipes.** The trigger
+- [x] **A portfolio answer's table renders as literal pipes.** The trigger
       `src/lib/inline-markdown.tsx` names in its own docstring — *"if answers
       ever grow tables, they will show literally and this becomes a reason to
       adopt a real parser"* — has now fired: `portfolio_answer.md` asks for a
@@ -1020,7 +1020,14 @@ chosen the way `SMOKE_IDS` was, not the set.
       same no-HTML, no-URL guarantee, or a table-only block parser. Note what
       the current file buys: it renders untrusted text as React elements and
       nothing else, so a link or a `<script>` in an answer *cannot* be one. Any
-      replacement has to keep that
+      replacement has to keep that. **Result:** the block parser, in
+      `src/lib/markdown-blocks.tsx` — `react-markdown` does render links and
+      images, so keeping the guarantee would have meant configuring it off
+      rather than its being impossible. Four rules decide what is a table, and
+      each one is pinned by a test that was checked against a mutation of it;
+      three of the first tests passed for the wrong reason and are rewritten.
+      Verified in the browser on a real 60-row answer. Measured first: 8 of
+      the 51 `sql` answers write a table, 0 of the 75 `rag` ones do
 - [ ] Put `retrieval` back in front of the answer in the timeline. Token
       streaming left it behind: the deltas come from the research node while it
       runs, and `retrieved` only lands with the node's update, so the badge

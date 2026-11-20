@@ -162,6 +162,28 @@ trusting a single run.*
       Asking the question needs either a hand-rolled ASGI call with
       `http.disconnect` on the receive channel, or a real uvicorn.
 
+- **The `sql` suite's reports cannot be used to measure how an answer is
+      formatted.** `_short()` in `app/evals/sql.py` does `" ".join(text.split())`
+      before the answer lands in the committed report, which is right for
+      reading one and destroys every newline. Measured 2026-11-20: all 51
+      answers in three `sql` reports contain zero newlines, while a real
+      portfolio answer read out of a checkpoint the same day has **64** and a
+      properly formed markdown table. The `rag` suite stores `result.answer`
+      verbatim, so the 75-answer measurement behind `inline-markdown.tsx`
+      stands. For anything about shape rather than content, read a checkpoint,
+      not a report.
+
+- **A portfolio answer can put a hundred rows in one chat bubble.**
+      `run_select` caps at `MAX_ROWS = 100` and the prompt asks the model to
+      say when a list was cut, so the figures are honest — but
+      `sql-reviews-overdue-01` hit that cap, and after 2026-11-20 those rows
+      render as a real table rather than as text, which makes a single answer
+      taller than several screens. Seen in the browser on a 60-row answer.
+      Nothing is wrong; it is unusable. **Matters when:** anyone works through
+      a conversation with more than one such answer in it. The fix is in the
+      renderer — show the first rows and let the reader open the rest — not in
+      the cap, which exists for the executor's own reasons.
+
 ## Known gaps, not scheduled
 
 *Real, and nobody is fixing them yet. The trigger line is the point: it turns
@@ -678,6 +700,32 @@ control.
 **Revisit when** a cast like this is observed costing a real answer rather than
 a declined one — a column the model believes is numeric and is not, often
 enough to show up in the SQL suite.
+
+### `react-markdown` was not adopted for tables
+
+Asked when portfolio answers started writing markdown tables, 2026-11-20: take
+`react-markdown` with `remark-gfm`, or write a block parser?
+
+**The block parser**, in `src/lib/markdown-blocks.tsx`. Not on bundle size, and
+not on taste. `inline-markdown.tsx` renders untrusted text — an answer is model
+output built from the corpus, which is where an injection would put a link —
+and its guarantee is that a link, an image or a `<script>` in an answer
+*cannot* be one, because no URL is ever parsed and nothing but React elements
+is ever produced. `react-markdown` does not render raw HTML, but it does render
+links and images. It can be told not to, with `disallowedElements`, and that is
+exactly the difference: the guarantee would become "configured not to render
+links" rather than "cannot render one" — an allow-list someone has to maintain
+across dependency bumps, which is what the original file was written to avoid.
+
+The need is also one construct. Measured the same day: 8 of 51 `sql` answers
+write a table, 0 of 75 `rag` answers do, and neither writes a list, a heading
+or a block quote.
+
+**Revisit when** answers grow a second block construct. At that point this
+argument loses to the cost of hand-writing a parser one construct at a time,
+and `react-markdown` behind a strict `allowedElements` is the right call —
+the guarantee is weaker, but a weak guarantee that is reviewed beats a strong
+one nobody can maintain.
 
 ## Considered and not planned
 
