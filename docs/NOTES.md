@@ -212,7 +212,64 @@ trusting a single run.*
       quietly open the `FROM` clause. It could not — two independent
       allow-lists would both have to be rewritten.
 
+- **On the driver path `$1`, `%` and `::` are safe, and a multi-statement
+      string is refused twice.** Measured 2026-11-20 against the read-only
+      role, the same literals through both paths. `SELECT ' :ref'` raises
+      under `connection.execute(text(...))` — "a value is required for bind
+      parameter 'ref'" — and returns ` :ref` under `exec_driver_sql`. `'$1'`,
+      `'a%b'` and `'::cast'` come back intact through **both**, which is the
+      result that mattered: there is no mirror-image trap waiting on the
+      driver path. PostgreSQL's own parser knows a `$1` inside a string
+      literal is text, while `text()`'s regex does not know what a literal is.
+      `SELECT 1 AS a; SELECT 2 AS b` is refused by asyncpg's prepare —
+      "cannot insert multiple commands into a prepared statement" — but that
+      is **not** something the driver call added, and the first version of
+      this note said it was. Measured all four combinations after the security
+      review asked: under asyncpg both `text()` and `exec_driver_sql` refuse,
+      and under `postgresql+psycopg` **both execute**, returning the first
+      result set. So the backstop is asyncpg's extended protocol, not
+      `exec_driver_sql`, and it would disappear on a driver swap —
+      `psycopg[binary]` is already a dependency for the checkpointer and
+      Alembic. What enforces one statement is `validate()`, twice: on the
+      input and on the re-rendered string. **Matters when:** anyone asks whether
+      asyncpg's `$n` placeholders make `exec_driver_sql` as risky as the
+      `text()` call it replaced. They do not; the placeholder is resolved by
+      the server, which parses SQL properly.
+
 ## Known gaps, not scheduled
+
+- **`validate()` approves a statement that still carries a placeholder.**
+      `WHERE account_id = :acct` is approved and re-rendered as
+      `= %(acct)s`; `= $1` is approved and re-rendered as `= $1`. Measured
+      2026-11-20, found by the security review of the driver change. Neither
+      can pick up a value — nothing is ever bound, and the `$1` form is
+      refused client-side by asyncpg with "the server expects 1 argument for
+      this query, 0 were passed" — so this is not a hole. It is a legibility
+      gap: the agent gets back "SQLSTATE 42601" or an interface error it
+      cannot act on, where a refusal from `validate()` would have told it to
+      write the value into the query. The fix is to refuse `exp.Placeholder`
+      and `exp.Parameter` in the forbidden-node walk, which is a change to
+      what the validator accepts and so wants its own task and its own eval
+      case. **Matters when:** a prompt or a few-shot example nudges the model
+      toward parameterised SQL, which is what a competent SQL writer would
+      reach for.
+
+- **A transport error escapes `run_select` with the driver's own words.**
+      `except SQLAlchemyError` catches everything the *SQL* can produce —
+      checked after the review for 42601, 22P02, 57014 and asyncpg's
+      client-side interface errors — but SQLAlchemy wraps a non-DBAPI
+      exception only when no execution context exists
+      (`engine/base.py`: `should_wrap` requires `context is None`), and both
+      `exec_driver_sql` and the `text()` call before it always build one. So a
+      mid-query `OSError` or `ConnectionResetError` propagates raw: `run_sql`
+      translates only `SqlRejected` and `SqlFailed`, the portfolio node
+      catches only `ToolError`, and `app/api/stream.py` then sends the adviser
+      `redact_parameters(f"{type(exc).__name__}: {exc}")`, which blanks the
+      parameters but keeps the message. Pre-existing and unchanged by the
+      driver change. The payload is a socket error string rather than client
+      data, which is why this is a gap and not a hole. **Matters when:** the
+      database restarts or a connection is reset while a query is in flight —
+      likelier in a deployment than on a laptop.
 
 *Real, and nobody is fixing them yet. The trigger line is the point: it turns
 "not now" into a condition rather than a shrug.*
@@ -401,25 +458,6 @@ trusting a single run.*
       where an operator can read it and a prompt cannot. The tool path is
       therefore fixed for every value-echoing error at once, rather than for
       the casts that were the way in.
-
-- **The statement that is validated is not byte-for-byte the statement that
-      runs.** `run_select` executes `text(approved)`, and `text()` re-parses
-      the string: a rendered literal containing a colon after a non-word
-      character — `'AC :X01'` — becomes a bind parameter named `X01`, which is
-      then never supplied. Verified 2026-11-19. It **fails closed** today,
-      with `StatementError` before anything executes, so this is a gap rather
-      than a hole — but "validate one string, execute another" is the class
-      the module docstring says the file exists to prevent, and the
-      `SqlResult.sql` an adviser is shown as provenance is not what ran. It
-      also means a legitimate question about a name containing `` :`` cannot
-      be answered. The fix is one line, `connection.exec_driver_sql(approved)`,
-      which hands the DBAPI the validated bytes and additionally refuses
-      multi-statement strings in asyncpg's own prepare — but it skips the
-      dialect's bind handling, so it needs its own test and a run of the `sql`
-      suite. Not scheduled; no phase currently open owns it.
-      **Matters when:** a corpus or seed gains an instrument or client name
-      with a colon in it, or anyone relies on the displayed SQL being the
-      executed SQL.
 
 - **The relation allow-list permits a cast that the grants do not stop.**
       `CAST(<a text column> AS DECIMAL)` is accepted — `CAST` is in the

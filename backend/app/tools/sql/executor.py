@@ -492,7 +492,12 @@ async def run_select(
             # `GRANT SET ON PARAMETER`, recorded as a follow-up.
             await connection.execute(text("SET LOCAL work_mem = '16MB'"))
             await connection.execute(text(f"SET LOCAL statement_timeout = {int(timeout_ms)}"))
-            result = await connection.execute(text(approved))
+            # The driver, not `text()`. `text()` re-parses the approved string
+            # for `:name` placeholders with a regex that does not know what a
+            # string literal is, so a rendered `' :ref'` became a bind parameter
+            # nobody supplies and the statement died before Postgres saw it.
+            # This leaves PostgreSQL's own parser as the only one that reads it.
+            result = await connection.exec_driver_sql(approved)
             rows = [dict(row) for row in result.mappings()]
     except SQLAlchemyError as exc:
         raise SqlFailed(_explain(exc, timeout_ms)) from exc

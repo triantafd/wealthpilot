@@ -15,9 +15,10 @@ an injected instruction would try. None of them are invented syntax.
 
 from datetime import date
 from decimal import Decimal
-from typing import Final
+from typing import Any, Final
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.tools.sql import executor
@@ -330,6 +331,63 @@ async def test_the_cap_cuts_a_real_result_and_says_so(readonly: None, a_portfoli
     assert result.row_count == 2
     assert result.truncated is True
     assert result.sql.endswith("LIMIT 2")
+
+
+async def test_the_approved_bytes_are_the_executed_bytes(readonly: None, a_portfolio: str) -> None:
+    """A colon in a literal reaches the database untouched, and `.sql` is it.
+
+    Not a formatting test. `text()` re-parsed what sqlglot had already
+    approved, and a colon after a non-word character — `' :ref'` — became a
+    bind parameter nobody supplies, so the statement raised before Postgres
+    saw it. Two parsers, and the one that approved the statement was not the
+    one that rendered it.
+
+    The listener is what makes this test say what its name says. Asserting the
+    value alone would still pass if something rewrote the statement on the way
+    down and the rewrite happened to preserve the result — so it captures the
+    string handed to the cursor and compares it with the `SqlResult.sql` an
+    adviser is shown as provenance. Pointed out by the security review, which
+    is the second time a test in this file claimed more than it checked.
+    """
+    sent: list[str] = []
+
+    def capture(_conn: Any, _cursor: Any, statement: str, *_rest: Any) -> None:
+        sent.append(statement)
+
+    engine = executor.get_readonly_engine()
+    event.listen(engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        result = await run_select(
+            "SELECT DISTINCT ' :ref' AS note FROM v_holdings WHERE account_id = 'AC-EX01'"
+        )
+    finally:
+        # The engine is cached for the process, so a listener left behind
+        # would follow every later test in the run.
+        event.remove(engine.sync_engine, "before_cursor_execute", capture)
+
+    assert result.rows == [{"note": " :ref"}]
+    assert sent[-1] == result.sql
+
+
+async def test_asyncpg_refuses_a_second_statement_but_the_check_is_what_we_rely_on(
+    readonly: None,
+) -> None:
+    """A backstop under `validate()`, and a note about how far it reaches.
+
+    asyncpg sends every statement through `prepare`, which refuses a string
+    carrying two commands — so a bypass of the one-statement check would still
+    have to get past the driver. Measured rather than assumed, and the
+    measurement also found the limit: under `postgresql+psycopg`, which is
+    already a dependency for the checkpointer and Alembic, both statements run
+    and SQLAlchemy returns the first result set. So this is a property of the
+    driver, not of this module, and it is `validate()` that enforces the rule.
+    If the read-only URL ever moves to psycopg, this test goes red — which is
+    the point of writing it down.
+    """
+    engine = executor.get_readonly_engine()
+    async with engine.connect() as connection:
+        with pytest.raises(SQLAlchemyError, match="multiple commands"):
+            await connection.exec_driver_sql("SELECT 1 AS a; SELECT 2 AS b")
 
 
 async def test_a_refused_statement_never_opens_a_connection(readonly: None) -> None:

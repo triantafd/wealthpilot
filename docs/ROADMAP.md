@@ -1156,7 +1156,7 @@ the thresholds are set once the answer path, including streaming, is stable.*
       those nodes an empty table name — is wrong, and wrong twice: two
       allow-lists refuse it and neither depends on the name being empty.
       Measured in `docs/NOTES.md`
-- [ ] **Run the approved SQL through the driver, not through `text()`.** The
+- [x] **Run the approved SQL through the driver, not through `text()`.** The
       same argument as the pin above, one layer lower: `validate()` returns an
       approved string and `run_select` then hands it to `sqlalchemy.text()`,
       which parses it again for bind parameters and can rewrite what actually
@@ -1167,9 +1167,21 @@ the thresholds are set once the answer path, including streaming, is stable.*
       only a literal like `' :ref'` fires it — and when it fires the query
       raises and the turn declines rather than answering wrongly. So this is
       not a live hole; it is a validation boundary with a second opinion
-      behind it. `connection.exec_driver_sql(approved)` sends the bytes
-      sqlglot approved, with a test that a statement containing a placeholder
-      runs unchanged
+      behind it. **Result:** `connection.exec_driver_sql(approved)`, which
+      leaves PostgreSQL's own parser as the only one that reads the approved
+      bytes, pinned by a test that goes red when the line is reverted. It also
+      makes the module docstring true as written — "the string that reaches
+      Postgres is generated *from* the approved syntax tree", and `text()` was
+      a hop after the tree. **`sql` suite, 51 cases, before and after:**
+      `execution_accuracy` 88.6%, `rows_exact` 70.5% and the four safety
+      metrics 100%, identical in both, gate passed in both. Two of the five
+      failing cases swapped places, which is case-level non-determinism at a
+      fixed snapshot rather than anything this change did. The security review
+      earned its place twice: the test asserted a value where its name
+      promised the bytes, and the note here credited the driver with a
+      multi-statement refusal that `text()` makes too. Both corrected, and the
+      two pre-existing gaps it found are in `docs/NOTES.md` with the
+      measurements
 - [ ] Post the metrics table as a PR comment
 
 ## Phase 9 — AWS deployment (1 week) · **Optional**
