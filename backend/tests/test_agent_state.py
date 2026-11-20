@@ -49,6 +49,13 @@ def test_initial_state_starts_the_accumulating_fields_empty() -> None:
     assert state["pending_action"] is None
 
 
+def test_initial_state_clears_the_previous_turns_failure() -> None:
+    """`error` replaces rather than accumulates, and this reset is the only
+    thing stopping a turn that blew up from putting its reason under the next
+    question."""
+    assert initial_state("What is the fee floor?", thread_id="t-1")["error"] is None
+
+
 def test_initial_state_carries_the_question_as_a_human_message() -> None:
     state = initial_state("What is the fee floor?", thread_id="t-1", user_id="adviser-7")
 

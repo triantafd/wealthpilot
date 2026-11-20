@@ -116,9 +116,20 @@ const RESTORED_ANSWER = {
   citations: [{ documentId: "fee-schedule", page: 1, quote: "a minimum annual fee of £1,500" }],
   action_outcome: null,
   approval: null,
+  error: null,
   awaiting: [],
   started_at: "2026-10-19T10:00:00Z",
   usage: { input_tokens: 2612, output_tokens: 48, cost_usd: "0.000421", latency_ms: 2814 },
+};
+
+/** A turn that blew up, as the backend now stores and returns it. */
+const RESTORED_FAILURE = {
+  ...RESTORED_ANSWER,
+  question: "what does AC-0042 hold?",
+  answer: null,
+  citations: [],
+  error: "RuntimeError: provider exploded",
+  usage: null,
 };
 
 /** A turn reloaded while its approval is still waiting at the gate. */
@@ -645,6 +656,21 @@ describe("ChatPage", () => {
       expect(screen.getByTestId("done")).toHaveTextContent("2814ms");
       expect(screen.getByTestId("done")).toHaveTextContent("$0.000421");
       expect(screen.queryByTestId("restoring")).not.toBeInTheDocument();
+    });
+
+    it("says a reloaded turn failed, rather than showing it as unanswered", async () => {
+      // Before the backend kept the error, this turn came back as a question
+      // on its own — the same shape as an answer still being written.
+      vi.stubGlobal(
+        "fetch",
+        stubFetch(RESEARCH_TURN, { turns: { "t-restored": [RESTORED_FAILURE] } }),
+      );
+      renderChat("/chat/t-restored");
+
+      await waitFor(() => expect(screen.getByTestId("error")).toBeInTheDocument());
+      expect(screen.getByTestId("error")).toHaveTextContent("provider exploded");
+      expect(screen.getByText("what does AC-0042 hold?")).toBeInTheDocument();
+      expect(screen.queryByTestId("answer")).not.toBeInTheDocument();
     });
 
     it("lets a restored approval be decided, since the gate is still waiting", async () => {

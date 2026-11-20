@@ -173,6 +173,10 @@ export interface RestoredUsage {
 export interface RestoredTurn {
   question: string;
   answer: string | null;
+  /** Why the turn failed, already redacted by the backend — the same words its
+   *  `error` stream event carried. A turn that answered and then failed carries
+   *  both. */
+  error: string | null;
   route: string | null;
   route_confidence: number | null;
   retrieved_count: number;

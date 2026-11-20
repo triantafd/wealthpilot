@@ -14,6 +14,8 @@ from httpx import AsyncClient
 from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.graph import compile_graph
+from app.agents.state import thread_config
 from app.api.events import (
     ActionOutcomeEvent,
     ApprovalRequiredEvent,
@@ -491,6 +493,97 @@ async def test_an_error_event_carries_no_bound_parameters(db_session: AsyncSessi
     message = events[-1].message  # type: ignore[attr-defined]
     assert "AC-00001" not in message
     assert "sha256:" in message
+
+
+async def test_a_failed_turn_records_why_in_its_own_checkpoint(
+    db_session: AsyncSession,
+) -> None:
+    """So a reload can draw it. Until it did, a failed turn restored as a
+    question with no answer — the shape of an answer still being written.
+
+    The stored text is asserted to *be* the event's, not merely to mention the
+    failure: a restored turn is read by the same adviser as a live one, so the
+    redaction has to survive the trip through the checkpoint.
+    """
+
+    class Broken:
+        def with_structured_output(self, schema: type, **_: object) -> "Broken":
+            return self
+
+        async def ainvoke(self, messages: Any, **_: object) -> Any:
+            raise RuntimeError(
+                "(asyncpg.ProgrammingError) column does not exist "
+                "[SQL: SELECT 1 WHERE account_id = $1] [parameters: ('AC-00001',)]"
+            )
+
+    saver = InMemorySaver()
+    thread = f"t-{uuid.uuid4()}"
+    broken = Broken()
+
+    events = [
+        e
+        async for e in stream_turn(
+            db_session,
+            saver,
+            thread_id=thread,
+            question="cost?",
+            embedder=FakeEmbedder(),
+            chat_model=broken,  # type: ignore[arg-type]
+        )
+    ]
+
+    graph = compile_graph(
+        db_session,
+        saver,
+        embedder=FakeEmbedder(),
+        chat_model=broken,  # type: ignore[arg-type]
+    )
+    snapshot = await graph.aget_state(thread_config(thread))
+
+    assert events[-1].type == "error"  # type: ignore[attr-defined]
+    assert snapshot.values["error"] == events[-1].message  # type: ignore[attr-defined]
+    assert "AC-00001" not in snapshot.values["error"]
+
+
+async def test_a_checkpoint_that_cannot_be_written_still_explains_the_failure(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The record of a failure is worth less than the account of it. A reader
+    looking at a half-drawn answer needs the `error` event; the checkpoint only
+    matters on the next reload."""
+
+    class Broken:
+        def with_structured_output(self, schema: type, **_: object) -> "Broken":
+            return self
+
+        async def ainvoke(self, messages: Any, **_: object) -> Any:
+            raise RuntimeError("provider exploded")
+
+    async def refuse(*_: object, **__: object) -> None:
+        raise RuntimeError("the checkpointer is gone")
+
+    monkeypatch.setattr(
+        "langgraph.graph.state.CompiledStateGraph.aupdate_state", refuse, raising=True
+    )
+
+    with caplog.at_level("WARNING", logger="app.api.stream"):
+        events = [
+            e
+            async for e in stream_turn(
+                db_session,
+                InMemorySaver(),
+                thread_id=f"t-{uuid.uuid4()}",
+                question="cost?",
+                embedder=FakeEmbedder(),
+                chat_model=Broken(),  # type: ignore[arg-type]
+            )
+        ]
+
+    assert events[-1].type == "error"  # type: ignore[attr-defined]
+    assert "provider exploded" in events[-1].message  # type: ignore[attr-defined]
+    assert any("could not record the failed turn" in r.message for r in caplog.records)
 
 
 # --- Over HTTP ---------------------------------------------------------------

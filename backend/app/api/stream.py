@@ -31,12 +31,14 @@ exactly one `token` event, with `replace` set, which is the same thing it sent
 before any of this existed.
 """
 
+import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.graph import compile_graph
@@ -62,6 +64,8 @@ from app.audit import redact_parameters
 from app.pricing import cost_of
 from app.rag.embeddings import Embedder
 from app.usage import record_usage
+
+logger = logging.getLogger(__name__)
 
 # LangGraph reports an interrupt under this synthetic node name.
 INTERRUPT_NODE = "__interrupt__"
@@ -301,7 +305,9 @@ async def stream_turn(
         # goes to a screen. A database error carries the statement and the
         # values bound into it, and an adviser is the last person who should
         # read either.
-        yield ErrorEvent(message=redact_parameters(f"{type(exc).__name__}: {exc}"))
+        message = redact_parameters(f"{type(exc).__name__}: {exc}")
+        await _remember_failure(graph, thread_id=thread_id, message=message)
+        yield ErrorEvent(message=message)
         return
 
     elapsed_ms = (time.perf_counter() - started) * 1000
@@ -315,6 +321,34 @@ async def stream_turn(
         model_served=model_served,
     )
     yield DoneEvent(usage=usage_for(totals, elapsed_ms=elapsed_ms))
+
+
+async def _remember_failure(
+    graph: CompiledStateGraph[Any, Any, Any],
+    *,
+    thread_id: str,
+    message: str,
+) -> None:
+    """Write the failure into the turn's state, so a reload can draw it.
+
+    The checkpoint, not a table: everything else the restored page shows — the
+    route, the citations, the outcome — is folded out of the state, and a turn's
+    own account of why it ended belongs beside them rather than in a second
+    store the fold would have to join against by time.
+
+    The same redacted text the `error` event carries. A restored turn is read by
+    the same adviser as a live one, so it cannot be the place the raw driver
+    message resurfaces.
+
+    Swallowed, like the thread index: this runs while a turn is already failing,
+    and the event that explains the failure matters more than the record of it.
+    Logged rather than silent, because a checkpointer that cannot be written is
+    the kind of thing that also breaks the next turn.
+    """
+    try:
+        await graph.aupdate_state(thread_config(thread_id), {"error": message})
+    except Exception:
+        logger.warning("could not record the failed turn on thread %s", thread_id, exc_info=True)
 
 
 async def _record(

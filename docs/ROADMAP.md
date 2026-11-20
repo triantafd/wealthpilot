@@ -977,14 +977,20 @@ chosen the way `SMOKE_IDS` was, not the set.
       thread moves to the top. "Chat" became "New chat", which is what `/chat`
       always did; and it no longer lights up inside a thread, a prefix match
       nothing noticed while only one row could be current
-- [ ] **A turn that failed leaves no trace to restore.** An `error` event is
+- [x] **A turn that failed leaves no trace to restore.** An `error` event is
       sent over the stream and never written anywhere, so a reloaded turn that
       blew up comes back as a question with no answer and no error — it reads
       as an answer that went missing rather than one that failed, which is the
       one place a restored turn says less than the stream did. The honest fix
       is for the turn to record that it failed: either a column the fold can
       read, or the error as a message in the state so it is in the checkpoint
-      like everything else the page draws
+      like everything else the page draws. **Result:** an `error` field on
+      `AgentState`, written by `stream_turn` with `aupdate_state` after the
+      `error` event and carrying the same redacted text, folded into
+      `TurnRecord.error` and drawn by the branch that already renders a live
+      failure. A field rather than a message, because the fold reads the last
+      non-human message as the answer. Recording it cannot fail a turn: the
+      write is swallowed and logged, like the thread index
 - [ ] **Abort the stream when the conversation changes.** Opening another
       thread mid-answer clears the transcript but leaves the `ask()` loop
       running: `busy` stays true until it finishes, and its events land on a

@@ -146,6 +146,13 @@ class Turn(BaseModel):
 
     question: str
     answer: str | None = None
+    error: str | None = Field(
+        None,
+        description=(
+            "Why the turn failed, in the same redacted words the `error` stream event "
+            "carried. A turn that answered and then failed carries both."
+        ),
+    )
     route: str | None = None
     route_confidence: float | None = None
     retrieved_count: int = 0
@@ -389,6 +396,7 @@ async def _public_turn(session: AsyncSession, turn: TurnRecord) -> Turn:
     return Turn(
         question=turn.question,
         answer=turn.answer,
+        error=turn.error,
         route=turn.route,
         route_confidence=turn.route_confidence,
         retrieved_count=turn.retrieved_count,

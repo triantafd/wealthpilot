@@ -132,6 +132,18 @@ class AgentState(TypedDict, total=False):
     # across nodes by `add_usage`.
     usage: Annotated[dict[str, int], add_usage]
 
+    # Why the turn ended, when it ended badly. Written by `app/api/stream.py`
+    # after the stream's `error` event, and carrying the same redacted text:
+    # until it existed a failed turn was restored as a question with no answer,
+    # which is the shape of an answer still being written rather than one that
+    # never came.
+    #
+    # Its own field rather than a message, which is where it would be cheapest
+    # to put it: the fold reads the last non-human message as *the answer*, so
+    # an error stored that way would be redrawn as something the adviser was
+    # told.
+    error: str | None
+
     # The model the provider served, reported by whichever node last called
     # one. Not inside `usage`, because that dict is summed by `add_usage` and
     # a string has no sum. Last write wins, which is right while every agent
@@ -165,6 +177,7 @@ def initial_state(question: str, *, thread_id: str, user_id: str | None = None) 
         action_result=None,
         citations=[],
         usage={},
+        error=None,
     )
 
 

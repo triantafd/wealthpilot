@@ -158,6 +158,29 @@ trusting a single run.*
 *Real, and nobody is fixing them yet. The trigger line is the point: it turns
 "not now" into a condition rather than a shrug.*
 
+- **`awaiting` on a restored turn says "paused at an approval" and also "this
+      is where it died".** The field is `snapshot.next`, and its description in
+      `GET /threads/{id}/turns` promises the first: non-empty means an approval
+      the reader can still decide. But a turn that raised is paused too — it
+      folds to `awaiting: ["supervisor"]`, measured 2026-11-20 — so the field
+      now carries two unrelated facts. Harmless today because the chat page
+      reads it only together with a pending approval, and because `error`
+      arrived in the same turn and distinguishes the two cases for anything
+      that needs to. **Matters when:** a second reader of the field treats
+      non-empty as "resumable", or a resume-after-failure path is built, which
+      would need to tell a pause from a crash.
+
+- **A restored turn shows neither the queries behind its figures nor the flags
+      the agents raised.** `sql_queries` and `guardrail_flags` are both in the
+      checkpoint, so the data is there; the fold does not carry them because
+      both *accumulate*, and a per-turn value means slicing them the way
+      `fold_turns` already slices `messages`. So a reloaded portfolio answer
+      is a number with no visible source, which is precisely what the `sql`
+      stream event exists to prevent, and a mandate that stopped an action
+      reads as ordinary prose. Recorded 2026-11-20, when `error` closed the
+      other half of the same gap. **Matters when:** anyone is expected to audit
+      a conversation after the fact rather than while it streams.
+
 - **The test suite still ships spans to Langfuse.** `_tracing_disabled` blanks
       the credentials and its docstring claims that keeps questions out of the
       cloud. It does not: at interpreter shutdown Langfuse's resource manager
