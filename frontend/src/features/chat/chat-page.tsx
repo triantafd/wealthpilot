@@ -76,6 +76,12 @@ export function ChatPage() {
   // clicked (a new one). Comparing against what we are driving separates them.
   const driving = useRef<string | null>(inUrl ?? null);
 
+  // The turn currently streaming, so it can be cut short. A ref rather than
+  // state for the same reason as `driving`: nothing renders it, and a
+  // re-render mid-answer must not hand the running loop a different
+  // controller.
+  const inFlight = useRef<AbortController | null>(null);
+
   // The thread whose history to restore. Initialised from the URL, because
   // this is the reload case and the effect below does not run on mount: the
   // page is already driving the id it was mounted with. A query keyed on the
@@ -90,6 +96,11 @@ export function ChatPage() {
   useEffect(() => {
     if (address === driving.current) return;
     driving.current = address;
+    // Stop reading an answer nobody will see. Without this the loop ran to
+    // completion against a turn id that is no longer in the list, so its
+    // events were dropped one by one in silence — and `busy` stayed true
+    // until it finished, disabling the composer for an answer already gone.
+    inFlight.current?.abort();
     // A different conversation, so nothing on screen belongs to it.
     setTurns([]);
     setRestoring(address);
@@ -98,6 +109,11 @@ export function ChatPage() {
     // recognise it as already on screen and leave the transcript empty.
     restored.current = null;
   }, [address]);
+
+  // Leaving the chat screen is the same situation as changing conversation,
+  // and the effect above cannot see it: the address does not change on the way
+  // out, the component does.
+  useEffect(() => () => inFlight.current?.abort(), []);
 
   const history = useThreadTurns(restoring);
   useEffect(() => {
@@ -121,9 +137,12 @@ export function ChatPage() {
       const asked = newTurn(question);
       setTurns((current) => [...current, asked]);
 
+      const controller = new AbortController();
+      inFlight.current = controller;
+
       try {
         if (driving.current === null) {
-          const started = await createThread();
+          const started = await createThread(controller.signal);
           driving.current = started;
           // `replace`, not a push: the URL is gaining the identity of the
           // conversation already on screen rather than moving somewhere new,
@@ -131,15 +150,29 @@ export function ChatPage() {
           // to mid-answer.
           navigate(`/chat/${started}`, { replace: true });
         }
-        for await (const streamed of ask({ threadId: driving.current, message: question })) {
+        for await (const streamed of ask({
+          threadId: driving.current,
+          message: question,
+          signal: controller.signal,
+        })) {
           setTurns((current) =>
             updateTurn(current, asked.id, (turn) => applyEvent(turn, streamed)),
           );
         }
       } catch (error) {
-        const text = error instanceof Error ? error.message : "the request failed";
-        setTurns((current) => updateTurn(current, asked.id, (turn) => ({ ...turn, error: text })));
+        // An abort is not a failure. The reader moved on and the turn it
+        // belonged to has already been cleared off the screen, so writing
+        // "the operation was aborted" onto it would be a sentence about this
+        // page rather than about the answer.
+        if (!controller.signal.aborted) {
+          const text = error instanceof Error ? error.message : "the request failed";
+          setTurns((current) => updateTurn(current, asked.id, (turn) => ({ ...turn, error: text })));
+        }
       } finally {
+        // Only if nothing newer has taken over: `busy` clears here, so another
+        // question can be asked, and clearing unconditionally would leave that
+        // one with no way to be aborted.
+        if (inFlight.current === controller) inFlight.current = null;
         setBusy(false);
         // The sidebar's list changed: a new conversation is in it, or this one
         // just moved to the top. In the `finally` rather than after the loop,

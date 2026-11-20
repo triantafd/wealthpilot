@@ -634,6 +634,100 @@ describe("ChatPage", () => {
       expect(calls).toContain("/api/threads/t-1/messages");
     });
   });
+  describe("leaving a conversation mid-answer", () => {
+    /** An answer that has started and not finished. */
+    const HALF_ANSWERED = [
+      { type: "route", route: "research", confidence: 0.9 },
+      { type: "token", text: "The minimum annual advisory fee is " },
+    ];
+
+    /**
+     * A `fetch` whose stream stays open until the caller's signal is aborted,
+     * and that hands back the signals it was given.
+     *
+     * The stub has to wire the abort itself: a `Response` built in a test is
+     * not connected to the signal the way the platform's is, so without this
+     * the page would go on reading a stream nothing could stop and the test
+     * would pass whether or not the page aborts anything.
+     */
+    function stubHeldFetch() {
+      const encoder = new TextEncoder();
+      const signals: AbortSignal[] = [];
+
+      return {
+        signals,
+        fetchMock: vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+          const path = typeof url === "string" ? url : url.toString();
+
+          if (path === "/api/threads" && init?.method === "POST") {
+            return new Response(JSON.stringify({ thread_id: "t-1" }), { status: 201 });
+          }
+          if (path.endsWith("/turns")) {
+            const thread = path.replace("/api/threads/", "").replace("/turns", "");
+            return new Response(
+              JSON.stringify({ thread_id: thread, turns: [], truncated: false }),
+              { status: 200 },
+            );
+          }
+          if (path.includes("/messages")) {
+            const signal = init?.signal ?? null;
+            if (signal) signals.push(signal);
+            return new Response(
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  for (const event of HALF_ANSWERED) {
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+                  }
+                  signal?.addEventListener("abort", () =>
+                    controller.error(new DOMException("aborted", "AbortError")),
+                  );
+                },
+              }),
+              { status: 200, headers: { "Content-Type": "text/event-stream" } },
+            );
+          }
+          return new Response("{}", { status: 200 });
+        }),
+      };
+    }
+
+    it("stops reading the answer when another conversation is opened", async () => {
+      // The bug: clearing the transcript left the loop running, so its events
+      // landed on a turn id no longer in the list and were dropped in silence
+      // — while `busy` kept the composer disabled for an answer nobody would
+      // ever read.
+      const { fetchMock, signals } = stubHeldFetch();
+      vi.stubGlobal("fetch", fetchMock);
+      renderChat("/chat/t-restored");
+
+      await ask("what is the fee floor?");
+      await waitFor(() => expect(screen.getByTestId("route")).toBeInTheDocument());
+      expect(screen.getByRole("button", { name: "Working…" })).toBeDisabled();
+
+      await userEvent.click(screen.getByRole("link", { name: "another thread" }));
+
+      await waitFor(() => expect(signals[0].aborted).toBe(true));
+      // The composer comes back, which is the part an adviser notices.
+      await waitFor(() => expect(screen.getByRole("button", { name: "Ask" })).toBeInTheDocument());
+      // An abort is not a failure, and the turn it belonged to is gone anyway.
+      expect(screen.queryByTestId("error")).not.toBeInTheDocument();
+    });
+
+    it("stops reading when the page itself goes away", async () => {
+      // The same situation the effect above cannot see: the address does not
+      // change on the way out to /approvals, the component does.
+      const { fetchMock, signals } = stubHeldFetch();
+      vi.stubGlobal("fetch", fetchMock);
+      const { unmount } = renderChat("/chat/t-restored");
+
+      await ask("what is the fee floor?");
+      await waitFor(() => expect(screen.getByTestId("route")).toBeInTheDocument());
+      unmount();
+
+      expect(signals[0].aborted).toBe(true);
+    });
+  });
+
   describe("restoring a conversation", () => {
     it("brings back the questions, answers, citations and cost of a reloaded thread", async () => {
       // The refresh case, end to end: nothing is typed, and the conversation

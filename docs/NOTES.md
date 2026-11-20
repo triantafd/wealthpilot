@@ -153,6 +153,15 @@ trusting a single run.*
       references of mine rather than model faults. A floor belongs here once
       the dataset has settled and two runs agree on it.
 
+- **`ASGITransport` runs the app to completion, so no test with the test
+      client can model a client disconnect.** Measured 2026-11-20 on
+      `POST /threads/{id}/messages`: reading one SSE frame and closing the
+      response leaves exactly the same state as reading every frame — one
+      `usage` row and five checkpoints either way. So an abort test written
+      with the `client` fixture would pass whether or not anything aborts.
+      Asking the question needs either a hand-rolled ASGI call with
+      `http.disconnect` on the receive channel, or a real uvicorn.
+
 ## Known gaps, not scheduled
 
 *Real, and nobody is fixing them yet. The trigger line is the point: it turns
@@ -180,6 +189,27 @@ trusting a single run.*
       reads as ordinary prose. Recorded 2026-11-20, when `error` closed the
       other half of the same gap. **Matters when:** anyone is expected to audit
       a conversation after the fact rather than while it streams.
+
+- **A turn cancelled at a checkpoint write appears to leave the
+      checkpointer's connection unusable — not established, and the reason it
+      is here.** `AsyncPostgresSaver.from_conn_string` opens a **single**
+      `AsyncConnection`, not a pool, so every checkpoint read and write in the
+      process shares one connection. Driving `POST /threads/{id}/messages` as
+      raw ASGI with an `http.disconnect` on the receive channel, 2026-11-20,
+      cancelled the turn and then every following read failed with
+      `psycopg.OperationalError: another command is already in progress` —
+      retried at 0.0s, 0.1s, 0.5s and 2.0s, all four. If that is what happens
+      in production, one adviser closing a tab mid-answer breaks approvals and
+      history for everyone until the process restarts.
+      **What was not established:** the probe's disconnect arrives before the
+      first frame rather than mid-answer (`frames=[]`, `checkpoints=0`), so
+      what was cancelled was the turn's *first* checkpoint write, and the
+      probe hand-rolls the ASGI call instead of going through uvicorn. So the
+      shape is suspicious and the blast radius is unmeasured. **Matters when:**
+      anything is deployed, or before the Playwright test closes a tab
+      mid-stream. Confirming it needs a real uvicorn and a client that hangs
+      up; note `app/agents/checkpointer.py`'s docstring says "it owns its own
+      connection pool", which is where the wrong mental model came from.
 
 - **The test suite still ships spans to Langfuse.** `_tracing_disabled` blanks
       the credentials and its docstring claims that keeps questions out of the

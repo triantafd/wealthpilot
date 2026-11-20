@@ -991,14 +991,23 @@ chosen the way `SMOKE_IDS` was, not the set.
       failure. A field rather than a message, because the fold reads the last
       non-human message as the answer. Recording it cannot fail a turn: the
       write is swallowed and logged, like the thread index
-- [ ] **Abort the stream when the conversation changes.** Opening another
+- [x] **Abort the stream when the conversation changes.** Opening another
       thread mid-answer clears the transcript but leaves the `ask()` loop
       running: `busy` stays true until it finishes, and its events land on a
       turn id that is no longer in the list, so they are silently dropped.
       Nothing breaks — which is why this is polish and not a Phase 5 fix — but
       the composer is disabled for an answer nobody will read. An
       `AbortController` kept beside `driving`, aborted in the same effect that
-      clears the turns
+      clears the turns. **Result:** that, plus the same abort on unmount —
+      leaving for `/approvals` is the same situation and the effect cannot see
+      it. `ask()` already took a `signal` and nothing ever passed one. An
+      abort is no longer written onto the turn as an error, because it is not
+      one. Both tests were checked red with the abort removed. Found on the
+      way and **not** fixed here: `ASGITransport` runs the app to completion
+      whether the client reads one frame or all of them, so no test with the
+      test client can model a disconnect — and a turn cancelled at a
+      checkpoint write appears to leave the checkpointer's connection
+      unusable for the rest of the process. Both in `docs/NOTES.md`
 - [ ] **A portfolio answer's table renders as literal pipes.** The trigger
       `src/lib/inline-markdown.tsx` names in its own docstring — *"if answers
       ever grow tables, they will show literally and this becomes a reason to
