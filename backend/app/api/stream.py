@@ -88,9 +88,18 @@ def _route_event(update: dict[str, Any]) -> RouteEvent | None:
     )
 
 
-def _retrieval_event(update: dict[str, Any]) -> RetrievalEvent | None:
-    chunks = update.get("retrieved")
-    if not chunks:
+def _retrieval_event(chunks: Any) -> RetrievalEvent | None:
+    """The passages, from whatever carried them.
+
+    Fed from the **custom** stream and nowhere else. It used to be built from
+    the research node's update, which is why the provenance badge arrived
+    after the answer: an update is reported once the node has returned, while
+    the prose streams out of the middle of it. The node now writes the
+    passages the moment it has them — see `retrieval_writer` — and reading
+    them here as well would send the same event twice, which is the bug
+    `route` had and the reason it is tied to one node.
+    """
+    if not chunks or not isinstance(chunks, list):
         return None
     return RetrievalEvent(chunks=[RetrievedChunkRef.model_validate(c) for c in chunks])
 
@@ -130,19 +139,21 @@ def _token_event(update: dict[str, Any]) -> TokenEvent | None:
     return None
 
 
-def _custom_event(payload: Any) -> TokenEvent | None:
+def _custom_event(payload: Any) -> ContractModel | None:
     """A node's mid-run write, as a contract event.
 
-    The only producer today is the research agent's prose callback. An
-    unrecognised payload is ignored rather than raised on: a node writing
-    something this layer does not know about should not end a turn that is
-    already streaming to a reader.
+    Two producers, both in the research agent: the prose callback and the
+    retrieval one. An unrecognised payload is ignored rather than raised on: a
+    node writing something this layer does not know about should not end a
+    turn that is already streaming to a reader.
 
-    Whitespace is not stripped, and emptiness is the only thing rejected: a
-    delta of " " is a word boundary in the answer.
+    Whitespace is not stripped from a token, and emptiness is the only thing
+    rejected: a delta of " " is a word boundary in the answer.
     """
     if not isinstance(payload, dict):
         return None
+    if "retrieval" in payload:
+        return _retrieval_event(payload["retrieval"])
     text = payload.get("token")
     return TokenEvent(text=text) if isinstance(text, str) and text else None
 
@@ -215,7 +226,6 @@ def events_for(node: str, chunk: Any) -> list[ContractModel]:
     # Annotated so mypy infers the union of every builder's return rather than
     # the first one's.
     builders: list[Callable[[dict[str, Any]], ContractModel | None]] = [
-        _retrieval_event,
         _action_outcome_event,
         _token_event,
         _citations_event,

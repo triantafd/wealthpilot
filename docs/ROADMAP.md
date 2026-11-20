@@ -1028,12 +1028,21 @@ chosen the way `SMOKE_IDS` was, not the set.
       three of the first tests passed for the wrong reason and are rewritten.
       Verified in the browser on a real 60-row answer. Measured first: 8 of
       the 51 `sql` answers write a table, 0 of the 75 `rag` ones do
-- [ ] Put `retrieval` back in front of the answer in the timeline. Token
+- [x] Put `retrieval` back in front of the answer in the timeline. Token
       streaming left it behind: the deltas come from the research node while it
       runs, and `retrieved` only lands with the node's update, so the badge
       appears after the prose it preceded. The fix is to write retrieval to the
       custom stream too, which means stopping the node's update from emitting
-      it a second time — the same duplicate-event problem `route` already had
+      it a second time — the same duplicate-event problem `route` already had.
+      **Result:** `on_retrieved` beside `on_prose` in `answer_question`, fired
+      between `search` and `generate_answer`, so the order is execution order
+      rather than timing. The duplicate is prevented at the source rather than
+      by a seen-already flag: `retrieval` is now built only from the custom
+      stream, the way `route` is built only from the supervisor. Both halves
+      checked by mutation — removing the write loses the event, restoring the
+      update's loses the order. One consequence: a turn that retrieves and
+      then fails while writing now reports the search it really did, where
+      before it reported nothing
 - [ ] Playwright smoke test: ask → stream → approve
 
 **Done when:** a 2-minute screen recording shows the whole flow. Put it at the top of the README.

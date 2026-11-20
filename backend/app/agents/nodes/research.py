@@ -21,7 +21,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.conversation import has_prior_turn
 from app.rag.embeddings import Embedder
-from app.rag.generate import AnswerResult, ProseCallback, answer_question
+from app.rag.generate import (
+    AnswerResult,
+    ProseCallback,
+    RetrievedCallback,
+    answer_question,
+)
+from app.rag.retrieve import RetrievedChunk
 
 
 class NoQuestionError(ValueError):
@@ -69,11 +75,15 @@ def question_to_answer(state: dict[str, Any]) -> str:
     return rewritten or message
 
 
-def _chunk_refs(result: AnswerResult) -> list[dict[str, Any]]:
+def _chunk_refs(chunks: list[RetrievedChunk]) -> list[dict[str, Any]]:
     """Retrieved passages in the shape the `retrieval` stream event carries.
 
     Content is left out deliberately: the UI shows provenance and a score, and
     carrying the text would put a copy of the corpus in every checkpoint.
+
+    Takes the chunks rather than the whole result because it is now called
+    twice from different moments: once mid-run for the stream, and once at the
+    end for the state.
     """
     return [
         {
@@ -82,7 +92,7 @@ def _chunk_refs(result: AnswerResult) -> list[dict[str, Any]]:
             "page": chunk.page,
             "score": round(chunk.similarity, 4),
         }
-        for chunk in result.retrieved
+        for chunk in chunks
     ]
 
 
@@ -132,6 +142,25 @@ def prose_writer() -> ProseCallback | None:
     return lambda delta: writer({"token": delta})
 
 
+def retrieval_writer() -> RetrievedCallback | None:
+    """The same channel, for the passages, the moment they are found.
+
+    Separate from `prose_writer` only because the payloads differ. Why it
+    exists at all: `retrieved` reaches the stream in the node's *update*, and
+    an update arrives once the node has returned — so the provenance badge
+    landed after the answer it was provenance for. Written here, it goes out
+    before `generate_answer` is even called, so the order is execution order
+    rather than timing.
+
+    None outside a graph run, exactly like `prose_writer`.
+    """
+    try:
+        writer = get_stream_writer()
+    except RuntimeError:
+        return None
+    return lambda chunks: writer({"retrieval": _chunk_refs(chunks)})
+
+
 async def research_agent(
     state: dict[str, Any],
     session: AsyncSession,
@@ -141,11 +170,21 @@ async def research_agent(
     """Answer the thread's latest question from the documents."""
     question = question_to_answer(state)
 
-    result = await answer_question(session, embedder, chat_model, question, on_prose=prose_writer())
+    result = await answer_question(
+        session,
+        embedder,
+        chat_model,
+        question,
+        on_prose=prose_writer(),
+        on_retrieved=retrieval_writer(),
+    )
 
     return {
         "messages": [AIMessage(content=result.answer)],
-        "retrieved": _chunk_refs(result),
+        # Still in the state, although the stream no longer reads it from here:
+        # a restored turn is drawn from the checkpoint, and `retrieved_count`
+        # is what tells a reader an answer had sources at all.
+        "retrieved": _chunk_refs(result.retrieved),
         "citations": _citations(result),
         "usage": {
             "inputTokens": result.usage.input_tokens,

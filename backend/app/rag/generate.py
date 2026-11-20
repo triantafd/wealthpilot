@@ -305,6 +305,12 @@ def build_messages(
 # the text added since the last call — because the stream event appends.
 ProseCallback = Callable[[str], None]
 
+# The passages, the moment they are found. Its own callback rather than a
+# field on the result, because the point is *when*: the result arrives after
+# the answer has been written, and provenance that lands after the sentence it
+# supports explains something the reader has already read.
+RetrievedCallback = Callable[[list[RetrievedChunk]], None]
+
 # Streaming structured output warns once per answer, from inside
 # langchain-openai: it calls `chunk.model_dump()` on the provider's chunk
 # (chat_models/base.py), and the OpenAI SDK has already parsed our schema onto
@@ -582,7 +588,14 @@ async def answer_question(
     top_k: int | None = None,
     document_id: str | None = None,
     on_prose: ProseCallback | None = None,
+    on_retrieved: RetrievedCallback | None = None,
 ) -> AnswerResult:
-    """Retrieve, then answer. The whole Phase 1 pipeline in one call."""
+    """Retrieve, then answer. The whole Phase 1 pipeline in one call.
+
+    `on_retrieved` fires between the two, which is the only place it can: the
+    passages are known then, and the answer takes seconds to write.
+    """
     chunks = await search(session, embedder, question, top_k=top_k, document_id=document_id)
+    if on_retrieved is not None:
+        on_retrieved(chunks)
     return await generate_answer(chat_model, question, chunks, on_prose=on_prose)

@@ -26,7 +26,7 @@ from app.api.events import (
     TokenEvent,
     as_sse,
 )
-from app.api.stream import INTERRUPT_NODE, events_for, stream_turn, usage_for
+from app.api.stream import INTERRUPT_NODE, _custom_event, events_for, stream_turn, usage_for
 from app.rag.documents import SourceDocument
 from app.rag.embeddings import FakeEmbedder
 from app.rag.generate import Citation
@@ -76,13 +76,21 @@ def test_a_route_without_a_confidence_is_reported_as_zero() -> None:
 
 
 def test_retrieved_passages_become_a_retrieval_event() -> None:
-    events = events_for(
-        "research",
-        {"retrieved": [{"id": 1, "documentId": "fee-schedule", "page": 2, "score": 0.91}]},
+    """From the custom stream, which is the only thing that carries them now."""
+    event = _custom_event(
+        {"retrieval": [{"id": 1, "documentId": "fee-schedule", "page": 2, "score": 0.91}]}
     )
 
-    assert isinstance(events[0], RetrievalEvent)
-    assert events[0].chunks[0].document_id == "fee-schedule"
+    assert isinstance(event, RetrievalEvent)
+    assert event.chunks[0].document_id == "fee-schedule"
+
+
+def test_a_node_update_carrying_retrieved_produces_no_event() -> None:
+    """It used to, and that is why the provenance badge arrived after the
+    answer: an update is reported once the node has returned, while the prose
+    streams out of the middle of it. Reading it here as well would now send
+    the event twice — the bug `route` had."""
+    assert events_for("research", {"retrieved": [{"id": 1, "documentId": "x", "page": 2}]}) == []
 
 
 def test_the_answer_and_its_citations_become_two_events_in_reading_order() -> None:
@@ -317,6 +325,11 @@ async def test_a_research_turn_streams_route_then_answer_then_done(
     assert "token" in kinds
     assert "citations" in kinds
     assert kinds[-1] == "done"
+    # Provenance before the prose it supports. The whole point of writing the
+    # passages from inside the node: read off the node's update instead, the
+    # badge lands after the answer and explains something already read.
+    assert kinds.index("retrieval") < kinds.index("token")
+    assert kinds.count("retrieval") == 1, "one search, one badge"
 
 
 async def test_an_answer_streams_in_pieces_then_the_cleaned_text_replaces_it(
