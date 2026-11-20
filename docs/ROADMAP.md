@@ -1141,16 +1141,21 @@ the thresholds are set once the answer path, including streaming, is stable.*
       because the floors came from one local index: from a scratch database
       the four gated metrics come out identical to four decimals, recorded
       under measurements in `docs/NOTES.md`
-- [ ] **Pin `sqlglot` exactly, and treat a bump as a security change.**
+- [x] **Pin `sqlglot` exactly, and treat a bump as a security change.**
       Carried from the SQL security review and put here because it is the same
-      job as pinning the model: a threshold or a boundary set against a moving
-      dependency measures someone else's release. `sqlglot` is `>=27,<28`, and
-      the comment-smuggling case proved the *renderer's* behaviour is part of
-      the SQL boundary rather than an implementation detail. Exact pin, bumped
-      deliberately with `tests/test_sql_executor.py` as the gate. Related: a
-      set-returning function in `FROM` is refused today only because sqlglot
-      gives those nodes an empty table name — an accident of the library that
-      a test now pins, not a decision it made for us
+      job as pinning the model: a boundary set against a moving dependency
+      measures someone else's release, and the comment-smuggling case proved
+      the *renderer's* behaviour is part of that boundary rather than an
+      implementation detail. **Result:** `sqlglot==27.29.0` — the version
+      already resolved and installed, so nothing moved — with the reason and
+      the bump procedure beside the pin in `backend/pyproject.toml`. Modest on
+      purpose: `uv.lock` already pins it for `uv sync --frozen`, so what `==`
+      adds is that a re-resolution cannot move it inside 27.x without editing
+      a line a reviewer sees in the diff. This box's other claim — that a
+      set-returning function in `FROM` is refused *only* because sqlglot gives
+      those nodes an empty table name — is wrong, and wrong twice: two
+      allow-lists refuse it and neither depends on the name being empty.
+      Measured in `docs/NOTES.md`
 - [ ] **Run the approved SQL through the driver, not through `text()`.** The
       same argument as the pin above, one layer lower: `validate()` returns an
       approved string and `run_select` then hands it to `sqlalchemy.text()`,

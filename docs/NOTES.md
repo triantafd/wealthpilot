@@ -197,6 +197,21 @@ trusting a single run.*
       the frontend's types from the OpenAPI schema the backend already
       publishes.
 
+- **An allow-list refuses a function in `FROM`, not sqlglot's empty table
+      name.** Measured 2026-11-20, against the Phase 8 roadmap box that
+      claimed otherwise. `SELECT * FROM generate_series(1,10)` is refused by
+      the *function* allow-list, and the message proves which rule fired:
+      "EXPLODING_GENERATE_SERIES() cannot be used here". A function the
+      allow-list permits, `SELECT * FROM lower('a')`, is refused by the
+      *relation* allow-list — "LOWER('a') cannot be queried". sqlglot does put
+      an `exp.Table` with an empty `.name` in that position, which is the
+      accident the box described, but nothing depends on the name being empty:
+      the rule is that a relation must be one of the three `v_*` views, and an
+      empty name fails it for the same reason `LOWER('a')` does. **Matters
+      when:** someone reads that box and concludes a sqlglot bump could
+      quietly open the `FROM` clause. It could not — two independent
+      allow-lists would both have to be rewritten.
+
 ## Known gaps, not scheduled
 
 *Real, and nobody is fixing them yet. The trigger line is the point: it turns
