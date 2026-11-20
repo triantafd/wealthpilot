@@ -352,7 +352,14 @@ jobs:
         # on by default inside the CLI, so this step's exit code is the gate's
         # verdict — there is no threshold logic in this file to drift from it.
         working-directory: ${{ github.workspace }}
-        run: uv run --project backend python evals/run.py --suite "$SUITE"
+        #
+        # `--summary` puts the metrics table on the run's own page. Not a pull
+        # request comment: the numbers are already in this log and in the
+        # artifact, and a comment would need write permission, fork handling
+        # and logic to update itself instead of posting a fifth copy.
+        run: >-
+          uv run --project backend python evals/run.py --suite "$SUITE"
+          --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the report
         # Reports are gitignored, so without this the numbers die with the

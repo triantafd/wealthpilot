@@ -1182,7 +1182,20 @@ the thresholds are set once the answer path, including streaming, is stable.*
       multi-statement refusal that `text()` makes too. Both corrected, and the
       two pre-existing gaps it found are in `docs/NOTES.md` with the
       measurements
-- [ ] Post the metrics table as a PR comment
+- [x] **Put the metrics table on the run's own page, rather than in a PR
+      comment.** The box said comment; the numbers are already in the job log
+      and in the uploaded artifact, so a comment would have bought a second
+      copy in exchange for `pull-requests: write`, fork handling, and logic to
+      update itself instead of posting a fifth copy on the fifth re-run.
+      **Result:** `--summary` on the eval CLI appends a markdown table to the
+      file it is handed, and the workflow hands it `$GITHUB_STEP_SUMMARY` — no
+      permission, no API call, one line of YAML. `render_markdown` sits beside
+      `render_table` and shares `_format`, the delta formatting and the
+      baseline-mismatch refusal, so the page and the log cannot disagree about
+      a number; a test goes red if the page starts formatting its own. The
+      gate's verdict is quoted verbatim rather than reworded, and a summary
+      that cannot be written is a warning rather than a failed run — the
+      verdict is the exit code, not the page
 
 ## Phase 9 — AWS deployment (1 week) · **Optional**
 

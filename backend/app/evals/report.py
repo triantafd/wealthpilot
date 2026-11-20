@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import REPO_ROOT, get_settings
-from app.evals.metrics import Spread, compare, summarise
+from app.evals.metrics import Delta, Spread, compare, summarise
 from app.evals.runner import CaseResult
 
 REPORTS_DIR = REPO_ROOT / "evals" / "reports"
@@ -194,6 +194,89 @@ def _format(name: str, value: float) -> str:
     return f"{value:>8.0f}"
 
 
+def _comparable(
+    report: dict[str, Any], baseline: dict[str, Any] | None
+) -> tuple[dict[str, Any] | None, str]:
+    """The baseline worth comparing against, and the refusal when there is none.
+
+    Comparing a 27-case smoke run against a 75-case baseline produces
+    confident nonsense: different questions, different difficulty, and every
+    difference reads as a regression. Refuse rather than mislead.
+    """
+    if baseline is None:
+        return None, ""
+    if baseline.get("suite") != report["suite"]:
+        return None, (
+            f"not compared: baseline is the {baseline['suite']!r} suite, "
+            f"this run is {report['suite']!r}. Different cases are not comparable."
+        )
+    return baseline, ""
+
+
+def _change(name: str, delta: Delta) -> tuple[str, bool]:
+    """A delta as text, and whether it counts as a regression.
+
+    Percentages for the fractions and absolute for the rest, which is why the
+    two are decided together: a cost that rose by 0.0002 is not "+0.0%", and a
+    regression in latency or cost is not a regression at all — a slower run
+    that answers better is an improvement.
+    """
+    pct = (
+        name.startswith(_FRACTIONS)
+        and name not in _COUNTS
+        and "cost" not in name
+        and "latency" not in name
+    )
+    change = f"{delta.change:+.1%}" if pct else f"{delta.change:+.3f}"
+    return change, delta.regressed and pct
+
+
+def render_markdown(
+    report: dict[str, Any], baseline: dict[str, Any] | None = None, gate: str = ""
+) -> str:
+    """The same numbers as `render_table`, as markdown for a CI step summary.
+
+    A separate renderer rather than the terminal one, because the summary page
+    renders what it is handed and the aligned table arrives with its columns
+    collapsed into one line. The values come from `_format` and the deltas from
+    `_change`, so the page and the job log cannot disagree about what a metric
+    was. `gate` is whatever `app.evals.gate.render` returned, quoted verbatim:
+    the verdict is the line a reader wants first, and reformatting it here
+    would be a second place for it to drift.
+    """
+    metrics: dict[str, float] = report["metrics"]
+    baseline, refusal = _comparable(report, baseline)
+    deltas = {d.name: d for d in compare(metrics, baseline["metrics"])} if baseline else {}
+
+    lines = [
+        f"### evals: {report['suite']}",
+        "",
+        f"{report['case_count']} cases · `{report['config']['llm_model']}` · `{report['git_sha']}`",
+        "",
+    ]
+    if refusal:
+        lines += [refusal, ""]
+
+    lines.append("| Metric | Value |" + (" vs baseline |" if baseline else ""))
+    lines.append("|---|--:|" + ("--:|" if baseline else ""))
+    for name, value in metrics.items():
+        row = f"| `{name}` | {_format(name, value).strip()} |"
+        if baseline:
+            delta = deltas.get(name)
+            cell = ""
+            if delta is not None and abs(delta.change) > 1e-9:
+                change, regressed = _change(name, delta)
+                cell = f"{change} **REGRESSED**" if regressed else change
+            row += f" {cell} |"
+        lines.append(row)
+
+    if baseline:
+        lines += ["", f"baseline: `{baseline['git_sha']}` ({baseline['created_at']})"]
+    if gate:
+        lines += ["", "```", gate.strip("\n"), "```"]
+    return "\n".join(lines)
+
+
 def render_table(report: dict[str, Any], baseline: dict[str, Any] | None = None) -> str:
     """The terminal table. Metrics first, then the breakdowns that explain them."""
     metrics: dict[str, float] = report["metrics"]
@@ -203,17 +286,9 @@ def render_table(report: dict[str, Any], baseline: dict[str, Any] | None = None)
         "",
     ]
 
-    # Comparing a 27-case smoke run against a 75-case baseline produces
-    # confident nonsense: different questions, different difficulty, and every
-    # difference reads as a regression. Refuse rather than mislead.
-    mismatched = baseline is not None and baseline.get("suite") != report["suite"]
-    if mismatched:
-        lines.append(
-            f"  not compared: baseline is the {baseline['suite']!r} suite, "  # type: ignore[index]
-            f"this run is {report['suite']!r}. Different cases are not comparable."
-        )
-        lines.append("")
-        baseline = None
+    baseline, refusal = _comparable(report, baseline)
+    if refusal:
+        lines += [f"  {refusal}", ""]
 
     deltas = {d.name: d for d in compare(metrics, baseline["metrics"])} if baseline else {}
     width = max(len(name) for name in metrics)
@@ -222,15 +297,8 @@ def render_table(report: dict[str, Any], baseline: dict[str, Any] | None = None)
         row = f"  {name:<{width}}  {_format(name, value)}"
         delta = deltas.get(name)
         if delta is not None and abs(delta.change) > 1e-9:
-            pct = (
-                name.startswith(_FRACTIONS)
-                and name not in _COUNTS
-                and "cost" not in name
-                and "latency" not in name
-            )
-            change = f"{delta.change:+.1%}" if pct else f"{delta.change:+.3f}"
-            marker = "  REGRESSED" if delta.regressed and pct else ""
-            row += f"   vs baseline {change}{marker}"
+            change, regressed = _change(name, delta)
+            row += f"   vs baseline {change}{'  REGRESSED' if regressed else ''}"
         lines.append(row)
 
     if baseline:

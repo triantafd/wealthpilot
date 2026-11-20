@@ -33,6 +33,7 @@ from app.evals.report import (
     render_breakdowns,
     render_case_diff,
     render_confusion,
+    render_markdown,
     render_spread,
     render_table,
     save_report,
@@ -145,8 +146,7 @@ async def _run(args: argparse.Namespace) -> int:
         errors = int(metrics.get(f"{args.suite}.errors", 0))
         if errors:
             print(f"\n  {errors} case(s) errored", file=sys.stderr)
-        breached = _gate(args, report, baseline)
-        return 1 if errors or breached else 0
+        return _finish(args, report, baseline, errors)
 
     cases = load_cases(args.suite)
     use_ragas = args.ragas if args.ragas is not None else args.suite != "smoke"
@@ -226,11 +226,38 @@ async def _run(args: argparse.Namespace) -> int:
     errors = int(report["metrics"]["ops.errors"])
     if errors:
         print(f"\n  {errors} case(s) errored", file=sys.stderr)
-    breached = _gate(args, report, baseline)
+    return _finish(args, report, baseline, errors)
+
+
+def _finish(args: Any, report: dict[str, Any], baseline: dict[str, Any] | None, errors: int) -> int:
+    """Gate the run, write the summary if one was asked for, settle the code.
+
+    One function for both paths through `_run`, so the slice suites and the RAG
+    suites cannot disagree about what fails a run or what gets reported.
+    """
+    breached, verdict = _gate(args, report, baseline)
+    if args.summary:
+        _write_summary(args.summary, render_markdown(report, baseline, verdict))
     return 1 if errors or breached else 0
 
 
-def _gate(args: Any, report: dict[str, Any], baseline: dict[str, Any] | None) -> bool:
+def _write_summary(path: Path, markdown: str) -> None:
+    """Append the summary, and never fail a run over it.
+
+    Appended because GitHub's step summary is one file per job that several
+    steps add to; truncating it would drop whatever ran before. Written after
+    the gate so the verdict is on the page, and a failure to write it is a
+    warning rather than an error: the numbers are in the report and the verdict
+    is the exit code, so a missing page loses nothing but convenience.
+    """
+    try:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(markdown + "\n")
+    except OSError as exc:
+        print(f"could not write the summary to {path}: {exc}", file=sys.stderr)
+
+
+def _gate(args: Any, report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[bool, str]:
     """Check the run against `evals/thresholds.yaml`; True when it failed.
 
     On by default, because a gate somebody has to remember to switch on is not
@@ -239,12 +266,13 @@ def _gate(args: Any, report: dict[str, Any], baseline: dict[str, Any] | None) ->
     for another, and exiting non-zero on those would be noise.
     """
     if args.no_gate:
-        return False
+        return False, ""
     thresholds = load_thresholds(args.thresholds)
     breaches = check(report, thresholds, baseline)
+    verdict = render(breaches, str(report.get("suite", "?")))
     print()
-    print(render(breaches, str(report.get("suite", "?"))))
-    return bool(breaches)
+    print(verdict)
+    return bool(breaches), verdict
 
 
 def main() -> None:
@@ -267,6 +295,12 @@ def main() -> None:
         help="thresholds file (default: evals/thresholds.yaml)",
     )
     parser.add_argument("--save-baseline", action="store_true", help="overwrite baseline.json")
+    parser.add_argument(
+        "--summary",
+        type=Path,
+        default=None,
+        help="append a markdown table of the metrics here; CI passes $GITHUB_STEP_SUMMARY",
+    )
     parser.add_argument(
         "--retrieval-only",
         action="store_true",
