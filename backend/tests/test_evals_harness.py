@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.evals.dataset import SMOKE_IDS, DatasetError, EvalCase, load_cases
-from app.evals.report import build_report, render_table
+from app.evals.report import _format, build_report, render_markdown, render_table
 from app.evals.runner import aggregate, score_case
 from app.rag.generate import AnswerResult, Citation, CitationCheck, TokenUsage
 from app.rag.retrieve import RetrievedChunk
@@ -220,6 +220,90 @@ def test_the_table_marks_a_regression_against_a_baseline() -> None:
     rendered = render_table(report, baseline)
     assert "REGRESSED" in rendered
     assert "abc1234" in rendered
+
+
+# --- The markdown summary ----------------------------------------------------
+#
+# A second renderer of the same numbers, for a CI run's own page. What these
+# tests are for is the thing two renderers always eventually do: disagree.
+
+
+def _smoke_report() -> dict[str, object]:
+    scored = score_case(case(), answer("£1,500.", chunks=[("fee-schedule", 1)]), 1.0, "m")
+    return build_report("smoke", aggregate([scored]), [scored])
+
+
+def test_the_summary_reports_every_metric_exactly_as_the_table_does() -> None:
+    """One source of truth for the values. A page that rounds differently from
+    the log is a page somebody will quote in a pull request."""
+    report = _smoke_report()
+
+    rendered = render_markdown(report)
+
+    assert rendered.startswith("### evals: smoke")
+    for name, value in report["metrics"].items():  # type: ignore[attr-defined]
+        assert f"| `{name}` | {_format(name, value).strip()} |" in rendered
+
+
+def test_the_summary_names_the_model_and_the_commit() -> None:
+    """A metric without provenance is a number someone will quote next month,
+    when neither the model nor the code is what produced it."""
+    report = _smoke_report()
+
+    rendered = render_markdown(report)
+
+    assert report["config"]["llm_model"] in rendered  # type: ignore[index]
+    assert str(report["git_sha"]) in rendered
+
+
+def test_the_summary_marks_a_regression_against_a_baseline() -> None:
+    # A missed passage, so the run really is worse than the baseline below.
+    # Built here rather than from `_smoke_report`, whose retrieval is correct.
+    scored = score_case(case(), answer("£1,500.", chunks=[("other", 9)]), 1.0, "m")
+    report = build_report("smoke", aggregate([scored]), [scored])
+    baseline = {
+        "suite": "smoke",
+        "git_sha": "abc1234",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "metrics": {"retrieval.mrr": 1.0},
+    }
+
+    rendered = render_markdown(report, baseline)
+
+    assert "vs baseline" in rendered
+    assert "**REGRESSED**" in rendered
+    assert "abc1234" in rendered
+
+
+def test_the_summary_refuses_a_baseline_from_another_suite() -> None:
+    """The same refusal as the terminal table, from the same helper: a smoke
+    run against an `all` baseline is different questions at different
+    difficulty, and every difference would read as a regression."""
+    report = _smoke_report()
+    baseline = {
+        "suite": "all",
+        "git_sha": "abc1234",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "metrics": {"retrieval.mrr": 0.2},
+    }
+
+    rendered = render_markdown(report, baseline)
+
+    assert "not compared" in rendered
+    assert "REGRESSED" not in rendered
+    assert "vs baseline" not in rendered
+
+
+def test_the_summary_quotes_the_gate_verdict_rather_than_restating_it() -> None:
+    """Fenced and verbatim. The gate already says which file to edit and why,
+    and a second wording of a verdict is a second thing to keep true."""
+    verdict = "  gate: smoke FAILED (1)\n    - retrieval.mrr 0.400 under floor 0.600"
+
+    rendered = render_markdown(_smoke_report(), None, verdict)
+
+    assert "```" in rendered
+    assert "gate: smoke FAILED (1)" in rendered
+    assert "retrieval.mrr 0.400 under floor 0.600" in rendered
 
 
 # --- Gate policy -------------------------------------------------------------

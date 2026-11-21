@@ -1141,17 +1141,22 @@ the thresholds are set once the answer path, including streaming, is stable.*
       because the floors came from one local index: from a scratch database
       the four gated metrics come out identical to four decimals, recorded
       under measurements in `docs/NOTES.md`
-- [ ] **Pin `sqlglot` exactly, and treat a bump as a security change.**
+- [x] **Pin `sqlglot` exactly, and treat a bump as a security change.**
       Carried from the SQL security review and put here because it is the same
-      job as pinning the model: a threshold or a boundary set against a moving
-      dependency measures someone else's release. `sqlglot` is `>=27,<28`, and
-      the comment-smuggling case proved the *renderer's* behaviour is part of
-      the SQL boundary rather than an implementation detail. Exact pin, bumped
-      deliberately with `tests/test_sql_executor.py` as the gate. Related: a
-      set-returning function in `FROM` is refused today only because sqlglot
-      gives those nodes an empty table name — an accident of the library that
-      a test now pins, not a decision it made for us
-- [ ] **Run the approved SQL through the driver, not through `text()`.** The
+      job as pinning the model: a boundary set against a moving dependency
+      measures someone else's release, and the comment-smuggling case proved
+      the *renderer's* behaviour is part of that boundary rather than an
+      implementation detail. **Result:** `sqlglot==27.29.0` — the version
+      already resolved and installed, so nothing moved — with the reason and
+      the bump procedure beside the pin in `backend/pyproject.toml`. Modest on
+      purpose: `uv.lock` already pins it for `uv sync --frozen`, so what `==`
+      adds is that a re-resolution cannot move it inside 27.x without editing
+      a line a reviewer sees in the diff. This box's other claim — that a
+      set-returning function in `FROM` is refused *only* because sqlglot gives
+      those nodes an empty table name — is wrong, and wrong twice: two
+      allow-lists refuse it and neither depends on the name being empty.
+      Measured in `docs/NOTES.md`
+- [x] **Run the approved SQL through the driver, not through `text()`.** The
       same argument as the pin above, one layer lower: `validate()` returns an
       approved string and `run_select` then hands it to `sqlalchemy.text()`,
       which parses it again for bind parameters and can rewrite what actually
@@ -1162,10 +1167,35 @@ the thresholds are set once the answer path, including streaming, is stable.*
       only a literal like `' :ref'` fires it — and when it fires the query
       raises and the turn declines rather than answering wrongly. So this is
       not a live hole; it is a validation boundary with a second opinion
-      behind it. `connection.exec_driver_sql(approved)` sends the bytes
-      sqlglot approved, with a test that a statement containing a placeholder
-      runs unchanged
-- [ ] Post the metrics table as a PR comment
+      behind it. **Result:** `connection.exec_driver_sql(approved)`, which
+      leaves PostgreSQL's own parser as the only one that reads the approved
+      bytes, pinned by a test that goes red when the line is reverted. It also
+      makes the module docstring true as written — "the string that reaches
+      Postgres is generated *from* the approved syntax tree", and `text()` was
+      a hop after the tree. **`sql` suite, 51 cases, before and after:**
+      `execution_accuracy` 88.6%, `rows_exact` 70.5% and the four safety
+      metrics 100%, identical in both, gate passed in both. Two of the five
+      failing cases swapped places, which is case-level non-determinism at a
+      fixed snapshot rather than anything this change did. The security review
+      earned its place twice: the test asserted a value where its name
+      promised the bytes, and the note here credited the driver with a
+      multi-statement refusal that `text()` makes too. Both corrected, and the
+      two pre-existing gaps it found are in `docs/NOTES.md` with the
+      measurements
+- [x] **Put the metrics table on the run's own page, rather than in a PR
+      comment.** The box said comment; the numbers are already in the job log
+      and in the uploaded artifact, so a comment would have bought a second
+      copy in exchange for `pull-requests: write`, fork handling, and logic to
+      update itself instead of posting a fifth copy on the fifth re-run.
+      **Result:** `--summary` on the eval CLI appends a markdown table to the
+      file it is handed, and the workflow hands it `$GITHUB_STEP_SUMMARY` — no
+      permission, no API call, one line of YAML. `render_markdown` sits beside
+      `render_table` and shares `_format`, the delta formatting and the
+      baseline-mismatch refusal, so the page and the log cannot disagree about
+      a number; a test goes red if the page starts formatting its own. The
+      gate's verdict is quoted verbatim rather than reworded, and a summary
+      that cannot be written is a warning rather than a failed run — the
+      verdict is the exit code, not the page
 
 ## Phase 9 — AWS deployment (1 week) · **Optional**
 

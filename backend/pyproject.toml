@@ -36,7 +36,13 @@ dependencies = [
     # by app/db/migrations/env.py, verified in the spike.
     "langgraph>=1.2,<2",
     "langgraph-checkpoint-postgres>=3.1,<4",
-    "sqlglot>=27,<28",
+    # Exact, and bumped deliberately with `tests/test_sql_executor.py` as the
+    # gate: this library's *renderer* is part of the SQL boundary, not an
+    # implementation detail. Comment smuggling turned on how it re-emits `--`
+    # as a `/* ... */` block, which no release note would call a change.
+    # `uv.lock` already pins the version for `uv sync --frozen`; what `==`
+    # adds is that nothing can move it inside 27.x without editing this line.
+    "sqlglot==27.29.0",
 ]
 
 # `app` is installed into the venv rather than merely being on sys.path, so
